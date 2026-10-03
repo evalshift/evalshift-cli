@@ -772,15 +772,21 @@ def _tool_divergence_counts(records: list[EvalRecord]) -> tuple[int, int]:
 
 
 def _invariant_violation_counts(records: list[EvalRecord]) -> tuple[int, int]:
-    """``(violated, total)`` over this scope's ``trace_invariants`` rows.
+    """``(violated, total)`` distinct examples over this scope's ``trace_invariants`` rows.
 
-    Violated means the target broke at least one rule: any target score below
-    1.0, which also catches a row averaged over repeated samples where one
-    sample broke a rule. Judged against the rules alone -- a rule the source
-    broke too is still broken, which is the reason the evaluator exists.
+    Counted per ``(prompt_id, example_id)``, not per row: each
+    ``trace_invariants`` entry writes its own row for an example, so two rule
+    sets would otherwise count one example twice and double the denominator.
+    An example is violated when the target broke at least one rule in any
+    entry: any target score below 1.0, which also catches a row averaged over
+    repeated samples where one sample broke a rule. Judged against the rules
+    alone -- a rule the source broke too is still broken, which is the reason
+    the evaluator exists.
     """
     rows = [r for r in _evidence(records) if _is_kind(r, _INVARIANTS_KIND)]
-    return sum(1 for r in rows if r.target_score < 1.0), len(rows)
+    examples = {(r.prompt_id, r.example_id) for r in rows}
+    violated = {(r.prompt_id, r.example_id) for r in rows if r.target_score < 1.0}
+    return len(violated), len(examples)
 
 
 def _metrics(
@@ -1048,6 +1054,8 @@ def _budget_denominators(
         # axis is configured on or off.
         "max_tool_argument_drift": tool_argument_records,
         "max_tool_divergence": tool_divergence_records,
+        # The exception: distinct examples, not rows -- the budget is a count
+        # of examples, and each rule set writes its own row per example.
         "max_invariant_violations": invariant_records,
         **{
             name: _call_ratio_denominator(calls, field=call_field)
@@ -1364,7 +1372,9 @@ def _shared_invariant_notes(records: list[EvalRecord]) -> list[str]:
     matches the toolset, and only the rule's owner can say which.
     """
     shared_rules: set[str] = set()
-    examples = 0
+    # Distinct examples, not rows: two rule sets sharing a break on one
+    # example are still one example.
+    examples: set[tuple[str, str]] = set()
     for r in _evidence(records):
         if not _is_kind(r, _INVARIANTS_KIND):
             continue
@@ -1373,11 +1383,11 @@ def _shared_invariant_notes(records: list[EvalRecord]) -> list[str]:
         )
         if common:
             shared_rules |= common
-            examples += 1
+            examples.add((r.prompt_id, r.example_id))
     if not examples:
         return []
     return [
-        f"The source model also broke {', '.join(sorted(shared_rules))} on {examples} "
+        f"The source model also broke {', '.join(sorted(shared_rules))} on {len(examples)} "
         "example(s) where the target did. Either both models break the rule or it no "
         "longer matches the toolset: review it with its owner rather than raising "
         "max_invariant_violations."

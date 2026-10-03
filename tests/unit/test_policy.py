@@ -2911,3 +2911,67 @@ class TestInvariantViolationBudget:
         assert "Safe slices: support. Keep checkout on the source model." in (
             decision.recommendations
         )
+
+    def test_counts_distinct_examples_not_rows_across_rule_sets(self) -> None:
+        """Two ``trace_invariants`` entries write two rows per example.
+
+        One example breaking both must count once, over a denominator of the
+        suite's two examples -- the budget and every doc page promise a count
+        of examples, and rows would double it.
+        """
+        records = [
+            _invariant_record("e1", 1.0, 0.0),
+            _invariant_record("e1", 1.0, 0.0, rule_id="no-v2").model_copy(
+                update={"evaluator_name": "refunds"}
+            ),
+            _invariant_record("e2", 1.0, 1.0),
+            _invariant_record("e2", 1.0, 1.0, rule_id="no-v2").model_copy(
+                update={"evaluator_name": "refunds"}
+            ),
+        ]
+        decision = _decide(records, policy=MigrationPolicy(max_invariant_violations=1))
+        budget = _budgets(decision)["max_invariant_violations"]
+        assert (budget.observed, budget.denominator) == (1.0, 2)
+        assert budget.passed
+
+        breached = _decide(records, policy=MigrationPolicy(max_invariant_violations=0))
+        assert breached.reason is not None
+        assert "on 1 of 2 examples" in breached.reason
+
+    def test_the_same_example_id_under_two_prompts_is_two_examples(self) -> None:
+        records = [
+            _invariant_record("e1", 1.0, 0.0),
+            _invariant_record("e1", 1.0, 0.0).model_copy(update={"prompt_id": "q"}),
+        ]
+        budget = _budgets(_decide(records))["max_invariant_violations"]
+        assert (budget.observed, budget.denominator) == (2.0, 2)
+
+    def test_shared_note_counts_distinct_examples(self) -> None:
+        records = [
+            _invariant_record("e1", 0.0, 0.0),
+            _invariant_record("e1", 0.0, 0.0, rule_id="no-v2").model_copy(
+                update={"evaluator_name": "refunds"}
+            ),
+        ]
+        notes = [line for line in _decide(records).recommendations if "owner" in line]
+        assert len(notes) == 1
+        assert "no-v1, no-v2 on 1 example(s)" in notes[0]
+
+    def test_a_breached_budget_overrides_the_failed_slice_demotion(self) -> None:
+        """No overall comparison plus a failed slice demotes to conditional_pass.
+
+        The run-level override must still turn a breached overall
+        trace-rule budget into ``fail``: a broken rule is not softened by
+        the slice rules.
+        """
+        records = [
+            _invariant_record("e1", 1.0, 0.0),
+            *[_record(example_id=f"s{i}", delta=0.0) for i in range(6)],
+        ]
+        comparisons = [_comparison(severity="critical", slice_name="checkout")]
+        decision = _decide(records, comparisons=comparisons)
+        assert decision.slices["checkout"].verdict == "fail"
+        assert not _budgets(decision)["max_invariant_violations"].passed
+        assert decision.verdict == "fail"
+        assert decision.reason is not None
+        assert "max_invariant_violations" in decision.reason
