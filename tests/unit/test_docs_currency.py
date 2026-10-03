@@ -199,3 +199,27 @@ def test_no_doc_shows_a_removed_top_level_key(name: str) -> None:
 
     hits = [m.group(0) for m in pattern.finditer(text)]
     assert not hits, f"{name} shows removed top-level key(s) {hits}; that config would not load"
+
+
+#: Exact substrings that described the v5 hosted plans. v6 (2026-10) has no hosted Free or
+#: Team plan; the CLI itself is still free. Retiring another plan claim? Append it here.
+RETIRED_PLAN_TERMS: tuple[str, ...] = ("Free 1, Pro 5, Team 10", "on the Free plan")
+
+_PLAN_COPY_FILES: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        (
+            *PROSE_FILES,
+            "docs/hosted.md",
+            "docs/github-action.md",
+            "src/evalshift_cli/cli/commands/_scaffold.py",
+        )
+    )
+)
+
+
+@pytest.mark.parametrize("term", RETIRED_PLAN_TERMS)
+def test_copy_does_not_describe_the_retired_hosted_plans(term: str) -> None:
+    offenders = [
+        name for name in _PLAN_COPY_FILES if term in (REPO_ROOT / name).read_text(encoding="utf-8")
+    ]
+    assert offenders == [], f"{term!r} still appears in {offenders}"

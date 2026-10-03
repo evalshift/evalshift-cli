@@ -1200,6 +1200,110 @@ def test_push_command_exits_non_zero_and_prints_the_upgrade_prompt_on_402(
     assert "Traceback" not in result.output
 
 
+_TRIAL_ENDED = (
+    "The free trial for this organization ended on 2026-11-02. Subscribe to Pro to push "
+    "runs and keep the CI gate — existing runs stay readable."
+)
+
+
+def test_a_402_on_the_retry_after_auto_create_renders_the_upgrade_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v6: the first push to a new project on an expired org is refused on the *retried*
+    ``POST /runs``. That retry runs inside the first attempt's ``except`` clause, so its
+    402 used to skip every handler and reach the user as a traceback."""
+    bundle_path = _build_bundle_for_push(tmp_path, monkeypatch)
+    fake = _fake_client(
+        responses=[{"raise_404": True}, {"raise_error": _payment_required(_TRIAL_ENDED)}],
+        projects=[],
+    )
+    monkeypatch.setenv("EVALSHIFT_HOST", "https://api.evalshift.test")
+    monkeypatch.setenv("EVALSHIFT_TOKEN", "es_secret")
+    monkeypatch.setattr("evalshift_cli.hosted.push.HostedClient", lambda **_: fake)
+
+    with pytest.raises(PushError) as excinfo:
+        _push(bundle_path, tmp_path, create_project=True)
+
+    text = str(excinfo.value)
+    assert "this run needs a paid plan" in text
+    assert _TRIAL_ENDED in text
+    assert "Upgrade: https://app.test/app/acme/settings/billing" in text
+    assert fake.created_project is not None
+    assert fake.initiate_calls == 2
+
+
+def test_any_other_error_on_the_retry_is_a_push_error_not_a_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = _build_bundle_for_push(tmp_path, monkeypatch)
+    fake = _fake_client(
+        responses=[
+            {"raise_404": True},
+            {"raise_error": HostedHTTPError(500, "database is down", code="internal_error")},
+        ],
+        projects=[],
+    )
+    monkeypatch.setenv("EVALSHIFT_HOST", "https://api.evalshift.test")
+    monkeypatch.setenv("EVALSHIFT_TOKEN", "es_secret")
+    monkeypatch.setattr("evalshift_cli.hosted.push.HostedClient", lambda **_: fake)
+
+    with pytest.raises(PushError) as excinfo:
+        _push(bundle_path, tmp_path, create_project=True)
+
+    assert "database is down" in str(excinfo.value)
+
+
+def test_a_402_while_auto_creating_the_project_renders_the_upgrade_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v6: an expired org may not create projects either; that 402 is a plan problem, not
+    the "needs owner access" hint the generic create failure prints."""
+    bundle_path = _build_bundle_for_push(tmp_path, monkeypatch)
+    fake = _fake_client(
+        responses=[{"raise_404": True}],
+        projects=[],
+        create_project_error=_payment_required(_TRIAL_ENDED),
+    )
+    monkeypatch.setenv("EVALSHIFT_HOST", "https://api.evalshift.test")
+    monkeypatch.setenv("EVALSHIFT_TOKEN", "es_secret")
+    monkeypatch.setattr("evalshift_cli.hosted.push.HostedClient", lambda **_: fake)
+
+    with pytest.raises(PushError) as excinfo:
+        _push(bundle_path, tmp_path, create_project=True)
+
+    text = str(excinfo.value)
+    assert "this run needs a paid plan" in text
+    assert _TRIAL_ENDED in text
+    assert "owner access" not in text
+
+
+def test_push_command_prints_the_trial_ended_prompt_for_a_new_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end: exit 1, the server's sentence, and no traceback."""
+    bundle_path = _build_bundle_for_push(tmp_path, monkeypatch)
+    fake = _fake_client(
+        responses=[{"raise_404": True}, {"raise_error": _payment_required(_TRIAL_ENDED)}],
+        projects=[],
+    )
+    monkeypatch.setenv("EVALSHIFT_HOST", "https://api.evalshift.test")
+    monkeypatch.setenv("EVALSHIFT_TOKEN", "es_secret")
+    monkeypatch.setattr("evalshift_cli.hosted.push.HostedClient", lambda **_: fake)
+
+    result = runner.invoke(
+        app,
+        ["push", "--bundle", str(bundle_path), "--config", str(tmp_path / "evalshift.yaml")],
+    )
+
+    assert result.exit_code == 1
+    assert "needs a paid plan" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_transient_retry_statuses_never_include_payment_required() -> None:
     """Guard: a future edit to the retry set must not start retrying a payment error."""
     assert 402 not in _TRANSIENT_STATUSES

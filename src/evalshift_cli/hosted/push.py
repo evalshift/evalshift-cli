@@ -108,6 +108,37 @@ def _upgrade_prompt(exc: HostedHTTPError) -> PushError:
     return PushError("\n".join(lines))
 
 
+def _initiate_after_create(
+    client: HostedClient, manifest: dict[str, Any], *, size_bytes: int
+) -> dict[str, Any]:
+    """The ``POST /runs`` retried after auto-creating the project, mapped like the first.
+
+    It runs inside the first attempt's ``except`` clause, so its own errors would skip the
+    sibling handlers and surface as a traceback — which is exactly what the first push to a
+    new project on an expired org did (the 402 arrives on this retry, not the first call).
+
+    Args:
+        client: The hosted client the first attempt used.
+        manifest: The bundle manifest sent as the run's create payload.
+        size_bytes: Size of the bundle file that will be uploaded.
+
+    Returns:
+        The server's ``POST /runs`` response.
+
+    Raises:
+        PushError: On any hosted error — the upgrade prompt for a 402, the server's
+            message otherwise.
+    """
+    try:
+        return client.initiate_run(manifest, size_bytes=size_bytes)
+    except HostedHTTPError as exc:
+        if exc.status_code == _PAYMENT_REQUIRED:
+            raise _upgrade_prompt(exc) from exc
+        raise PushError(str(exc)) from exc
+    except (HostedNetworkError, HostedError) as exc:
+        raise PushError(str(exc)) from exc
+
+
 @dataclass(frozen=True, slots=True)
 class PushResult:
     """Outcome of a hosted push.
@@ -239,7 +270,7 @@ def push_bundle(
             raise PushError(str(exc)) from exc
         _auto_create_project(client, project_slug=str(manifest["project_slug"]))
         project_created = True
-        response = client.initiate_run(manifest, size_bytes=upload_size_bytes)
+        response = _initiate_after_create(client, manifest, size_bytes=upload_size_bytes)
     except (HostedNetworkError, HostedError) as exc:
         raise PushError(str(exc)) from exc
 
@@ -494,6 +525,10 @@ def _auto_create_project(client: HostedClient, *, project_slug: str) -> None:
     try:
         client.create_project(org_slug, slug=project, name=_name_from_slug(project))
     except HostedHTTPError as exc:
+        if exc.status_code == _PAYMENT_REQUIRED:
+            # An expired org is read-only: creating a project is refused with the same 402 a
+            # push gets, and it deserves the same prompt rather than an access-permission hint.
+            raise _upgrade_prompt(exc) from exc
         raise PushError(
             f"cannot auto-create {project_slug!r} at {client.host}: "
             f"{_server_said(exc)}. Creating a project needs owner access to "

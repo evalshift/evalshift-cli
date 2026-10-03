@@ -237,20 +237,26 @@ the wrong one fails exactly like a permissions problem.
 
 Running locally is always unlimited. Plan limits apply only to what you push.
 
-When a push exceeds your organization's plan — monthly runs, seats, retention —
-or the subscription has stopped paying, the server refuses the push with HTTP
-402 and the CLI prints exactly what the server said:
+Every new hosted account gets a 30-day Pro trial (no card) that covers every
+org it creates; after that each org needs its own Pro subscription.
+
+When a push exceeds your organization's plan — monthly runs, seats, concurrent
+uploads — the org's trial ended without a subscription, or the subscription has
+stopped paying, the server refuses the push with HTTP 402 and the CLI prints
+exactly what the server said:
 
 ```
 ✗ EvalShift: this run needs a paid plan.
-  Monthly run limit reached on the Free plan (50 of 50 runs used).
+  The free trial for this organization ended on 2026-11-02. Subscribe to Pro to push runs and keep the CI gate — existing runs stay readable.
   Upgrade: https://app.evalshift.dev/app/acme/settings/billing
 ```
 
 `push` exits 1 and nothing is uploaded. The CLI does not evaluate entitlements
 itself and does not retry a payment error — retrying cannot change the answer.
 Your run and its `report.html` stay on disk under `.evalshift/runs/`, so you can
-push the same run id again after upgrading, or after the monthly counter resets.
+push the same run id again once the org is subscribed (or, for the monthly
+quota, after the counter resets). An expired org stays readable — its runs,
+diffs and baselines still load.
 
 Transient upload failures (HTTP 429 and 5xx from object storage) are a separate
 case and *are* retried with exponential backoff.
@@ -355,5 +361,5 @@ credential file locally and repository secrets in CI.
 | `could not determine a valid 40-character git SHA` | `bundle` (or `push <run-id>` building a bundle) ran outside a git checkout, or in one with no commits, and `GITHUB_SHA` is unset. | Run inside a git repository with at least one commit, or set `GITHUB_SHA`. |
 | `project was not found` | The project does not exist and auto-create is disabled or not allowed. | Ask an owner to create it, use an org-scoped owner token, or enable auto-create. |
 | `cannot auto-create <slug> at <host>` | The message names the host it talked to and the server's status. Most often the host is not the one you meant: with no `--host` and no `EVALSHIFT_HOST`, an unset credentials file falls back to `https://api.evalshift.dev`, where your org does not exist. | Run `evalshift whoami` and check the host it prints. If it is wrong, `evalshift login --host <hosted-api-url>`. If the host is right and the status is 403, the token lacks org access — see [Project auto-create](#project-auto-create). |
-| `this run needs a paid plan` | The org's plan does not cover this push, or the subscription has stopped paying. | Open the upgrade URL printed with the message, or wait for the monthly reset and push the same run id again. See [Plan limits](#plan-limits). |
+| `this run needs a paid plan` | The org's plan does not cover this push, its 30-day trial ended without a subscription, or the subscription has stopped paying. | Open the upgrade URL printed with the message; for the monthly quota you can also wait for the reset and push the same run id again. See [Plan limits](#plan-limits). |
 | `this run carries no migration policy` warning | No `migration_policy` is configured in `evalshift.yaml`, so the bundle has no `decision.policy`. | Add `migration_policy` to `evalshift.yaml` (see [Configuration](configuration.md#migration_policy)). Until then the gate has only whatever old web-app policy the project still has; with none, it reports `inconclusive` and never blocks the pull request unless the GitHub Action sets `require-policy: true`. |
