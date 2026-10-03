@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -2585,6 +2586,30 @@ class TestInvariantViolationsPanel:
         record["error"] = "trace missing"
         run_dir = _run_dir_with_scores(tmp_path, [record])
         assert build_report_payload(run_dir).invariant_violations == []
+
+    def test_rows_carry_the_records_blocking_flag(self, tmp_path: Path) -> None:
+        advisory = {**self._record("e2", source_broke=False), "blocking": False}
+        run_dir = _run_dir_with_scores(tmp_path, [self._record("e1", source_broke=False), advisory])
+        report = build_report_payload(run_dir)
+        assert [(v.example_id, v.blocking) for v in report.invariant_violations] == [
+            ("e1", True),
+            ("e2", False),
+        ]
+        write_report_json(report, run_dir)
+        data = json.loads((run_dir / REPORT_JSON_FILENAME).read_text(encoding="utf-8"))
+        assert [row["blocking"] for row in data["invariant_violations"]] == [True, False]
+
+    def test_html_tags_an_advisory_violation_without_bad_styling(self, tmp_path: Path) -> None:
+        advisory = {**self._record("e1", source_broke=False), "blocking": False}
+        html = render_html(build_report_payload(_run_dir_with_scores(tmp_path, [advisory])))
+        tag = re.search(r'<span class="([^"]*advisory-tag[^"]*)"[^>]*>advisory</span>', html)
+        assert tag is not None
+        assert "badge-bad" not in tag.group(1)
+
+    def test_html_leaves_a_blocking_violation_untagged(self, tmp_path: Path) -> None:
+        run_dir = _run_dir_with_scores(tmp_path, [self._record("e1", source_broke=False)])
+        html = render_html(build_report_payload(run_dir))
+        assert re.search(r'class="[^"]*advisory-tag', html) is None
 
     def test_family_label_reads_as_words(self) -> None:
         from evalshift_cli.reports.html import _kind_label

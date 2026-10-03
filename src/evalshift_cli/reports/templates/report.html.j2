@@ -421,7 +421,7 @@
           {% for v in invariant_violations %}
             <tr>
               <td class="mono">{{ v.prompt_id }} · {{ v.example_id }}{% if v.round_index %} · round {{ v.round_index + 1 }}{% endif %}{% if v.sample is not none %} · sample {{ v.sample + 1 }}{% endif %}</td>
-              <td><span class="badge badge-bad">{{ v.rule_id }}</span> <span class="muted">{{ v.rule_type }}</span></td>
+              <td><span class="badge badge-bad">{{ v.rule_id }}</span> <span class="muted">{{ v.rule_type }}</span>{% if not v.blocking %} <span class="badge advisory-tag" title="blocking: false in evalshift.yaml — reported, never gates">advisory</span>{% endif %}</td>
               <td>{{ v.owner or "—" }}</td>
               <td>{{ v.detail }}</td>
               <td>{{ "yes — review the rule" if v.source_also else "no" }}</td>

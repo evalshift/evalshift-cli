@@ -221,7 +221,10 @@ class InvariantViolationRow:
     """One trace rule the target broke on one example.
 
     Listed whatever the delta: a rule both models broke scores ``delta == 0``
-    and would never surface among the top regressions, yet it fails the run.
+    and would never surface among the top regressions, yet a *blocking* entry
+    still counts against ``max_invariant_violations`` under a policy.
+    ``blocking`` is the record's flag: ``False`` rows come from a
+    ``blocking: false`` entry and are reported but never gate.
     """
 
     prompt_id: str
@@ -234,6 +237,7 @@ class InvariantViolationRow:
     round_index: int
     detail: str
     source_also: bool
+    blocking: bool
     # Zero-based ordinal among the scored samples, set only on a row reduced
     # over ``samples_per_example > 1``: the same rule then appears once per
     # sample that broke it. ``None`` on a single-sample run.
@@ -407,6 +411,7 @@ def _invariant_violations(scores: list[EvalRecord]) -> list[InvariantViolationRo
                     round_index=int(v.get("round_index", 0)),
                     detail=str(v.get("detail", "")),
                     source_also=v.get("rule_id") in source_rules,
+                    blocking=r.blocking,
                     sample=sample if isinstance(sample, int) else None,
                 ),
             )
