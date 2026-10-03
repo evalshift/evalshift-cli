@@ -2876,3 +2876,38 @@ class TestInvariantViolationBudget:
 
         assert BUDGET_LABELS["max_invariant_violations"] == "Trace-rule violations"
         assert "trace rule" in BUDGET_MEANINGS["max_invariant_violations"]
+
+    def test_a_slice_that_broke_a_rule_fails_however_small(self) -> None:
+        """Review Focus 3, one scope down: an insufficient slice must not soften a break.
+
+        The slice verdict ships in the bundle and is what ``_recommendations``
+        reads to name the unsafe slices, so ``inconclusive`` here would turn
+        "keep checkout on the source model" into "do not migrate globally".
+        """
+        records = [
+            _invariant_record("e1", 1.0, 0.0),
+            *[_record(example_id=f"s{i}", delta=0.0) for i in range(6)],
+        ]
+        comparisons = [
+            _insufficient(),
+            _comparison(severity="insufficient", evaluator_name="payments", slice_name="checkout"),
+            _comparison(severity="none", slice_name="all", delta_avg_score=0.0),
+            _comparison(severity="none", slice_name="support", delta_avg_score=0.0),
+        ]
+        decision = _decide(
+            records,
+            policy=MigrationPolicy(
+                max_invariant_violations=1,
+                slices={"checkout": SliceMigrationPolicy(max_invariant_violations=0)},
+            ),
+            comparisons=comparisons,
+        )
+        checkout = decision.slices["checkout"]
+        breach = {b.name: b for b in checkout.budget_results}["max_invariant_violations"]
+        assert not breach.passed and breach.conclusive
+        assert checkout.verdict == "fail"
+        assert decision.slices["support"].verdict == "pass"
+        assert decision.verdict == "fail"
+        assert "Safe slices: support. Keep checkout on the source model." in (
+            decision.recommendations
+        )

@@ -533,14 +533,11 @@ def evaluate_migration_policy(
             else None
         )
 
-    invariant_breaches = [
-        b for b in gating_budgets if b.name == "max_invariant_violations" and not b.passed
-    ]
+    invariant_breaches = _invariant_breaches(gating_budgets)
     if invariant_breaches:
-        # A broken trace rule is an assertion the team wrote down, not a
-        # statistic: it needs no sample size to mean something, so it fails a
-        # run the paired tests found too small to judge, and it is not softened
-        # to conditional_pass by any slice rule above.
+        # `_verdict_for` already fails on these; repeated here because the
+        # slice rules above can still demote its answer to conditional_pass,
+        # and a broken trace rule is not softened by any of them.
         verdict = "fail"
         reason = _invariant_reason(invariant_breaches)
 
@@ -1262,6 +1259,11 @@ def _verdict_for(
     comparisons: list[ComparisonResult],
     budgets: list[BudgetResult],
 ) -> MigrationVerdict:
+    if _invariant_breaches(budgets):
+        # Before the small-sample early return: a broken trace rule is an
+        # assertion the team wrote down, not a statistic, so it needs no
+        # sample size to mean something -- in a slice exactly as overall.
+        return "fail"
     if comparisons and all(c.severity == "insufficient" for c in comparisons):
         return "inconclusive"
     if any(not b.passed and b.conclusive for b in budgets):
@@ -1328,6 +1330,11 @@ def _slice_budget_notes(budgets: list[BudgetResult]) -> list[str]:
         for b in budgets
         if b.scope != "overall" and not b.passed and b.conclusive
     ]
+
+
+def _invariant_breaches(budgets: list[BudgetResult]) -> list[BudgetResult]:
+    """The breached ``max_invariant_violations`` rows -- always conclusive."""
+    return [b for b in budgets if b.name == "max_invariant_violations" and not b.passed]
 
 
 def _invariant_reason(breaches: list[BudgetResult]) -> str:
