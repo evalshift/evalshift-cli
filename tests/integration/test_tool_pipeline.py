@@ -395,7 +395,7 @@ class TestBrokenHarnessReachesTheVerdictBlock:
 
 
 class TestTraceInvariantsGate:
-    """A rule the target breaks fails the run, though the source broke nothing."""
+    """A rule the target breaks fails the run, whether or not the source broke it too."""
 
     _RULES = """\
   trace_invariants:
