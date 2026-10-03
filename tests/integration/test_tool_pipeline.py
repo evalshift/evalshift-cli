@@ -436,6 +436,34 @@ class TestTraceInvariantsGate:
         assert decision["verdict"] == "fail"
         assert budgets["max_invariant_violations"]["observed"] == 20.0
         assert budgets["max_invariant_violations"]["denominator"] == 20
+        assert budgets["max_invariant_violations"]["passed"] is False
+
+    def test_a_rule_both_models_break_still_fails(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Both models call ``send_email``: tool_selection sees equivalent
+        # traces, so only the trace rule's budget can fail the run.
+        _scaffold_agent_project(tmp_path, extra_evaluators=self._RULES)
+        config = tmp_path / "evalshift.yaml"
+        config.write_text(
+            config.read_text(encoding="utf-8")
+            + "\nmigration_policy:\n  max_invariant_violations: 0\n",
+            encoding="utf-8",
+        )
+        _patch_with_tools(
+            monkeypatch,
+            tool_for_role={"source": "send_email", "target": "send_email"},
+        )
+        run_id = _run_pipeline(monkeypatch, tmp_path)
+
+        decision = self._decision(tmp_path, run_id)
+        budgets = {b["name"]: b for b in decision["budget_results"]}
+        assert decision["verdict"] == "fail"
+        assert budgets["max_invariant_violations"]["observed"] == 20.0
+        assert budgets["max_invariant_violations"]["denominator"] == 20
+        assert budgets["max_invariant_violations"]["passed"] is False
+        failed = [b["name"] for b in decision["budget_results"] if not b["passed"]]
+        assert failed == ["max_invariant_violations"]
 
     def test_clean_target_passes_the_rule(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -455,4 +483,5 @@ class TestTraceInvariantsGate:
 
         budgets = {b["name"]: b for b in self._decision(tmp_path, run_id)["budget_results"]}
         assert budgets["max_invariant_violations"]["observed"] == 0.0
+        assert budgets["max_invariant_violations"]["denominator"] == 20
         assert budgets["max_invariant_violations"]["passed"] is True
