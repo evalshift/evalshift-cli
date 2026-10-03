@@ -406,6 +406,34 @@
   </section>
 {% endif %}
 
+{% if invariant_violations %}
+  <section style="gap:20px">
+    <div class="block">
+      <div style="display:flex;align-items:baseline;gap:10px">
+        <h3>Trace rules broken</h3>
+        <span class="mono muted count-note">{{ invariant_violations|length }} by the target</span>
+      </div>
+      <p class="sub">Every rule the target broke, whatever the score change. A rule both models broke scores no change, so it never shows among the regressions below.</p>
+      <div class="panel scroll">
+        <table>
+          <thead><tr><th>Example</th><th>Rule</th><th>Owner</th><th>What happened</th><th>Source too?</th></tr></thead>
+          <tbody>
+          {% for v in invariant_violations %}
+            <tr>
+              <td class="mono">{{ v.prompt_id }} · {{ v.example_id }}{% if v.round_index %} · round {{ v.round_index + 1 }}{% endif %}{% if v.sample is not none %} · sample {{ v.sample + 1 }}{% endif %}</td>
+              <td><span class="badge badge-bad">{{ v.rule_id }}</span> <span class="muted">{{ v.rule_type }}</span></td>
+              <td>{{ v.owner or "—" }}</td>
+              <td>{{ v.detail }}</td>
+              <td>{{ "yes — review the rule" if v.source_also else "no" }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+{% endif %}
+
 {% for section in prompt_sections %}
   <section style="gap:20px">
     <div class="prompt-head">
