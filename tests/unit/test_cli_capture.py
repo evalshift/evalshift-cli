@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 
 from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
 from evalshift_cli.captures.toolset import EMPTY_TOOLSET_FINGERPRINT, fingerprint_tools
-from evalshift_cli.cli.commands.capture import _declared_tool_properties
+from evalshift_cli.cli.commands.capture import _build_suite_entries, _declared_tool_properties
 from evalshift_cli.cli.commands.init import render_minimal_config
 from evalshift_cli.cli.main import app
 from evalshift_cli.config.loader import load_config
@@ -2010,3 +2010,125 @@ def test_sync_is_silent_when_no_workflow_uses_the_action(tmp_path: Path) -> None
 
     assert result.exit_code == 0, result.stdout
     assert "CI installs" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# sync — hand-written trace_invariants survive regeneration
+# ---------------------------------------------------------------------------
+
+
+def test_sync_keeps_a_managed_suites_trace_invariants(tmp_path: Path) -> None:
+    """Review Focus 5: a contract is human-owned; regeneration must not drop it."""
+    config_path = tmp_path / "evalshift.yaml"
+    suite_path = tmp_path / "suites" / "checkout" / "golden.jsonl"
+    suite_path.parent.mkdir(parents=True)
+    suite_path.write_text("", encoding="utf-8")
+    rules = [
+        {
+            "name": "payments",
+            "rules": [{"id": "no-v1", "type": "forbidden", "tools": ["refund_v1"]}],
+        }
+    ]
+    existing = {
+        "checkout": {
+            "source": "captured",
+            "path": "suites/checkout/golden.jsonl",
+            "evaluators": {"tool_selection": [{"name": "old"}], "trace_invariants": rules},
+        },
+    }
+
+    entries, frozen = _build_suite_entries(
+        {"checkout": suite_path},
+        {"checkout": None},
+        config_path=config_path,
+        existing=existing,
+    )
+
+    assert frozen == {}
+    assert entries["checkout"]["evaluators"] == {"trace_invariants": rules}
+
+
+def test_sync_without_prior_rules_is_unchanged(tmp_path: Path) -> None:
+    config_path = tmp_path / "evalshift.yaml"
+    suite_path = tmp_path / "golden.jsonl"
+    suite_path.write_text("", encoding="utf-8")
+    entries, _ = _build_suite_entries(
+        {"s": suite_path},
+        {"s": None},
+        config_path=config_path,
+        existing={},
+    )
+    assert "evaluators" not in entries["s"]
+
+
+def test_sync_preview_of_a_frozen_suite_shows_its_trace_invariants_kept(tmp_path: Path) -> None:
+    """The ``managed: false`` preview is what sync *would* write -- rules included."""
+    config_path = tmp_path / "evalshift.yaml"
+    suite_path = tmp_path / "golden.jsonl"
+    suite_path.write_text("", encoding="utf-8")
+    rules = [{"name": "p", "rules": [{"id": "r", "type": "forbidden", "tools": ["t"]}]}]
+    prior = {
+        "managed": False,
+        "source": "captured",
+        "path": "golden.jsonl",
+        "evaluators": {"trace_invariants": rules},
+    }
+
+    entries, frozen = _build_suite_entries(
+        {"s": suite_path}, {"s": None}, config_path=config_path, existing={"s": prior}
+    )
+
+    assert entries["s"] is prior  # the frozen entry itself is written back untouched
+    assert frozen["s"]["evaluators"] == {"trace_invariants": rules}
+
+
+_HAND_WRITTEN_RULES = """\
+      trace_invariants:
+        - name: payments
+          owner: payments-team
+          rules:
+            - id: no-v1
+              type: forbidden
+              tools:
+                - refund_v1
+            - id: refund-args
+              type: arguments
+              tool: refund
+              json_schema:
+                type: object
+                required:
+                  - order_id
+"""
+
+
+def test_sync_round_trips_hand_written_trace_invariants_through_the_config(
+    tmp_path: Path,
+) -> None:
+    """End to end: rules hand-added to a managed entry survive a re-sync on disk."""
+    _write_capture(tmp_path, capture_id="cap_1", suite="alpha")
+    config = tmp_path / "evalshift.yaml"
+    _write_min_config(config)
+    assert _invoke(["sync", "--config", str(config)], tmp_path).exit_code == 0
+    text = config.read_text(encoding="utf-8")
+    assert "    evaluators:\n" in text
+    config.write_text(
+        text.replace("    evaluators:\n", "    evaluators:\n" + _HAND_WRITTEN_RULES, 1),
+        encoding="utf-8",
+    )
+    expected = load_config(config).suites["alpha"].evaluators
+    assert expected is not None
+    assert expected.trace_invariants is not None
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    override = load_config(config).suites["alpha"].evaluators
+    assert override is not None
+    assert override.trace_invariants == expected.trace_invariants
+    # Every other key is still regenerated.
+    assert override.tool_selection is not None
+    assert [e.name for e in override.tool_selection] == ["routing"]
+    # ...and the rewritten region is stable from here on.
+    settled = config.read_text(encoding="utf-8")
+    assert _invoke(["sync", "--config", str(config)], tmp_path).exit_code == 0
+    assert config.read_text(encoding="utf-8") == settled
