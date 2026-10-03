@@ -217,9 +217,13 @@ _PLAN_COPY_FILES: tuple[str, ...] = tuple(
 )
 
 
+def _whitespace_normalized(name: str) -> str:
+    """The file's text with every whitespace run collapsed to one space, so a retired
+    phrase hard-wrapped across lines (as Markdown and code comments are) still matches."""
+    return " ".join((REPO_ROOT / name).read_text(encoding="utf-8").split())
+
+
 @pytest.mark.parametrize("term", RETIRED_PLAN_TERMS)
 def test_copy_does_not_describe_the_retired_hosted_plans(term: str) -> None:
-    offenders = [
-        name for name in _PLAN_COPY_FILES if term in (REPO_ROOT / name).read_text(encoding="utf-8")
-    ]
+    offenders = [name for name in _PLAN_COPY_FILES if term in _whitespace_normalized(name)]
     assert offenders == [], f"{term!r} still appears in {offenders}"

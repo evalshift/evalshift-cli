@@ -267,7 +267,7 @@ evalshift push [RUN_ID] [--bundle PATH] [--project] [--host] [--token]
   limit warning naming the server's 100 MB hard limit and uploads anyway (the hard limit is
   server-configurable, so the CLI quotes it rather than enforcing a stale copy).
   Plan limits: server answers 402 when the org's plan does not cover the push (monthly runs,
-  seats, concurrent uploads), the org's 30-day trial ended without a subscription, or the
+  seats, concurrent runs), the org's 30-day trial ended without a subscription, or the
   subscription stopped paying. CLI prints the server's sentence plus `Upgrade: <url>` and exits 1;
   nothing uploaded, local run untouched. Never retried.
   Two policy notices, both before the success line: (1) a bundle with no decision.policy

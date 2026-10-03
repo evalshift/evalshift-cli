@@ -114,8 +114,10 @@ def _initiate_after_create(
     """The ``POST /runs`` retried after auto-creating the project, mapped like the first.
 
     It runs inside the first attempt's ``except`` clause, so its own errors would skip the
-    sibling handlers and surface as a traceback — which is exactly what the first push to a
-    new project on an expired org did (the 402 arrives on this retry, not the first call).
+    sibling handlers and surface as a traceback. ``POST /runs`` answers 404 for a missing
+    project before any entitlement check, so a 402 for the monthly run or concurrent-run
+    limit, seat overage, or a subscription that stopped paying arrives on this retry, not
+    on the first call.
 
     Args:
         client: The hosted client the first attempt used.
@@ -520,6 +522,8 @@ def _auto_create_project(client: HostedClient, *, project_slug: str) -> None:
             f"permission — check `evalshift whoami` reports this host and an org "
             f"named {org_slug!r}",
         ) from exc
+    except (HostedNetworkError, HostedError) as exc:
+        raise PushError(str(exc)) from exc
     if any(item.get("slug") == project for item in projects):
         return
     try:
@@ -535,6 +539,8 @@ def _auto_create_project(client: HostedClient, *, project_slug: str) -> None:
             f"{org_slug!r}; a scoped service-account key cannot do it — create the "
             f"project by hand, or push with an owner token",
         ) from exc
+    except (HostedNetworkError, HostedError) as exc:
+        raise PushError(str(exc)) from exc
 
 
 def _server_said(exc: HostedHTTPError) -> str:

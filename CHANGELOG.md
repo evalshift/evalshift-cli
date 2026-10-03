@@ -10,10 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `evalshift push` printed a traceback instead of the upgrade prompt when hosted EvalShift
-  refused the run with HTTP 402 right after auto-creating the project — the first push to a
-  new project on an organization whose trial has ended. It now prints the server's message
-  and the billing link and exits 1; a 402 while auto-creating the project gets the same
-  prompt instead of an access-permission hint.
+  refused the run with HTTP 402 right after auto-creating the project (over the monthly run
+  or concurrent-run limit, or a subscription that stopped paying). It now prints the
+  server's message and the billing link and exits 1. A 402 while auto-creating the
+  project — what an organization whose trial has ended gets — now shows the same prompt
+  instead of an access-permission hint.
+- `evalshift push` printed a traceback when the connection failed while auto-creating the
+  project; it now prints the error and exits 1.
 
 ### Changed
 

@@ -760,7 +760,7 @@ The full field-by-field data contract lives in [docs/hosted.md — Privacy model
 
 ### Plan limits
 
-Local runs are always unlimited — plan limits apply only to what you push. Every new hosted account gets a 30-day Pro trial (no card) that covers every org it creates; after that each org needs its own Pro subscription. When a push exceeds your org's plan (monthly runs, seats, concurrent uploads), the org's trial ended without a subscription, or the subscription has stopped paying, the server answers `402` and the CLI prints exactly what it said:
+Local runs are always unlimited — plan limits apply only to what you push. Every new hosted account gets a 30-day Pro trial (no card) that covers every org it creates; after that each org needs its own Pro subscription. When a push exceeds your org's plan (monthly runs, seats, concurrent runs), the org's trial ended without a subscription, or the subscription has stopped paying, the server answers `402` and the CLI prints exactly what it said:
 
 ```
 ✗ EvalShift: this run needs a paid plan.

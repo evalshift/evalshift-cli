@@ -241,7 +241,7 @@ Every new hosted account gets a 30-day Pro trial (no card) that covers every
 org it creates; after that each org needs its own Pro subscription.
 
 When a push exceeds your organization's plan — monthly runs, seats, concurrent
-uploads — the org's trial ended without a subscription, or the subscription has
+runs — the org's trial ended without a subscription, or the subscription has
 stopped paying, the server refuses the push with HTTP 402 and the CLI prints
 exactly what the server said:
 

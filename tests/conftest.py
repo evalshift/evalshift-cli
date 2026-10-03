@@ -40,7 +40,7 @@ import pytest
 
 from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.hosted.bundle import BundleBuildResult, build_bundle
-from evalshift_cli.hosted.client import HostedHTTPError
+from evalshift_cli.hosted.client import HostedError, HostedHTTPError
 from evalshift_cli.runner.checkpoint import append_call, write_state
 from evalshift_cli.runner.models import Call, RunModels, RunState
 
@@ -264,8 +264,8 @@ class FakeHostedClient:
     projects: list[dict[str, Any]] | None = None
     created_project: dict[str, Any] | None = None
     finalize_error: HostedHTTPError | None = None
-    list_projects_error: HostedHTTPError | None = None
-    create_project_error: HostedHTTPError | None = None
+    list_projects_error: HostedError | None = None
+    create_project_error: HostedError | None = None
     host: str = "https://api.evalshift.test"
     on_finalize: Callable[[], None] | None = None
     initiate_calls: int = 0
