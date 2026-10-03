@@ -313,7 +313,7 @@ last from the first two, but it does not say *how much* was counted. Each
 | `max_critical_regressions` | the same records |
 | `max_tool_argument_drift` | the scope's `tool_arguments` rows only |
 | `max_tool_divergence` | the scope's `tool_selection.divergence` rows only |
-| `max_invariant_violations` | the scope's blocking `trace_invariants` rows only; the row is emitted only when there is at least one |
+| `max_invariant_violations` | the distinct examples (`prompt_id`, `example_id`) with a blocking `trace_invariants` row in the scope — one per example however many entries scored it; the row is emitted only when there is at least one |
 | `max_cost_increase` / `max_latency_increase` | the error-free calls both averages were taken over, across both roles |
 
 The first three are counted over *measurements*, not over examples. An
@@ -396,10 +396,13 @@ express the budget.
 
 ### A broken trace rule is a finding, not a statistic
 
-`max_invariant_violations` counts the examples on which the target broke a
-blocking [`trace_invariants`](configuration.md#evaluatorstrace_invariants)
-rule — any `trace_invariants` row whose target score is below `1.0`, which
-includes a row averaged over repeated samples where one sample broke a rule. It
+`max_invariant_violations` counts the distinct examples on which the target
+broke a blocking [`trace_invariants`](configuration.md#evaluatorstrace_invariants)
+rule — any `(prompt_id, example_id)` with a blocking `trace_invariants` row whose
+target score is below `1.0`, which includes a row averaged over repeated samples
+where one sample broke a rule. Each entry writes its own row, so an example that
+broke rules in two entries is still one example, over a denominator of distinct
+examples rather than rows. It
 is judged against the rules alone, so a rule the source broke on the same
 example still counts.
 
@@ -415,9 +418,10 @@ its count. When the source broke the same rule on the same example,
 it no longer matches the toolset, and only its owner can say which. That line
 is advice, never an exemption.
 
-The row exists only in scopes that scored at least one `trace_invariants` row.
-A project with no trace rules sees no new budget, and a slice that holds no
-in-scope example has no row to breach.
+The row exists only in scopes that scored at least one blocking
+`trace_invariants` row. A project with no trace rules, or only advisory ones,
+sees no new budget row, and a slice that holds no in-scope example has no row
+to breach.
 
 ### Non-applicable measurements are absent, not scored
 

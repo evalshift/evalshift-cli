@@ -201,7 +201,10 @@ replayed rounds, so an example counts as diverged if **any** round diverged.
 on which the target broke at least one rule of a blocking
 [`trace_invariants`](#evaluatorstrace_invariants) evaluator, judged against the
 rules alone — a rule the source broke too still counts against the target. The
-default `0` fails on the first broken rule. A row averaged over
+default `0` fails on the first broken rule. Examples are counted distinctly by
+`(prompt_id, example_id)`: every `trace_invariants` entry writes its own row, and
+an example that broke rules in two entries counts once, over a denominator of
+the distinct examples with a blocking row. A row averaged over
 `samples_per_example` repeats counts when any one sample broke a rule. Because
 a rule is an assertion the team wrote down rather than a statistic, a breach is
 always conclusive: no interval softens it, it carries no `1/n` granularity
@@ -209,8 +212,9 @@ warning, and it turns `inconclusive` and `conditional_pass` into `fail` even
 when the suite is too small for the paired tests. The same holds per slice: a
 slice whose own `max_invariant_violations` breaches reads `fail` however few
 comparisons it has. The budget's row appears only in scopes that scored at least
-one `trace_invariants` row, so a project with no trace rules sees no change. It
-is overridable per slice like the others.
+one blocking `trace_invariants` row, so a project with no trace rules (or only
+advisory ones) sees no new budget row. It is overridable per slice like the
+others.
 
 A `tool_selection.conformance` row where **both** models missed the recorded
 ground truth by the same margin is excluded from every policy rate: its zero
@@ -280,7 +284,7 @@ Two behaviours to know:
   `0/0` default looks clean but measures nothing.
 
 * **`max_invariant_violations` is conclusive by construction.** It counts
-  examples, so it has no interval and no "too small to be sure": a breach
+  distinct examples, so it has no interval and no "too small to be sure": a breach
   fails the run (or the slice) outright, overriding `inconclusive` and
   `conditional_pass`, and the verdict's `reason` names the scope and the
   count. Only blocking `trace_invariants` evaluators count toward it. When the
@@ -691,9 +695,9 @@ migration_policy:
 | Field        | Type   | Default      | Description |
 | ------------ | ------ | ------------ | ----------- |
 | `name`       | string | (required)   | Identifier surfaced in scores and reports. |
-| `applies_to` | list   | `["*"]`      | Glob list of prompt ids. **Enforced here**, unlike on the other families: a prompt outside these globs is never checked, gets no row and is never counted. |
+| `applies_to` | list   | `["*"]`      | Glob list of prompt ids. **Enforced here**, unlike on the other families: a prompt outside these globs is never checked, gets no row and is never counted. If the globs match no prompt in a run (with `traces: imported`, no imported trace pair), `evaluate` prints a warning naming the entry and its `applies_to`, because none of its rules were checked (`compare` scores quietly and does not print it); matching at least one prompt stays silent. |
 | `blocking`   | bool   | `true`       | `true` counts target violations toward [`max_invariant_violations`](#migration_policy); `false` still checks and reports them, but never gates. |
-| `traces`     | string | `replayed`   | `replayed` checks the tool calls `evalshift run` replayed (a pair whose replay recorded no tool trace gets no row). `imported` checks the traces brought in with [`evalshift traces import`](traces.md). |
+| `traces`     | string | `replayed`   | `replayed` checks the tool calls `evalshift run` replayed (a pair whose replay recorded no tool trace gets no row). `imported` checks the traces brought in with [`evalshift traces import`](traces.md); `evaluate` fails on a run with no `traces.jsonl`, naming `trace_invariants (traces: imported)` in the error. |
 | `owner`      | string | `null`       | Free text (a team or a handle). Echoed onto every record and into the report, so a violation names who to ask. Nothing enforces it. |
 | `rules`      | list   | (required)   | At least one rule. Every rule has an `id` (unique within the entry; it names violations in reports) and a `type`. |
 
@@ -730,7 +734,8 @@ violations, each tagged with its `sample` ordinal. The HTML report's
 **Trace rules broken** panel and `report.json`'s `invariant_violations` list
 every rule the target broke, whatever the delta — including those of advisory
 (`blocking: false`) entries, which never count toward the budget — with the
-owner and whether the source broke it too.
+owner and whether the source broke it too. Each row carries the entry's
+`blocking` flag, and the panel tags `blocking: false` rows **advisory**.
 
 Four things to know:
 

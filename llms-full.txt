@@ -616,7 +616,11 @@ evaluators:                         # every evaluator config also takes blocking
   trace_invariants:                 # list; hand-written rules, BOTH sides judged vs the RULES
     - name: str                     #   (not vs the source): a rule the source also broke still
       applies_to: ["*"]             #   counts. applies_to IS ENFORCED here (other families
-      #   accept it unenforced): an out-of-scope prompt gets no row and is never counted
+      #   accept it unenforced): an out-of-scope prompt gets no row and is never counted.
+      #   Globs matching NO prompt (imported: no trace pair) -> evaluate prints a warning
+      #   naming the entry + applies_to (not under quiet, so not in `compare`); >=1 match
+      #   stays silent.
+      #   traces: imported with no traces.jsonl -> evaluate errors naming the family.
       blocking: bool = true         # false = checked + reported, never counts toward the budget
       traces: replayed|imported = replayed   # imported = traces from `traces import`
       owner: str|null = null        # free text, echoed onto records + report; unenforced
@@ -845,14 +849,17 @@ resolved provider equals an arm's renders a third "The judge graded its own rela
 after the two above (self-preference bias; advisory, no policy knob). Empty when no config is
 loadable, no judge contributed, or no judge overlaps. Provider "other" never matches.
 Trace-rule violations (report.json invariant_violations: list of {prompt_id, example_id,
-evaluator_name, owner, rule_id, rule_type, tool, round_index, detail, source_also, sample}):
+evaluator_name, owner, rule_id, rule_type, tool, round_index, detail, source_also, blocking,
+sample}):
 one row per violation in a trace_invariants record's target_violations, WHATEVER the delta (a
 rule both sides broke scores delta 0 and never reaches the top regressions, yet fails the run);
 errored records list nothing. source_also = the source broke the same rule_id on that example.
 sample = null on a single-sample run, else the zero-based ordinal among the samples that
 scored successfully (NOT the raw sample_index). Advisory (blocking: false) entries' violations
-ARE listed; only blocking ones count toward max_invariant_violations. report.html renders the
-same rows as a "Trace rules broken" panel (rule, owner, detail, "Source too?").
+ARE listed; only blocking ones count toward max_invariant_violations. blocking = the record's
+flag (false = advisory entry). report.html renders the same rows as a "Trace rules broken"
+panel (rule, owner, detail, "Source too?"), tagging blocking=false rows with a muted
+"advisory" badge.
 
 ## Migration policy verdict algorithm
 
@@ -883,16 +890,19 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
   tool divergence) report conclusive: false when the scope scored 0 records - their 0/0 default
   measures nothing. The two per-axis budgets also need one of THEIR OWN rows: a scope with no
   tool_arguments evaluator, or with divergence: off, is unmeasured however much else it scored.
-- max_invariant_violations: a COUNT (not a rate) of examples whose blocking trace_invariants
-  row has target_score < 1.0 (a row averaged over samples counts if ANY sample broke a rule);
+- max_invariant_violations: a COUNT (not a rate) of DISTINCT examples (prompt_id, example_id)
+  with any blocking trace_invariants row whose target_score < 1.0 (each entry writes its own
+  row, so an example breaking two entries counts ONCE; a row averaged over samples counts if
+  ANY sample broke a rule);
   judged vs the rules alone, so a rule the source broke too still counts. CONCLUSIVE BY
   CONSTRUCTION: no CI (ci_low/ci_high null), no 1/n warning; a breach -> fail, overriding
   inconclusive and conditional_pass, even when every comparison is insufficient, and in a
   SLICE exactly as overall (a slice whose own max_invariant_violations breaches reads fail
   however few comparisons it has). reason names the worst scope + count. Source broke the same
   rule on the same example -> one recommendations line (both models break it, or the rule is
-  stale: review with its owner) -- advice, not an exemption. The budget row is emitted ONLY in
-  scopes that scored >= 1 trace_invariants row; denominator = those blocking rows.
+  stale: review with its owner; its example count is distinct examples too) -- advice, not an
+  exemption. The budget row is emitted ONLY in scopes that scored >= 1 BLOCKING
+  trace_invariants row; denominator = distinct examples with such a row.
 - A SHARED GROUND-TRUTH MISS is not equivalence. A tool_selection.conformance row grades each
   side absolutely, so both can miss at the same height (0.0/0.0 where both models called a tool
   the recording never made). delta == 0 read as "equivalent" and is the whole of the
@@ -938,7 +948,8 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
   complement, same rows) / max_critical_regressions - counted over MEASUREMENTS, so an
   evaluator scoring two axes contributes two rows per example and that is correct;
   tool_arguments rows for max_tool_argument_drift; tool_selection.divergence rows for
-  max_tool_divergence; blocking trace_invariants rows for max_invariant_violations; the
+  max_tool_divergence; distinct examples with a blocking trace_invariants row for
+  max_invariant_violations; the
   error-free calls behind both averages (both roles summed,
   0 when either role has none) for max_cost_increase / max_latency_increase. Slices report
   their own counts. Three readings, all distinct: 0 = counted and the sample was empty
