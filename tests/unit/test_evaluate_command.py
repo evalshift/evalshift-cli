@@ -477,6 +477,7 @@ class TestEvaluateErrors:
 
         assert result.exit_code == 1
         assert "agent_trace evaluators require imported traces" in result.stdout
+        assert "trace_invariants" not in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -1690,3 +1691,164 @@ class TestTraceInvariantsWiring:
         (cell,) = cells
         assert cell.record is not None
         assert set(cell.record.metadata) == {"raw", "samples"}
+
+
+# ---------------------------------------------------------------------------
+# trace_invariants that checked nothing -- an applies_to typo must not be silent
+# ---------------------------------------------------------------------------
+
+
+def _write_invariants_config(
+    tmp_path: Path,
+    *,
+    applies_to: list[str],
+    traces: str = "replayed",
+    with_agent_trace: bool = False,
+) -> Path:
+    agent_trace_block = (
+        """
+          agent_trace:
+            - name: trace_safety
+              dangerous_tools: [issue_refund]"""
+        if with_agent_trace
+        else ""
+    )
+    cfg_yaml = f"""
+        version: 1
+        prompts:
+          - id: greet
+            detection: manual
+            content: "Hi {{name}}"
+            variables: [name]
+        defaults:
+          source_model: gemini-2.5-flash
+          target_model: gemini-2.5-pro
+        evaluators:
+          trace_invariants:
+            - name: payments_contract
+              applies_to: {json.dumps(applies_to)}
+              traces: {traces}
+              rules:
+                - id: no-v1
+                  type: forbidden
+                  tools: [refund_v1]{agent_trace_block}
+    """
+    path = tmp_path / "evalshift.yaml"
+    path.write_text(cfg_yaml, encoding="utf-8")
+    return path
+
+
+def _evaluate_output(tmp_path: Path, *, quiet: bool = False) -> str:
+    from evalshift_cli.cli.commands.evaluate import run_evaluate
+
+    console = Console(record=True, width=400)
+    run_evaluate(
+        run_id="r_20260601_aaaaaa",
+        config_path=tmp_path / "evalshift.yaml",
+        runs_base=tmp_path / ".evalshift" / "runs",
+        console=console,
+        quiet=quiet,
+    )
+    return console.export_text()
+
+
+def _write_greet_traces(tmp_path: Path) -> None:
+    run_dir = tmp_path / ".evalshift" / "runs" / "r_20260601_aaaaaa"
+    lines = [
+        _imported_trace_line("greet", role, tool).replace('"e1"', f'"{example_id}"')
+        for example_id in ("ex1", "ex2")
+        for role, tool in (("source", "lookup"), ("target", "lookup"))
+    ]
+    (run_dir / TRACES_FILENAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class TestTraceInvariantsThatCheckedNothing:
+    def test_a_replayed_evaluator_matching_no_prompt_warns(self, tmp_path: Path) -> None:
+        _write_invariants_config(tmp_path, applies_to=["checkout-*"])
+        _scaffold_run(tmp_path)
+
+        output = _evaluate_output(tmp_path)
+
+        assert "payments_contract" in output
+        assert "checked nothing" in output
+        assert "['checkout-*']" in output
+
+    def test_an_imported_evaluator_matching_no_trace_pair_warns(self, tmp_path: Path) -> None:
+        _write_invariants_config(tmp_path, applies_to=["pay*"], traces="imported")
+        _scaffold_run(tmp_path)
+        _write_greet_traces(tmp_path)
+
+        output = _evaluate_output(tmp_path)
+
+        assert "payments_contract" in output
+        assert "checked nothing" in output
+        assert "['pay*']" in output
+        assert "imported trace pair" in output
+
+    def test_partial_scoping_stays_silent(self, tmp_path: Path) -> None:
+        _write_invariants_config(tmp_path, applies_to=["gre*", "checkout-*"])
+        _scaffold_run(tmp_path)
+
+        assert "checked nothing" not in _evaluate_output(tmp_path)
+        state = read_state(tmp_path / ".evalshift" / "runs" / "r_20260601_aaaaaa")
+        assert [(c.evaluator_name, c.attempted) for c in state.evaluator_coverage] == [
+            ("payments_contract", 2)
+        ]
+
+    def test_an_imported_evaluator_that_scored_stays_silent(self, tmp_path: Path) -> None:
+        _write_invariants_config(tmp_path, applies_to=["gre*"], traces="imported")
+        _scaffold_run(tmp_path)
+        _write_greet_traces(tmp_path)
+
+        assert "checked nothing" not in _evaluate_output(tmp_path)
+        scores = tmp_path / ".evalshift" / "runs" / "r_20260601_aaaaaa" / SCORES_FILENAME
+        assert len(scores.read_text(encoding="utf-8").splitlines()) == 2
+
+    def test_quiet_suppresses_the_warning(self, tmp_path: Path) -> None:
+        _write_invariants_config(tmp_path, applies_to=["checkout-*"])
+        _scaffold_run(tmp_path)
+
+        assert "checked nothing" not in _evaluate_output(tmp_path, quiet=True)
+
+    def test_the_cli_shows_the_warning(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _write_invariants_config(tmp_path, applies_to=["checkout-*"])
+        run_id = _scaffold_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["evaluate", run_id])
+
+        assert result.exit_code == 0
+        assert "checked nothing" in " ".join(result.stdout.split())
+
+
+class TestMissingImportedTracesNamesTheFamily:
+    def test_imported_trace_invariants_alone_is_named(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _write_invariants_config(tmp_path, applies_to=["*"], traces="imported")
+        run_id = _scaffold_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["evaluate", run_id])
+
+        assert result.exit_code == 1
+        stdout = " ".join(result.stdout.split())
+        assert "trace_invariants (traces: imported) evaluators require imported traces" in stdout
+        assert "agent_trace" not in stdout
+
+    def test_both_families_are_named(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _write_invariants_config(
+            tmp_path, applies_to=["*"], traces="imported", with_agent_trace=True
+        )
+        run_id = _scaffold_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["evaluate", run_id])
+
+        assert result.exit_code == 1
+        stdout = " ".join(result.stdout.split())
+        assert (
+            "agent_trace and trace_invariants (traces: imported) evaluators require imported traces"
+        ) in stdout

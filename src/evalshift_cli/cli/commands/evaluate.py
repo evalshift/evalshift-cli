@@ -44,6 +44,7 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -81,6 +82,7 @@ from evalshift_cli.evaluators.tool_arguments import (
 from evalshift_cli.evaluators.tool_models import ToolSpec
 from evalshift_cli.evaluators.tool_selection import ToolSelectionEvaluator
 from evalshift_cli.evaluators.tool_trace_structure import ToolTraceStructureEvaluator
+from evalshift_cli.evaluators.trace_invariants import KIND as TRACE_INVARIANTS_KIND
 from evalshift_cli.evaluators.trace_invariants import build_trace_invariants_evaluator
 from evalshift_cli.models.capabilities import honors_temperature
 from evalshift_cli.models.client import ModelClient
@@ -241,6 +243,10 @@ def run_evaluate(
             quiet=quiet,
         ),
     )
+
+    if not quiet:
+        for evaluator in _unchecked_trace_invariants(evaluators, coverage):
+            console.print(_unchecked_trace_invariants_warning(evaluator))
 
     output_path = run_dir / SCORES_FILENAME
     with output_path.open("w", encoding="utf-8") as fh:
@@ -580,6 +586,48 @@ def _applies(evaluator: Evaluator, prompt_id: str) -> bool:
     """
     applies = getattr(evaluator, "applies", None)
     return True if applies is None else bool(applies(prompt_id))
+
+
+def _unchecked_trace_invariants(
+    evaluators: list[Evaluator],
+    coverage: list[EvaluatorCoverage],
+) -> list[Evaluator]:
+    """The ``trace_invariants`` evaluators that were handed no pair at all.
+
+    :func:`_applies` gives an out-of-scope pair no cell, so an ``applies_to``
+    that matches nothing leaves no row *and* no coverage entry: the run
+    would read clean without a word about the rules. Any cell -- recorded,
+    errored or unmeasured -- books a coverage entry, so a missing entry is
+    exactly "checked nothing". Partial scoping (one prompt matched) has an
+    entry and stays silent.
+
+    Args:
+        evaluators: Every evaluator built for the run.
+        coverage: The run's per-axis coverage from :func:`_coverage_for`.
+
+    Returns:
+        The ``trace_invariants`` evaluators with no coverage entry, in
+        configured order.
+    """
+    attempted = {c.evaluator_name for c in coverage if c.kind == TRACE_INVARIANTS_KIND}
+    return [
+        e
+        for e in evaluators
+        if _evaluator_kind(e) == TRACE_INVARIANTS_KIND and e.name not in attempted
+    ]
+
+
+def _unchecked_trace_invariants_warning(evaluator: Evaluator) -> str:
+    """The console line for a ``trace_invariants`` evaluator that checked nothing."""
+    config = getattr(evaluator, "config", None)
+    applies_to = list(getattr(config, "applies_to", ["*"]))
+    target = "imported trace pair" if _is_agent_trace_evaluator(evaluator) else "pair"
+    return (
+        f"[yellow]⚠[/yellow] trace_invariants evaluator {escape(repr(evaluator.name))} "
+        f"checked nothing: applies_to {escape(repr(applies_to))} matched no {target} "
+        "in this run, so none of its rules were checked. Check the globs against "
+        "the run's prompt ids."
+    )
 
 
 def _pair_calls(run_dir: Path) -> list[_PairedCalls]:
@@ -953,6 +1001,20 @@ def _cells_for(
     ]
 
 
+def _imported_trace_families(evaluators: list[Evaluator]) -> str:
+    """Name the configured families that read ``traces.jsonl``, in a stable order.
+
+    Both ``agent_trace`` and ``trace_invariants`` with ``traces: imported``
+    land here, and an error that named only the first sent a user who
+    configured only the second looking for an evaluator they never wrote.
+    """
+    labels = {
+        TRACE_INVARIANTS_KIND: "trace_invariants (traces: imported)",
+    }
+    kinds = sorted({_evaluator_kind(e) for e in evaluators})
+    return " and ".join(labels.get(kind, kind) for kind in kinds)
+
+
 async def _score_agent_traces(
     *,
     run_dir: Path,
@@ -963,7 +1025,7 @@ async def _score_agent_traces(
     traces_path = run_dir / TRACES_FILENAME
     if not traces_path.exists():
         raise EvaluatorError(
-            "agent_trace evaluators require imported traces. "
+            f"{_imported_trace_families(evaluators)} evaluators require imported traces. "
             f"Run: evalshift traces import {run_id} --source ... --target ...",
         )
     try:
