@@ -123,7 +123,11 @@ inherited. See
 Hand edits inside the markers are regenerated away on the next sync. To keep
 them — a `severity_floor: high` on `routing`, a per-field strategy — set
 `managed: false` on that suite's entry; sync then prints what it would have
-written instead of writing it.
+written instead of writing it. The one exception is a hand-written
+`evaluators.trace_invariants` block: no capture can derive a team's rules, so
+sync carries it into the regenerated entry verbatim, even though the marker
+comment says hand edits are overwritten. See
+[Configuration → `managed`](configuration.md#managed).
 
 > **Note:** `structural.length` is intentionally **not** in the
 > scaffolded config. Agent runs frequently produce empty `final_text`
@@ -437,6 +441,7 @@ together and `run` replays each one with its recorded history prefix. See
 | `tool_selection`       | You care about *which* tools fire (most common).        |
 | `tool_arguments`       | You care about *what* the model passes to each tool.    |
 | `tool_trace_structure` | You care about call counts, parallelism, or refusals.   |
+| `trace_invariants`     | A rule must hold whatever the source did (auth before a charge, at most one charge, argument bounds). |
 
 You can run multiple at once. Each becomes an independent comparison
 in `analysis.json`, with the existing Benjamini-Hochberg correction
@@ -459,6 +464,18 @@ tool_selection:
 It scores the same recall, counting duplicates (two expected `archive_project`
 calls need two actual ones) and ignoring extra calls, without penalising a
 permutation. Call counts are `tool_trace_structure`'s job, not this one's.
+
+When an order genuinely matters — authenticate before charging — don't rely on
+the recording's order to say so. Write it as an `order` rule under
+[`trace_invariants`](configuration.md#evaluatorstrace_invariants), which checks
+both models against the rule rather than against each other, and keep
+`expected_set` for the fan-out.
+
+`trace_invariants` is also the rule-based counterpart to `agent_trace`'s
+`dangerous_tools`: that one flags a target that made *more* dangerous calls
+than the source, so a dangerous call both made passes; a `forbidden` or
+`call_count` rule fails the target whatever the source did. It reads replayed
+traces by default and imported ones with `traces: imported`.
 
 ### Scoring free-text arguments
 

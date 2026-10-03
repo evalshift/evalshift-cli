@@ -203,8 +203,9 @@ evalshift report <run-id> --open
 ```
 
 Configure `evaluators.agent_trace` to compare tool order, argument
-drift, extra dangerous actions, and missing verification steps. See
-[Agent traces](traces.md) for the JSONL schema.
+drift, extra dangerous actions, and missing verification steps, or
+`evaluators.trace_invariants` with `traces: imported` to hold both sides to
+rules you write. See [Agent traces](traces.md) for the JSONL schema.
 
 ## 9. Optional: push to hosted EvalShift
 

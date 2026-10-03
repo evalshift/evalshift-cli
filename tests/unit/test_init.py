@@ -17,6 +17,7 @@ import yaml
 from typer.testing import CliRunner
 
 import evalshift_cli
+from evalshift_cli.analysis.policy import BUDGET_LABELS
 from evalshift_cli.cli.commands._agents import (
     AGENT_INSTRUCTIONS_FILENAME,
     DEFAULT_AGENT_CONTEXT_FILE,
@@ -176,10 +177,24 @@ class TestInitHappy:
             "min_equivalence_rate: 0.75",
             "max_tool_argument_drift: 0.20",
             "max_tool_divergence: 0.20",
+            "max_invariant_violations: 0",
             "max_cost_increase: 0.30",
             "max_latency_increase: 0.30",
         ):
             assert f"  {line}" in body
+
+    @pytest.mark.parametrize("profile", sorted(INIT_PROFILE_POLICIES))
+    def test_every_profile_scaffolds_every_budget(self, profile: str) -> None:
+        """A budget a profile leaves out is one its reader never learns exists.
+
+        ``BUDGET_LABELS`` names every budget the policy emits a row for, the
+        CLI-only ones (``max_tool_divergence``, ``max_invariant_violations``)
+        included. ``tool_argument_drift_floor`` and ``fail_on_dropped_params``
+        are not budgets, so they are absent from both by design.
+        """
+        block = INIT_PROFILE_POLICIES[profile]
+        missing = [name for name in BUDGET_LABELS if f"\n  {name}: " not in block]
+        assert not missing, f"profile {profile!r} omits budget(s) {missing}"
 
     def test_prints_capture_first_next_steps(self, in_tmp: Path) -> None:
         result = runner.invoke(app, ["init"])
@@ -207,7 +222,7 @@ class TestInitPolicyDocsMatchTheScaffold:
     def test_every_budget_is_parsed(self) -> None:
         """Guard the parser itself: an empty list would pass every doc check."""
         pairs = self._policy_pairs()
-        assert len(pairs) == 7, pairs
+        assert len(pairs) == 8, pairs
         assert all(pair.count(": ") == 1 for pair in pairs), pairs
 
     @pytest.mark.parametrize("doc_name", POLICY_DOC_FILENAMES)

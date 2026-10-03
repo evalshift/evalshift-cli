@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `evaluators.trace_invariants`: hand-written rules over tool-call traces —
+  `forbidden`, `required`, `order`, `call_count` (min/max/exact per tool) and
+  `arguments` (JSON Schema) — checked on both sides of every pair, on replayed
+  traces or (`traces: imported`) on imported ones. A rule the target breaks
+  counts whatever the source did. Its `applies_to` is enforced: a prompt
+  outside the globs is never checked.
+- `migration_policy.max_invariant_violations` (default `0`, per-slice
+  overridable): examples on which the target broke a blocking trace rule. A
+  breach fails the run even when the suite is too small for statistics, and a
+  slice whose own budget breaches reads `fail` however few comparisons it has.
+  Pushed bundles' `decision.policy` now always carries the field, so pushing
+  needs an evalshift-server that accepts `max_invariant_violations` in policy
+  snapshots; this CLI release waits on that server deploy.
+- The HTML report lists every broken trace rule in a "Trace rules broken"
+  panel, with its owner and whether the source broke it too — advisory
+  (`blocking: false`) entries included, though only blocking ones count
+  toward the budget. `report.json` carries the same rows under a new
+  top-level `invariant_violations` key.
+- `evalshift init` scaffolds `max_invariant_violations: 0` in every
+  `--profile` policy block, beside the other budgets.
+
+### Changed
+
+- Upgrading moves the resume `config_hash`: the new config fields are part of
+  every config's canonical dump, so a run left in progress by an older CLI
+  cannot be `--resume`d after upgrading (it fails with the usual config-hash
+  mismatch). Start a fresh run; cached responses are reused.
+### Fixed
+
+- `capture sync` no longer drops a managed suite's hand-written
+  `evaluators.trace_invariants` when it regenerates the entry. The marker
+  comment still says hand edits are overwritten; this block is the one
+  exception.
+
 ## [1.2.2] - 2026-10-05
 
 ### Fixed

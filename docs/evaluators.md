@@ -22,7 +22,8 @@ inspection and excluded from slicing, the paired tests and the policy
 rates. The run always completes.
 
 EvalShift ships four families (plus `agent_trace` for
-[imported external traces](traces.md)):
+[imported external traces](traces.md), and `trace_invariants` for
+[hand-written trace rules](#trace-invariants)):
 
 ## Structural (deterministic, free)
 
@@ -198,6 +199,32 @@ tool evaluators at all. See
 [Agent migrations](agents.md#configuration) and
 [Configuration → per-suite evaluators](configuration.md#per-suite-evaluators).
 
+### Trace invariants
+
+Every other tool evaluator treats "the source did it" as correct:
+`tool_selection` divergence, `tool_arguments` against the source and
+`agent_trace`'s `dangerous_tools` all measure how far the target moved from
+the source, so a wrong call both models make scores as agreement.
+`trace_invariants` judges **both** sides against rules your team wrote —
+`forbidden` tools, `required` tools, an `order` between two tools, a
+`call_count` (min, max or exact per tool) and `arguments` that must satisfy a
+JSON Schema. A rule the target breaks counts against it whatever the source
+did, and `migration_policy.max_invariant_violations` (default `0`) fails the
+run on it, even on a suite too small for statistics.
+
+Write rules only for invariants where a silent miss is expensive: auth before
+a write, a deprecated endpoint that must stay unused, at most one charge,
+argument bounds. They are a short contract next to the config, not a second
+copy of the suite; production traces stay the broad corpus that the other
+evaluators compare.
+
+Keep the split clean. Captured `expected_tools` are the *recording*, and
+`conformance: expected` grades their order as recorded — including order that
+was incidental. An ordering that *matters* belongs in an `order` rule, where it
+is stated once, owned, and checked on every in-scope trace, not in the
+recording. Configuration, rule semantics and scoring:
+[Configuration → `evaluators.trace_invariants`](configuration.md#evaluatorstrace_invariants).
+
 ## Mixing evaluators
 
 You can configure several at once. They all run on every (prompt,
@@ -221,6 +248,7 @@ Per (prompt, example) pair, each evaluator means:
 | llm_judge              | 1 judge model completion                |
 | tool_selection         | $0 (compares parsed traces only)        |
 | tool_trace_structure   | $0 (compares parsed traces only)        |
+| trace_invariants       | $0 (checks parsed traces only)          |
 | tool_arguments         | $0 without an `evaluators.semantic` block (free text uses `difflib`). With one, embedding calls per free-text or `semantic`-strategy field (cached) |
 
 A 100-example suite with 1 prompt and 4 evaluators (2 structural +
