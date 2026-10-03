@@ -30,7 +30,7 @@ dependencies = [
     # The capture SDK (import name `evalshift`). Stdlib-only, so it adds nothing to
     # the environment; declared so one `pip install evalshift` serves both
     # instrumenting an agent and running evaluations, and so `import evalshift` is
-    # always the SDK. See docs/superpowers/specs/2026-09-09-namespace-collision-design.md.
+    # always the SDK. See the co-install note in DOCS.md.
     "evalshift-sdk>=0.4.0",
     "typer>=0.12",
     "pydantic>=2.5",
