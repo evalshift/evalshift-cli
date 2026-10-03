@@ -12,6 +12,8 @@ from pydantic import ValidationError
 from evalshift_cli.config.models import (
     DEFAULT_JUDGE_MODEL,
     AgentTraceEvaluatorConfig,
+    ArgumentsRule,
+    CallCountRule,
     Defaults,
     EvalShiftConfig,
     EvaluatorsConfig,
@@ -22,7 +24,9 @@ from evalshift_cli.config.models import (
     SliceMigrationPolicy,
     StructuralEvaluatorConfig,
     ToolArgumentsEvaluatorConfig,
+    ToolOrderRule,
     ToolSelectionEvaluatorConfig,
+    TraceInvariantsEvaluatorConfig,
 )
 
 # ---------------------------------------------------------------------------
@@ -672,3 +676,107 @@ class TestSamplesPerExample:
     def test_bounds(self, bad: int) -> None:
         with pytest.raises(ValidationError):
             Defaults(samples_per_example=bad)
+
+
+class TestTraceInvariantsConfig:
+    def _cfg(self, **overrides: object) -> TraceInvariantsEvaluatorConfig:
+        payload: dict[str, object] = {
+            "name": "payments_contract",
+            "rules": [
+                {"id": "auth-first", "type": "order", "before": "authenticate", "after": "charge"},
+                {"id": "one-charge", "type": "call_count", "tool": "charge", "max_calls": 1},
+            ],
+            **overrides,
+        }
+        return TraceInvariantsEvaluatorConfig.model_validate(payload)
+
+    def test_rules_parse_into_their_own_types(self) -> None:
+        cfg = self._cfg()
+        assert isinstance(cfg.rules[0], ToolOrderRule)
+        assert isinstance(cfg.rules[1], CallCountRule)
+        assert cfg.traces == "replayed"
+        assert cfg.applies_to == ["*"]
+        assert cfg.blocking is True
+        assert cfg.owner is None
+
+    def test_an_unknown_rule_type_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            self._cfg(rules=[{"id": "x", "type": "sometimes", "tools": ["a"]}])
+
+    def test_rule_ids_must_be_unique(self) -> None:
+        with pytest.raises(ValidationError, match="duplicate rule id"):
+            self._cfg(
+                rules=[
+                    {"id": "dup", "type": "forbidden", "tools": ["a"]},
+                    {"id": "dup", "type": "forbidden", "tools": ["b"]},
+                ],
+            )
+
+    def test_an_empty_rule_list_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            self._cfg(rules=[])
+
+    def test_order_rejects_a_tool_ordered_before_itself(self) -> None:
+        with pytest.raises(ValidationError, match="before and after"):
+            self._cfg(rules=[{"id": "x", "type": "order", "before": "a", "after": "a"}])
+
+    def test_an_invalid_json_schema_is_rejected_at_load(self) -> None:
+        with pytest.raises(ValidationError, match="json_schema"):
+            self._cfg(
+                rules=[
+                    {
+                        "id": "amount",
+                        "type": "arguments",
+                        "tool": "charge",
+                        "json_schema": {"type": "not-a-type"},
+                    },
+                ],
+            )
+
+    def test_a_valid_json_schema_is_kept_verbatim(self) -> None:
+        schema = {"type": "object", "properties": {"amount": {"type": "number", "maximum": 5000}}}
+        cfg = self._cfg(
+            rules=[{"id": "amount", "type": "arguments", "tool": "charge", "json_schema": schema}],
+        )
+        rule = cfg.rules[0]
+        assert isinstance(rule, ArgumentsRule)
+        assert rule.json_schema == schema
+
+    def test_call_count_rejects_a_negative_bound(self) -> None:
+        with pytest.raises(ValidationError):
+            self._cfg(rules=[{"id": "x", "type": "call_count", "tool": "a", "max_calls": -1}])
+
+    def test_call_count_needs_at_least_one_bound(self) -> None:
+        with pytest.raises(ValidationError, match="min_calls"):
+            self._cfg(rules=[{"id": "x", "type": "call_count", "tool": "a"}])
+
+    def test_call_count_rejects_max_below_min(self) -> None:
+        with pytest.raises(ValidationError, match="below"):
+            self._cfg(
+                rules=[
+                    {"id": "x", "type": "call_count", "tool": "a", "min_calls": 2, "max_calls": 1},
+                ],
+            )
+
+    def test_call_count_exact_is_both_bounds_equal(self) -> None:
+        cfg = self._cfg(
+            rules=[{"id": "x", "type": "call_count", "tool": "a", "min_calls": 1, "max_calls": 1}],
+        )
+        rule = cfg.rules[0]
+        assert isinstance(rule, CallCountRule)
+        assert (rule.min_calls, rule.max_calls) == (1, 1)
+
+    def test_the_family_defaults_to_empty(self) -> None:
+        assert EvaluatorsConfig().trace_invariants == []
+
+
+class TestMaxInvariantViolationsPolicy:
+    def test_defaults_to_zero(self) -> None:
+        assert MigrationPolicy().max_invariant_violations == 0
+
+    def test_slice_override_defaults_to_inherit(self) -> None:
+        assert SliceMigrationPolicy().max_invariant_violations is None
+
+    def test_rejects_negative(self) -> None:
+        with pytest.raises(ValidationError):
+            MigrationPolicy(max_invariant_violations=-1)

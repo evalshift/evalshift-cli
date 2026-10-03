@@ -264,11 +264,17 @@ def _evaluator_config_snapshot(
     dict, so two suites of the same project are meant to hash differently.
     """
     dumped = cfg.model_dump(mode="json")
+    evaluators_dumped = evaluators.model_dump(mode="json")
+    # Added in 1.3 with an empty default. Hashing the empty list would move
+    # ``eval_config_hash`` for every config that never wrote the key and
+    # orphan every hosted baseline -- the same reason ``slices`` below is kept.
+    if not evaluators_dumped.get("trace_invariants"):
+        evaluators_dumped.pop("trace_invariants", None)
     return {
         "version": dumped["version"],
         "prompts": dumped["prompts"],
         "defaults": dumped["defaults"],
-        "evaluators": evaluators.model_dump(mode="json"),
+        "evaluators": evaluators_dumped,
         # Legacy constant. This key used to carry the top-level ``slices:``
         # block, which was removed from evalshift.yaml because nothing ever
         # read it; a config that still sets it no longer loads. The key stays,

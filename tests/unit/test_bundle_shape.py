@@ -299,6 +299,7 @@ _RESOLVED_POLICY_KEYS = {
     "min_equivalence_rate",
     "max_tool_argument_drift",
     "max_tool_divergence",
+    "max_invariant_violations",
     "tool_argument_drift_floor",
     "max_cost_increase",
     "max_latency_increase",
@@ -306,7 +307,7 @@ _RESOLVED_POLICY_KEYS = {
     "slices",
 }
 
-# The eight per-slice ratio/count budgets: the nine top-level fields minus
+# The nine per-slice ratio/count budgets: the ten top-level fields minus
 # ``fail_on_dropped_params`` (not overridable per slice — see
 # ``MigrationPolicy.fail_on_dropped_params``'s docstring) and minus ``slices``
 # itself (a slice cannot nest another slice).
@@ -654,6 +655,21 @@ class TestBundleResolvesPerSuiteEvaluators:
             bundle_module._build_examples = real  # type: ignore[assignment]
         assert seen["names"] == frozenset({"routing"})
 
+    #: ``manifest.eval_config_hash`` for :attr:`_CONFIG` resolved for
+    #: ``main_chat``, computed by the CLI at 5b608f2 — before
+    #: ``trace_invariants`` existed. A suite override that never mentions the
+    #: family must not start hashing its empty default.
+    _HASH_BEFORE_TRACE_INVARIANTS = (
+        "sha256:18b43295c4f2d1343c322522348565762fffd670a009dfc4bda861de15e6896f"
+    )
+
+    def test_eval_config_hash_of_a_suite_resolved_run_is_unchanged(
+        self, run_fixture: RunFixture
+    ) -> None:
+        manifest = self._bundle(run_fixture, suite_name="main_chat")["manifest"]
+        assert isinstance(manifest, dict)
+        assert manifest["eval_config_hash"] == self._HASH_BEFORE_TRACE_INVARIANTS
+
 
 class TestBundleShipsNoSuiteContent:
     """Suite content stays local; only content hashes go on the wire.
@@ -772,6 +788,73 @@ class TestEvaluatorConfigKeepsTheLegacySlicesKey:
         config = self._bundle(run_fixture)["evaluator_config"]
         assert isinstance(config, dict)
         assert config["slices"] == []
+
+
+class TestEvaluatorConfigHashesTraceInvariantsOnlyWhenSet:
+    """``trace_invariants`` enters ``eval_config_hash`` only when configured.
+
+    An empty family is dropped from the snapshot so configs that never wrote
+    the key keep the hash their hosted baselines were recorded under (pinned
+    by :class:`TestEvaluatorConfigKeepsTheLegacySlicesKey`). Configured rules
+    are methodology and must move the hash like any other evaluator.
+    """
+
+    _BASE = TestEvaluatorConfigKeepsTheLegacySlicesKey._CONFIG
+    _WITH_RULES = """
+        version: 1
+        project: acme/model-migration
+        prompts:
+          - id: greet
+            detection: manual
+            content: "Hello {name}"
+            variables: [name]
+        defaults:
+          source_model: gemini/gemini-2.5-flash
+          target_model: gemini/gemini-3.1-flash-lite-preview
+        evaluators:
+          structural:
+            - type: length
+              min_chars: 1
+          llm_judge:
+            - criterion_name: tone
+              criterion_prompt: Which reply is friendlier?
+          trace_invariants:
+            - name: payments_contract
+              rules:
+                - id: no-refund
+                  type: forbidden
+                  tools: [refund]
+        migration_policy:
+          max_overall_regression_rate: 0.10
+          slices:
+            checkout:
+              max_overall_regression_rate: 0.05
+    """
+
+    def _bundle(self, run_fixture: RunFixture, text: str) -> dict[str, Any]:
+        run_fixture.config.write_text(text, encoding="utf-8")
+        return _load(run_fixture.build().path)
+
+    def test_an_unconfigured_family_is_absent_from_the_snapshot(
+        self, run_fixture: RunFixture
+    ) -> None:
+        config = self._bundle(run_fixture, self._BASE)["evaluator_config"]
+        assert isinstance(config, dict)
+        assert "trace_invariants" not in config["evaluators"]
+
+    def test_configured_rules_ship_and_move_the_hash(self, run_fixture: RunFixture) -> None:
+        bundle = self._bundle(run_fixture, self._WITH_RULES)
+        config = bundle["evaluator_config"]
+        assert isinstance(config, dict)
+        [family] = config["evaluators"]["trace_invariants"]
+        assert family["name"] == "payments_contract"
+        assert [rule["id"] for rule in family["rules"]] == ["no-refund"]
+        manifest = bundle["manifest"]
+        assert isinstance(manifest, dict)
+        assert (
+            manifest["eval_config_hash"]
+            != TestEvaluatorConfigKeepsTheLegacySlicesKey._HASH_BEFORE_THE_REMOVAL
+        )
 
 
 def _rewrite_suite_history(suite_path: Path, system_prompt: str) -> None:

@@ -569,6 +569,7 @@ _RESOLVED_POLICY_KEYS = {
     "min_equivalence_rate",
     "max_tool_argument_drift",
     "max_tool_divergence",
+    "max_invariant_violations",
     "tool_argument_drift_floor",
     "max_cost_increase",
     "max_latency_increase",
