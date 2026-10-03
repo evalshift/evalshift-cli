@@ -629,7 +629,6 @@ the key and the fix, which is the whole migration.
   that imported CLI internals (`from evalshift.models.client import …`) must
   import from `evalshift_cli`. No shim is possible — shipping any `evalshift/`
   file would recreate the collision — so this ships as a minor bump (0.14.0).
-  Design: `docs/superpowers/specs/2026-09-09-namespace-collision-design.md`.
 - Docs: the capture guides (`README.md`, `DOCS.md`, `docs/sdk.md`,
   `docs/getting-started.md`, `llms-full.txt`) now cover the SDK 0.4.0 provider
   client wrappers (`wrap_openai` / `wrap_anthropic` / `wrap_genai`), the

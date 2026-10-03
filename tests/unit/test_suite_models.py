@@ -587,8 +587,8 @@ def _agent_ex(**kw: Any) -> SuiteExample:
 
 class TestToolResultFixtures:
     """Recorded tool results ride on the example, aligned by position with
-    ``expected_tool_rounds`` — see
-    ``docs/superpowers/specs/2026-09-09-teacher-forced-replay-design.md``."""
+    ``expected_tool_rounds`` — see "Agent rounds and what a replay can
+    reproduce" in ``docs/agents.md``."""
 
     def test_absent_by_default_and_means_single_shot(self) -> None:
         ex = _agent_ex(id="e", expected_tool_rounds=[[_call("a")]])
