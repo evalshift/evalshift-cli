@@ -77,8 +77,8 @@ _COVERAGE_BASIS_UNMEASURED: str = (
 
 #: The two policy budgets that are ratios of increase rather than rates.
 _INCREASE_BUDGETS: frozenset[str] = frozenset({"max_cost_increase", "max_latency_increase"})
-#: The one budget that is a plain count.
-_COUNT_BUDGETS: frozenset[str] = frozenset({"max_critical_regressions"})
+#: The budgets that are plain counts.
+_COUNT_BUDGETS: frozenset[str] = frozenset({"max_critical_regressions", "max_invariant_violations"})
 
 
 @dataclass(frozen=True, slots=True)

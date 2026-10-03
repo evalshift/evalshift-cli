@@ -269,7 +269,7 @@
 {% endif %}
 
 {% if failed_budgets %}
-{% set count_budgets = ["max_critical_regressions"] %}
+{% set count_budgets = ["max_critical_regressions", "max_invariant_violations"] %}
 {% set increase_budgets = ["max_cost_increase", "max_latency_increase"] %}
 {%- macro fmt_budget(name, value) -%}
   {%- if name in count_budgets -%}

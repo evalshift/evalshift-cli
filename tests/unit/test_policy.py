@@ -22,7 +22,11 @@ from evalshift_cli.analysis.statistics import (
 )
 from evalshift_cli.config.models import MigrationPolicy, SliceMigrationPolicy
 from evalshift_cli.evaluators.base import EvalRecord
-from evalshift_cli.evaluators.failures import TOOL_GROUND_TRUTH_MISS, TOOL_SELECTION_DRIFT
+from evalshift_cli.evaluators.failures import (
+    INVARIANT_VIOLATION,
+    TOOL_GROUND_TRUTH_MISS,
+    TOOL_SELECTION_DRIFT,
+)
 from evalshift_cli.evaluators.tool_arguments import KIND as KIND_ARGUMENTS
 from evalshift_cli.evaluators.tool_selection import KIND_CONFORMANCE, KIND_DIVERGENCE
 from evalshift_cli.runner.models import Call
@@ -2746,3 +2750,129 @@ class TestAMultiRoundDivergenceCountsAsDiverged:
         ]
         assert budget.denominator == 2
         assert budget.observed == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# Hand-written trace rules: the ``max_invariant_violations`` budget
+# ---------------------------------------------------------------------------
+
+
+def _invariant_record(
+    example_id: str,
+    source_score: float,
+    target_score: float,
+    *,
+    blocking: bool = True,
+    rule_id: str = "no-v1",
+) -> EvalRecord:
+    def broken(score: float) -> list[dict[str, Any]]:
+        return (
+            []
+            if score == 1.0
+            else [
+                {
+                    "rule_id": rule_id,
+                    "rule_type": "forbidden",
+                    "tool": "refund_v1",
+                    "round_index": 0,
+                    "detail": "x",
+                }
+            ]
+        )
+
+    metadata: dict[str, Any] = {
+        "rules_checked": [rule_id],
+        "source_violations": broken(source_score),
+        "target_violations": broken(target_score),
+    }
+    if target_score < 1.0:
+        metadata["failure_categories"] = [INVARIANT_VIOLATION]
+    return EvalRecord(
+        run_id="r",
+        prompt_id="p",
+        example_id=example_id,
+        evaluator_name="payments",
+        kind="trace_invariants",
+        source_score=source_score,
+        target_score=target_score,
+        delta=target_score - source_score,
+        metadata=metadata,
+        blocking=blocking,
+    )
+
+
+def _insufficient(evaluator_name: str = "payments") -> ComparisonResult:
+    """One comparison too small for a paired test -- what n < 5 produces."""
+    return _comparison(evaluator_name=evaluator_name, severity="insufficient")
+
+
+class TestInvariantViolationBudget:
+    def test_counts_examples_whose_target_broke_a_rule(self) -> None:
+        decision = _decide(
+            [
+                _invariant_record("e1", 1.0, 0.0),
+                _invariant_record("e2", 1.0, 1.0),
+                _invariant_record("e3", 1.0, 0.5),
+            ],
+            policy=MigrationPolicy(max_invariant_violations=5),
+        )
+        budget = _budgets(decision)["max_invariant_violations"]
+        assert (budget.observed, budget.allowed, budget.denominator) == (2.0, 5.0, 3)
+        assert budget.passed and budget.conclusive
+
+    def test_a_violation_the_source_shares_still_counts(self) -> None:
+        decision = _decide([_invariant_record("e1", 0.0, 0.0)])
+        assert _budgets(decision)["max_invariant_violations"].observed == 1.0
+        assert decision.verdict == "fail"
+
+    def test_a_broken_rule_fails_a_suite_too_small_for_statistics(self) -> None:
+        """Review Focus 3: every comparison insufficient must not soften a broken rule."""
+        decision = _decide(
+            [_invariant_record("e1", 1.0, 0.0)],
+            comparisons=[_insufficient()],
+        )
+        assert decision.verdict == "fail"
+        assert decision.reason is not None
+        assert "max_invariant_violations" in decision.reason
+
+    def test_no_invariant_rows_emits_no_budget_row(self) -> None:
+        """Review Focus 4: projects without trace rules see no new row."""
+        decision = _decide([_divergence_record("e1", 1.0)])
+        assert "max_invariant_violations" not in _budgets(decision)
+
+    def test_advisory_rules_never_gate(self) -> None:
+        decision = _decide([_invariant_record("e1", 1.0, 0.0, blocking=False)])
+        assert "max_invariant_violations" not in _budgets(decision)
+        assert decision.verdict != "fail"
+
+    def test_selected_by_kind_not_name(self) -> None:
+        record = _invariant_record("e1", 1.0, 0.0).model_copy(update={"evaluator_name": "anything"})
+        assert _budgets(_decide([record]))["max_invariant_violations"].observed == 1.0
+
+    def test_slice_override_applies(self) -> None:
+        records = [_invariant_record("e1", 1.0, 0.0)]
+        comparisons = [
+            _comparison(evaluator_name="payments", slice_name="checkout", severity="none"),
+            _comparison(evaluator_name="payments", slice_name="all", severity="none"),
+        ]
+        decision = _decide(
+            records,
+            policy=MigrationPolicy(
+                max_invariant_violations=0,
+                slices={"checkout": SliceMigrationPolicy(max_invariant_violations=3)},
+            ),
+            comparisons=comparisons,
+        )
+        checkout = {b.name: b for b in decision.slices["checkout"].budget_results}
+        assert checkout["max_invariant_violations"].passed
+        assert decision.verdict == "fail"  # the overall budget of 0 still breaches
+
+    def test_shared_violation_recommends_reviewing_the_rule(self) -> None:
+        decision = _decide([_invariant_record("e1", 0.0, 0.0)])
+        assert any("no-v1" in line and "owner" in line for line in decision.recommendations)
+
+    def test_the_budget_has_a_label_and_meaning(self) -> None:
+        from evalshift_cli.analysis.policy import BUDGET_LABELS, BUDGET_MEANINGS
+
+        assert BUDGET_LABELS["max_invariant_violations"] == "Trace-rule violations"
+        assert "trace rule" in BUDGET_MEANINGS["max_invariant_violations"]
