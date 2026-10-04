@@ -12,7 +12,7 @@ hosted (opt-in)  run history, diffs, PR gates
 
 The suite is the crux, so the capture SDK is the recommended way to build one: it records real production runs to disk and `evalshift capture sync` promotes them into golden suites. Hand-written suites are fully supported — see [The golden suite](#the-golden-suite).
 
-- **Package name:** `evalshift` · **CLI entry point:** `evalshift` · **version:** 1.2.1
+- **Package name:** `evalshift` · **CLI entry point:** `evalshift` · **version:** 1.2.2
 - **Python:** >= 3.11 · **License:** Apache-2.0 · **Status:** stable
 - **Local-first.** Runs, scores, stats, and reports all happen on your machine under `.evalshift/`. The only network calls are the model API calls you asked for — and, if you opt in, pushes to the hosted service.
 - **Four pieces:** CLI (this doc), SDK, GitHub Action, hosted server — each with its own machine-readable reference for AI tools. See [Ecosystem and AI-tool references](#ecosystem-and-ai-tool-references).
