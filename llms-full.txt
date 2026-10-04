@@ -267,8 +267,9 @@ evalshift push [RUN_ID] [--bundle PATH] [--project] [--host] [--token]
   limit warning naming the server's 100 MB hard limit and uploads anyway (the hard limit is
   server-configurable, so the CLI quotes it rather than enforcing a stale copy).
   Plan limits: server answers 402 when the org's plan does not cover the push (monthly runs,
-  seats, retention) or the subscription stopped paying. CLI prints the server's sentence plus
-  `Upgrade: <url>` and exits 1; nothing uploaded, local run untouched. Never retried.
+  seats, concurrent runs), the org's 30-day trial ended without a subscription, or the
+  subscription stopped paying. CLI prints the server's sentence plus `Upgrade: <url>` and exits 1;
+  nothing uploaded, local run untouched. Never retried.
   Two policy notices, both before the success line: (1) a bundle with no decision.policy
   (no migration_policy configured) prints, before any HTTP call, "this run carries no
   migration policy; unless this project still has an old web-app policy, the hosted gate
@@ -1262,7 +1263,7 @@ evalshift compare --suite-name <suite> --to gemini-3.1-pro-preview --gate critic
 #   eval <suite> -> matrix job per suite (action evaluates ONE suite per invocation);
 #     fail-on: policy; evalshift-version pinned to the scaffolding CLI (extra="forbid" config
 #     from a newer CLI fails loudly on an older one -- reader >= writer; see CI pin drift); max-parallel: 1 by default — raise
-#     toward the hosted plan's in-flight ceiling (Free 1, Pro 5, Team 10); PR comment only
+#     toward the hosted plan's concurrent-run limit (Pro: 5; Enterprise: by contract); PR comment only
 #     from the first matrix job (constant comment marker, multiple suites would overwrite);
 #     provider key env matches init's --provider; skips on fork PRs (no secret access) and
 #     no-ops green with a notice while EVALSHIFT_TOKEN is unset.

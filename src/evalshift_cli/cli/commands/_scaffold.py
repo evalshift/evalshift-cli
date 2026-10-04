@@ -231,8 +231,8 @@ jobs:
     strategy:
       # One suite regressing must not cancel the others' results.
       fail-fast: false
-      # Hosted EvalShift refuses uploads past your org plan's in-flight run
-      # ceiling (Free 1, Pro 5, Team 10). Raise this toward your plan's limit
+      # Hosted EvalShift refuses uploads past your org's concurrent-run
+      # limit (Pro: 5; Enterprise: by contract). Raise this toward it
       # to evaluate suites in parallel.
       max-parallel: 1
       matrix:

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `evalshift push` printed a traceback instead of the upgrade prompt when hosted EvalShift
+  refused the run with HTTP 402 right after auto-creating the project (over the monthly run
+  or concurrent-run limit, or a subscription that stopped paying). It now prints the
+  server's message and the billing link and exits 1. A 402 while auto-creating the
+  project — what an organization whose trial has ended gets — now shows the same prompt
+  instead of an access-permission hint.
+- `evalshift push` printed a traceback when the connection failed while auto-creating the
+  project; it now prints the error and exits 1.
+
 ### Changed
 
 - The EvalShift repositories moved from the `babaliauskas` GitHub account to
@@ -19,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `evalshift/evalshift-action` steps as well as the old
   `babaliauskas/evalshift-action` name, matching owner and repository names
   case-insensitively as GitHub does.
+- Docs and the `init --ci` workflow comment describe hosted EvalShift's current plans: a
+  30-day Pro trial for every new account, then Pro per organization (the hosted Free and
+  Team plans are gone). Local runs stay free and unlimited.
 
 ## [1.2.1] - 2026-10-01
 

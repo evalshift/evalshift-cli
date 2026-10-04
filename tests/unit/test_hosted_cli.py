@@ -1200,6 +1200,141 @@ def test_push_command_exits_non_zero_and_prints_the_upgrade_prompt_on_402(
     assert "Traceback" not in result.output
 
 
+_TRIAL_ENDED = (
+    "The free trial for this organization ended on 2026-11-02. Subscribe to Pro to push "
+    "runs and keep the CI gate — existing runs stay readable."
+)
+_RUN_LIMIT = "Monthly run limit reached on the Pro plan (4,000 of 4,000 runs used)."
+
+
+def test_a_402_on_the_retry_after_auto_create_renders_the_upgrade_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``POST /runs`` for a missing project answers 404 before any entitlement check, so a
+    402 for being over the monthly run or concurrent-run limit, or for a subscription that
+    stopped paying, arrives on the *retried* call after auto-create. That retry runs inside
+    the first attempt's ``except`` clause, so its 402 used to skip every handler and reach
+    the user as a traceback."""
+    bundle_path = _build_bundle_for_push(tmp_path, monkeypatch)
+    fake = _fake_client(
+        responses=[{"raise_404": True}, {"raise_error": _payment_required(_RUN_LIMIT)}],
+        projects=[],
+    )
+    monkeypatch.setenv("EVALSHIFT_HOST", "https://api.evalshift.test")
+    monkeypatch.setenv("EVALSHIFT_TOKEN", "es_secret")
+    monkeypatch.setattr("evalshift_cli.hosted.push.HostedClient", lambda **_: fake)
+
+    with pytest.raises(PushError) as excinfo:
+        _push(bundle_path, tmp_path, create_project=True)
+
+    text = str(excinfo.value)
+    assert "this run needs a paid plan" in text
+    assert _RUN_LIMIT in text
+    assert "Upgrade: https://app.test/app/acme/settings/billing" in text
+    assert fake.created_project is not None
+    assert fake.initiate_calls == 2
+
+
+def test_any_other_error_on_the_retry_is_a_push_error_not_a_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = _build_bundle_for_push(tmp_path, monkeypatch)
+    fake = _fake_client(
+        responses=[
+            {"raise_404": True},
+            {"raise_error": HostedHTTPError(500, "database is down", code="internal_error")},
+        ],
+        projects=[],
+    )
+    monkeypatch.setenv("EVALSHIFT_HOST", "https://api.evalshift.test")
+    monkeypatch.setenv("EVALSHIFT_TOKEN", "es_secret")
+    monkeypatch.setattr("evalshift_cli.hosted.push.HostedClient", lambda **_: fake)
+
+    with pytest.raises(PushError) as excinfo:
+        _push(bundle_path, tmp_path, create_project=True)
+
+    assert "database is down" in str(excinfo.value)
+
+
+def test_a_402_while_auto_creating_the_project_renders_the_upgrade_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v6: an organization whose trial has ended is refused at ``POST /orgs/{slug}/projects``
+    with a 402. That is a plan problem, not the "needs owner access" hint the generic create
+    failure prints."""
+    bundle_path = _build_bundle_for_push(tmp_path, monkeypatch)
+    fake = _fake_client(
+        responses=[{"raise_404": True}],
+        projects=[],
+        create_project_error=_payment_required(_TRIAL_ENDED),
+    )
+    monkeypatch.setenv("EVALSHIFT_HOST", "https://api.evalshift.test")
+    monkeypatch.setenv("EVALSHIFT_TOKEN", "es_secret")
+    monkeypatch.setattr("evalshift_cli.hosted.push.HostedClient", lambda **_: fake)
+
+    with pytest.raises(PushError) as excinfo:
+        _push(bundle_path, tmp_path, create_project=True)
+
+    text = str(excinfo.value)
+    assert "this run needs a paid plan" in text
+    assert _TRIAL_ENDED in text
+    assert "owner access" not in text
+
+
+@pytest.mark.parametrize("failing_call", ["list_projects", "create_project"])
+def test_a_network_error_while_auto_creating_the_project_is_a_push_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_call: str,
+) -> None:
+    """Auto-create runs inside the first attempt's ``except`` clause, so a connection
+    failure there skips the sibling handlers unless it is mapped where it happens."""
+    bundle_path = _build_bundle_for_push(tmp_path, monkeypatch)
+    fake = _fake_client(
+        responses=[{"raise_404": True}],
+        projects=[],
+        **{f"{failing_call}_error": HostedNetworkError("could not reach api.evalshift.test")},
+    )
+    monkeypatch.setenv("EVALSHIFT_HOST", "https://api.evalshift.test")
+    monkeypatch.setenv("EVALSHIFT_TOKEN", "es_secret")
+    monkeypatch.setattr("evalshift_cli.hosted.push.HostedClient", lambda **_: fake)
+
+    with pytest.raises(PushError) as excinfo:
+        _push(bundle_path, tmp_path, create_project=True)
+
+    assert "could not reach api.evalshift.test" in str(excinfo.value)
+
+
+def test_push_command_prints_the_upgrade_prompt_when_the_retry_after_auto_create_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end: exit 1, the server's sentence, and no escaped exception."""
+    bundle_path = _build_bundle_for_push(tmp_path, monkeypatch)
+    fake = _fake_client(
+        responses=[{"raise_404": True}, {"raise_error": _payment_required(_RUN_LIMIT)}],
+        projects=[],
+    )
+    monkeypatch.setenv("EVALSHIFT_HOST", "https://api.evalshift.test")
+    monkeypatch.setenv("EVALSHIFT_TOKEN", "es_secret")
+    monkeypatch.setattr("evalshift_cli.hosted.push.HostedClient", lambda **_: fake)
+
+    result = runner.invoke(
+        app,
+        ["push", "--bundle", str(bundle_path), "--config", str(tmp_path / "evalshift.yaml")],
+    )
+
+    # CliRunner catches an escaped exception into ``result.exception`` (exit 1, no printed
+    # traceback), so the exit code alone cannot tell a handled refusal from a crash.
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert result.exit_code == 1
+    assert "needs a paid plan" in result.output
+    assert _RUN_LIMIT in result.output
+
+
 def test_transient_retry_statuses_never_include_payment_required() -> None:
     """Guard: a future edit to the retry set must not start retrying a payment error."""
     assert 402 not in _TRANSIENT_STATUSES
