@@ -1018,7 +1018,7 @@
       },
       "GuardrailEvent": {
         "additionalProperties": false,
-        "description": "A guardrail or policy check. Imported agent traces only.",
+        "description": "A guardrail or policy check.\n\nReserved for a bring-your-own-agent trace; no current producer emits it \u2014\n``evalshift traces import`` writes such traces only to a local artifact,\nnot into a pushed bundle.",
         "properties": {
           "name": {
             "minLength": 1,
@@ -1405,7 +1405,7 @@
       },
       "RetrievalEvent": {
         "additionalProperties": false,
-        "description": "A retrieval step. Imported agent traces only.",
+        "description": "A retrieval step.\n\nReserved for a bring-your-own-agent trace; no current producer emits it \u2014\n``evalshift traces import`` writes such traces only to a local artifact,\nnot into a pushed bundle.",
         "properties": {
           "documents": {
             "items": {
