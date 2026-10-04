@@ -1,7 +1,7 @@
 # evalshift (CLI) — complete reference for AI tools
 
 Canonical hosted copy: https://www.evalshift.dev/cli-llms-full.txt
-Package: evalshift (PyPI) | CLI entry point: evalshift | version: 1.2.1
+Package: evalshift (PyPI) | CLI entry point: evalshift | version: 1.2.2
 Python: >=3.11 | license: Apache-2.0 | status: stable
 Install: pip install evalshift   (or: uv pip install evalshift)
 
