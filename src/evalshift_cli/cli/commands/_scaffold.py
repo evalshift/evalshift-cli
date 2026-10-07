@@ -40,6 +40,7 @@ migration_policy:
   min_equivalence_rate: 0.95
   max_tool_argument_drift: 0.01
   max_tool_divergence: 0.03
+  max_invariant_violations: 0
   max_cost_increase: 0.20
   max_latency_increase: 0.30
 """,
@@ -50,6 +51,7 @@ migration_policy:
   min_equivalence_rate: 0.97
   max_tool_argument_drift: 0.01
   max_tool_divergence: 0.02
+  max_invariant_violations: 0
   max_cost_increase: 0.05
   max_latency_increase: 0.30
 """,
@@ -60,6 +62,7 @@ migration_policy:
   min_equivalence_rate: 0.90
   max_tool_argument_drift: 0.02
   max_tool_divergence: 0.05
+  max_invariant_violations: 0
   max_cost_increase: 0.00
   max_latency_increase: 0.50
 """,
@@ -70,6 +73,7 @@ migration_policy:
   min_equivalence_rate: 0.97
   max_tool_argument_drift: 0.005
   max_tool_divergence: 0.02
+  max_invariant_violations: 0
   max_cost_increase: 0.00
   max_latency_increase: 0.20
 """,
@@ -80,6 +84,7 @@ migration_policy:
   min_equivalence_rate: 0.95
   max_tool_argument_drift: 0.01
   max_tool_divergence: 0.03
+  max_invariant_violations: 0
   max_cost_increase: 0.20
   max_latency_increase: 0.40
 """,
@@ -100,6 +105,7 @@ migration_policy:
   min_equivalence_rate: 0.75
   max_tool_argument_drift: 0.20
   max_tool_divergence: 0.20
+  max_invariant_violations: 0
   max_cost_increase: 0.30
   max_latency_increase: 0.30
 """,

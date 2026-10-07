@@ -19,6 +19,10 @@ DANGEROUS_ACTION_DRIFT: str = "DANGEROUS_ACTION_DRIFT"
 MISSING_VERIFICATION_STEP: str = "MISSING_VERIFICATION_STEP"
 UNNECESSARY_TOOL_CALL: str = "UNNECESSARY_TOOL_CALL"
 REFUSAL_REGRESSION: str = "REFUSAL_REGRESSION"
+#: The target broke a rule the team wrote down in ``trace_invariants`` --
+#: judged against the rule, never against the source, so a rule both models
+#: broke still carries it.
+INVARIANT_VIOLATION: str = "INVARIANT_VIOLATION"
 
 #: Why a model failing ground truth recorded from itself indicts the harness.
 #: Defined once and imported by every surface that reports it — ``evaluate``
@@ -46,6 +50,7 @@ CATEGORY_LABELS: dict[str, str] = {
     MISSING_VERIFICATION_STEP: "Verification step skipped",
     UNNECESSARY_TOOL_CALL: "Unnecessary extra tool call",
     REFUSAL_REGRESSION: "New refusal",
+    INVARIANT_VIOLATION: "Broke a hand-written trace rule",
 }
 
 
@@ -75,6 +80,7 @@ __all__ = [
     "CATEGORY_LABELS",
     "DANGEROUS_ACTION_DRIFT",
     "FORMAT_FAILURE",
+    "INVARIANT_VIOLATION",
     "MISSING_VERIFICATION_STEP",
     "REFUSAL_REGRESSION",
     "SEMANTIC_REGRESSION",

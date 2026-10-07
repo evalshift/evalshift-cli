@@ -661,13 +661,43 @@ def _build_suite_entries(
     frozen: dict[str, Any] = {}
     for name in sorted(suite_paths):
         rel = Path(os.path.relpath(suite_paths[name].resolve(), config_dir)).as_posix()
-        fresh = suite_entry_payload(path=rel, evaluators=evaluators.get(name))
         prior = existing.get(name)
+        fresh = _keep_trace_invariants(
+            suite_entry_payload(path=rel, evaluators=evaluators.get(name)),
+            prior,
+        )
         if isinstance(prior, Mapping) and prior.get("managed") is False:
             frozen[name] = fresh  # `entries[name]` already holds the frozen entry.
             continue
         entries[name] = fresh
     return entries, frozen
+
+
+def _keep_trace_invariants(fresh: dict[str, Any], prior: object) -> dict[str, Any]:
+    """Carry a managed entry's hand-written ``trace_invariants`` through a sync.
+
+    Everything else in a managed entry is derived from captures and is
+    regenerated. Trace rules are the exception: nobody can derive them, a team
+    wrote and owns them, and silently dropping a contract on the next sync is
+    exactly the "auto-update the baseline" failure they exist to prevent.
+
+    Args:
+        fresh: The entry this sync regenerated from the suite's rows.
+        prior: The entry the managed region held before (any shape -- it is
+            raw YAML, carried forward unvalidated like every other entry).
+
+    Returns:
+        ``fresh``, with the prior ``evaluators.trace_invariants`` value copied in
+        verbatim when there was one; otherwise ``fresh`` unchanged.
+    """
+    if not isinstance(prior, Mapping):
+        return fresh
+    prior_evaluators = prior.get("evaluators")
+    if not isinstance(prior_evaluators, Mapping) or "trace_invariants" not in prior_evaluators:
+        return fresh
+    evaluators = dict(fresh.get("evaluators") or {})
+    evaluators["trace_invariants"] = prior_evaluators["trace_invariants"]
+    return {**fresh, "evaluators": evaluators}
 
 
 @capture_app.command(name="sync")

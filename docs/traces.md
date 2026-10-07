@@ -112,6 +112,33 @@ The evaluator emits normal `scores.jsonl` records with failure categories such
 as `TOOL_ORDER_DRIFT`, `ARGUMENT_VALUE_DRIFT`, `DANGEROUS_ACTION_DRIFT`, and
 `MISSING_VERIFICATION_STEP`.
 
+`agent_trace` compares the target with the source: `dangerous_tools` flags a
+target that made more dangerous calls than the source did, so a dangerous call
+both sides made goes unflagged. To hold both sides to rules instead, add a
+[`trace_invariants`](configuration.md#evaluatorstrace_invariants) entry with
+`traces: imported`:
+
+```yaml
+evaluators:
+  trace_invariants:
+    - name: refund_contract
+      traces: imported
+      rules:
+        - id: policy-before-refund
+          type: order
+          before: check_refund_policy
+          after: issue_refund
+        - id: one-refund
+          type: call_count
+          tool: issue_refund
+          max_calls: 1
+```
+
+An imported trace is checked as one response with no prior context: every call
+in it, in `sequence_index` order, was the agent's own. A rule the target breaks
+counts toward `migration_policy.max_invariant_violations` whatever the source
+did.
+
 Debug commands become trace-aware:
 
 ```bash
@@ -124,8 +151,8 @@ evalshift replay case <run-id> <example-id> --model target --trace
 
 Imported traces are not uploaded. They stay in
 `.evalshift/runs/<run-id>/traces.jsonl`, where `evaluate` (the `agent_trace`
-evaluator), the local report and `diff case` / `inspect case` / `replay case`
-read them.
+evaluator and `trace_invariants` entries with `traces: imported`), the local
+report and `diff case` / `inspect case` / `replay case` read them.
 
 `evalshift bundle` / `evalshift push` carry only the replay's own tool-call
 trace — one stream per model side with the tool calls (names, arguments, call

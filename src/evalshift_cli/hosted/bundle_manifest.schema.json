@@ -1209,6 +1209,19 @@
             "title": "Max Critical Regressions",
             "type": "integer"
           },
+          "max_invariant_violations": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Invariant Violations"
+          },
           "max_latency_increase": {
             "maximum": 10.0,
             "minimum": 0.0,
@@ -1637,6 +1650,19 @@
             ],
             "default": null,
             "title": "Max Critical Regressions"
+          },
+          "max_invariant_violations": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Invariant Violations"
           },
           "max_latency_increase": {
             "anyOf": [

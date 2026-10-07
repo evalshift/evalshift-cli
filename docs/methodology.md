@@ -116,10 +116,12 @@ After BH correction, each comparison gets a severity tag based on the
 
 `migration_policy` budgets are computed over subsets of the scored records —
 `max_tool_argument_drift` only looks at tool-argument rows,
-`max_tool_divergence` only at `tool_selection.divergence` rows, and the
+`max_tool_divergence` only at `tool_selection.divergence` rows,
+`max_invariant_violations` only at `trace_invariants` rows, and the
 semantic regression rule only applies to semantic ones. That selection is made on each
 record's **evaluator kind** (`tool_arguments`, `tool_selection.conformance`,
-`tool_selection.divergence`, `semantic`, `llm_judge`, `structural`, …), which is
+`tool_selection.divergence`, `trace_invariants`, `semantic`, `llm_judge`,
+`structural`, …), which is
 a property of the evaluator's type, not of what you called it. An evaluator that
 measures more than one thing gets a slug per measurement — `tool_selection`
 scores ground-truth conformance and target-vs-source divergence, and they are
@@ -244,9 +246,9 @@ zero-tolerance choice, not a mistake. A denominator of `0` measured nothing at
 all, which `BudgetResult.conclusive` already reports. And `min_equivalence_rate`
 is excluded because it is a *floor*: below one row's granularity it collapses to
 maximally lax — only a 0% rate could fail it — so "effective tolerance is zero"
-would be the opposite of the truth. The count budget
-(`max_critical_regressions`) and the cost/latency ratios have no row denominator
-for `1/n` to describe.
+would be the opposite of the truth. The count budgets
+(`max_critical_regressions`, `max_invariant_violations`) are not rates, and the
+cost/latency ratios have no row denominator, so `1/n` describes none of them.
 
 Widening the budget is not the fix, and neither is a confidence interval: at 1
 material drift in 10 the 95% Wilson lower bound is `0.0179`, still above `0.01`,
@@ -311,6 +313,7 @@ last from the first two, but it does not say *how much* was counted. Each
 | `max_critical_regressions` | the same records |
 | `max_tool_argument_drift` | the scope's `tool_arguments` rows only |
 | `max_tool_divergence` | the scope's `tool_selection.divergence` rows only |
+| `max_invariant_violations` | the distinct examples (`prompt_id`, `example_id`) with a blocking `trace_invariants` row in the scope — one per example however many entries scored it; the row is emitted only when there is at least one |
 | `max_cost_increase` / `max_latency_increase` | the error-free calls both averages were taken over, across both roles |
 
 The first three are counted over *measurements*, not over examples. An
@@ -353,9 +356,10 @@ binomial proportion, and only those get a confidence interval. There are four:
 | `max_tool_argument_drift` | materially drifted rows over the scope's `tool_arguments` rows |
 | `max_tool_divergence` | diverged rows over the scope's `tool_selection.divergence` rows |
 
-`max_critical_regressions` is a raw count and the cost/latency budgets are
-ratios of two averages; neither describes a proportion, so neither is given an
-interval and both report `ci_low`/`ci_high` as `null`.
+`max_critical_regressions` and `max_invariant_violations` are raw counts and
+the cost/latency budgets are ratios of two averages; none describes a
+proportion, so none is given an interval and all report `ci_low`/`ci_high` as
+`null`.
 
 Each of the four carries a 95% Wilson score interval — Wilson rather than the
 normal approximation because these samples are small and these rates sit near 0
@@ -389,6 +393,35 @@ lower bound does not clear the budget is no longer a confident local failure. It
 is reported `inconclusive` — which is what it always was statistically — and the
 `1/n` granularity warning above still fires to say the sample is too coarse to
 express the budget.
+
+### A broken trace rule is a finding, not a statistic
+
+`max_invariant_violations` counts the distinct examples on which the target
+broke a blocking [`trace_invariants`](configuration.md#evaluatorstrace_invariants)
+rule — any `(prompt_id, example_id)` with a blocking `trace_invariants` row whose
+target score is below `1.0`, which includes a row averaged over repeated samples
+where one sample broke a rule. Each entry writes its own row, so an example that
+broke rules in two entries is still one example, over a denominator of distinct
+examples rather than rows. It
+is judged against the rules alone, so a rule the source broke on the same
+example still counts.
+
+Every other budget estimates a rate the next run could land on either side of;
+this one reports an assertion the team wrote down and the target falsified.
+There is nothing to be uncertain about, so the budget is **conclusive by
+construction**: no interval, no `1/n` warning, and a breach is a `fail` that
+overrides `inconclusive` and `conditional_pass` — including the
+"every comparison is `insufficient`" path a small suite otherwise takes, and in
+a slice exactly as overall. The decision's `reason` names the worst scope and
+its count. When the source broke the same rule on the same example,
+`recommendations` adds a line naming the rule: either both models break it or
+it no longer matches the toolset, and only its owner can say which. That line
+is advice, never an exemption.
+
+The row exists only in scopes that scored at least one blocking
+`trace_invariants` row. A project with no trace rules, or only advisory ones,
+sees no new budget row, and a slice that holds no in-scope example has no row
+to breach.
 
 ### Non-applicable measurements are absent, not scored
 

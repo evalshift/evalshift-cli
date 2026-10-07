@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -799,6 +801,33 @@ class TestHtmlRender:
         assert "≥ 95.0%" in html  # min_* budget flips the comparator
         assert "≤ 0" in html  # count budget stays an integer, no percent
         assert "0.030" not in html  # no bare fractions anymore
+
+    def test_a_failed_trace_rule_budget_renders_as_a_count(self, tmp_path: Path) -> None:
+        """``max_invariant_violations`` is a count of examples, never a percentage."""
+        cwd, run_id = _scaffold_full_run(tmp_path)
+        run_dir = cwd / ".evalshift" / "runs" / run_id
+        _write_migration_decision(run_dir, run_id)
+        path = run_dir / "migration_decision.json"
+        decision = json.loads(path.read_text(encoding="utf-8"))
+        decision["budget_results"] = [
+            {
+                "name": "max_invariant_violations",
+                "observed": 2.0,
+                "allowed": 1.0,
+                "passed": False,
+                "scope": "overall",
+                "conclusive": True,
+                "denominator": 2,
+            },
+        ]
+        path.write_text(json.dumps(decision), encoding="utf-8")
+
+        html = render_html(build_report_payload(run_dir))
+
+        assert "Trace-rule violations" in html
+        assert '<td class="num bad">2</td>' in html  # observed: two examples
+        assert "≤ 1<" in html  # allowed: one example
+        assert "200.0%" not in html
 
     def test_sub_granular_budget_warning_reaches_the_report(self, tmp_path: Path) -> None:
         # The report describes the *persisted* decision, so the warning has to
@@ -2457,3 +2486,132 @@ def test_example_row_latency_is_incomparable_when_a_side_replayed_rounds() -> No
     assert by_id["live"].delta_latency_ms == 50
     assert not by_id["mixed"].latency_comparable
     assert by_id["mixed"].delta_latency_ms == 0
+
+
+def _run_dir_with_scores(tmp_path: Path, records: list[dict[str, Any]]) -> Path:
+    """A completed run (``_scaffold_full_run``) plus extra ``scores.jsonl`` rows."""
+    cwd, run_id = _scaffold_full_run(tmp_path)
+    run_dir = cwd / ".evalshift" / "runs" / run_id
+    with (run_dir / SCORES_FILENAME).open("a", encoding="utf-8") as fh:
+        for record in records:
+            fh.write(EvalRecord.model_validate(record).model_dump_json() + "\n")
+    return run_dir
+
+
+class TestInvariantViolationsPanel:
+    def _record(self, example_id: str, *, source_broke: bool) -> dict[str, Any]:
+        violation = {
+            "rule_id": "no-v1",
+            "rule_type": "forbidden",
+            "tool": "refund_v1",
+            "round_index": 0,
+            "detail": "called forbidden tool 'refund_v1'",
+        }
+        return {
+            "run_id": "r1",
+            "prompt_id": "p",
+            "example_id": example_id,
+            "evaluator_name": "payments",
+            "kind": "trace_invariants",
+            "source_score": 0.0 if source_broke else 1.0,
+            "target_score": 0.0,
+            "delta": 0.0 if source_broke else -1.0,
+            "metadata": {
+                "owner": "@payments",
+                "rules_checked": ["no-v1"],
+                "source_violations": [violation] if source_broke else [],
+                "target_violations": [violation],
+                "failure_categories": ["INVARIANT_VIOLATION"],
+            },
+        }
+
+    def test_payload_lists_every_target_violation_even_at_zero_delta(self, tmp_path: Path) -> None:
+        run_dir = _run_dir_with_scores(
+            tmp_path,
+            [self._record("e1", source_broke=True), self._record("e2", source_broke=False)],
+        )
+        report = build_report_payload(run_dir)
+        rows = [
+            (v.example_id, v.rule_id, v.source_also, v.owner) for v in report.invariant_violations
+        ]
+        assert rows == [("e1", "no-v1", True, "@payments"), ("e2", "no-v1", False, "@payments")]
+
+    def test_html_renders_the_panel_with_owner_and_detail(self, tmp_path: Path) -> None:
+        run_dir = _run_dir_with_scores(tmp_path, [self._record("e1", source_broke=False)])
+        html = render_html(build_report_payload(run_dir))
+        assert "Trace rules broken" in html
+        assert "no-v1" in html and "@payments" in html
+        assert "called forbidden tool" in html
+
+    def test_no_panel_without_trace_rules(self, tmp_path: Path) -> None:
+        run_dir = _run_dir_with_scores(tmp_path, [])
+        assert "Trace rules broken" not in render_html(build_report_payload(run_dir))
+
+    def test_report_json_carries_the_violations(self, tmp_path: Path) -> None:
+        run_dir = _run_dir_with_scores(tmp_path, [self._record("e1", source_broke=False)])
+        write_report_json(build_report_payload(run_dir), run_dir)
+        data = json.loads((run_dir / REPORT_JSON_FILENAME).read_text(encoding="utf-8"))
+        (row,) = data["invariant_violations"]
+        assert row["rule_id"] == "no-v1"
+        assert row["owner"] == "@payments"
+        assert row["source_also"] is False
+        assert row["sample"] is None
+
+    def test_report_json_key_is_empty_without_trace_rules(self, tmp_path: Path) -> None:
+        run_dir = _run_dir_with_scores(tmp_path, [])
+        write_report_json(build_report_payload(run_dir), run_dir)
+        data = json.loads((run_dir / REPORT_JSON_FILENAME).read_text(encoding="utf-8"))
+        assert data["invariant_violations"] == []
+
+    def test_a_reduced_row_lists_each_samples_violation_once(self, tmp_path: Path) -> None:
+        # samples_per_example > 1: evaluate merges every scored sample's
+        # violations onto the reduced row, each tagged with its ``sample``.
+        record = self._record("e1", source_broke=False)
+        (violation,) = record["metadata"]["target_violations"]
+        record["metadata"]["target_violations"] = [
+            {**violation, "sample": 2},
+            {**violation, "sample": 0},
+        ]
+        run_dir = _run_dir_with_scores(tmp_path, [record])
+        report = build_report_payload(run_dir)
+        assert [(v.rule_id, v.sample) for v in report.invariant_violations] == [
+            ("no-v1", 0),
+            ("no-v1", 2),
+        ]
+        html = render_html(report)
+        assert "sample 1" in html and "sample 3" in html
+
+    def test_an_errored_row_lists_nothing(self, tmp_path: Path) -> None:
+        record = self._record("e1", source_broke=False)
+        record["error"] = "trace missing"
+        run_dir = _run_dir_with_scores(tmp_path, [record])
+        assert build_report_payload(run_dir).invariant_violations == []
+
+    def test_rows_carry_the_records_blocking_flag(self, tmp_path: Path) -> None:
+        advisory = {**self._record("e2", source_broke=False), "blocking": False}
+        run_dir = _run_dir_with_scores(tmp_path, [self._record("e1", source_broke=False), advisory])
+        report = build_report_payload(run_dir)
+        assert [(v.example_id, v.blocking) for v in report.invariant_violations] == [
+            ("e1", True),
+            ("e2", False),
+        ]
+        write_report_json(report, run_dir)
+        data = json.loads((run_dir / REPORT_JSON_FILENAME).read_text(encoding="utf-8"))
+        assert [row["blocking"] for row in data["invariant_violations"]] == [True, False]
+
+    def test_html_tags_an_advisory_violation_without_bad_styling(self, tmp_path: Path) -> None:
+        advisory = {**self._record("e1", source_broke=False), "blocking": False}
+        html = render_html(build_report_payload(_run_dir_with_scores(tmp_path, [advisory])))
+        tag = re.search(r'<span class="([^"]*advisory-tag[^"]*)"[^>]*>advisory</span>', html)
+        assert tag is not None
+        assert "badge-bad" not in tag.group(1)
+
+    def test_html_leaves_a_blocking_violation_untagged(self, tmp_path: Path) -> None:
+        run_dir = _run_dir_with_scores(tmp_path, [self._record("e1", source_broke=False)])
+        html = render_html(build_report_payload(run_dir))
+        assert re.search(r'class="[^"]*advisory-tag', html) is None
+
+    def test_family_label_reads_as_words(self) -> None:
+        from evalshift_cli.reports.html import _kind_label
+
+        assert _kind_label("trace_invariants") == "Trace rules"

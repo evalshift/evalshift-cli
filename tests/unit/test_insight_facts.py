@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from evalshift_cli.analysis.policy import BlockingRegression, FailureCategoryCount
+from evalshift_cli.analysis.policy import BlockingRegression, BudgetResult, FailureCategoryCount
 from evalshift_cli.insights.facts import build_facts
 from evalshift_cli.insights.templates import fallback_insight
 from evalshift_cli.reports.economics import PromptEconomics
@@ -151,6 +151,30 @@ def test_budget_limits_and_failure_categories_are_carried(
     assert facts.blocking_evaluators == ["semantic.cosine"]
     assert facts.failure_categories == [("missing_field", 15)]
     assert "15" in facts.allowed_numbers
+
+
+def test_the_trace_rule_budget_limit_is_a_count_not_a_rate(
+    sample_run: dict[str, Any],
+) -> None:
+    """``max_invariant_violations`` counts examples, so its limit renders bare.
+
+    Rendered as a rate, an allowance of three violations would read "300%".
+    """
+    sample_run["decision"] = decision(
+        budget_results=[
+            *budgets(),
+            BudgetResult(
+                name="max_invariant_violations",
+                observed=1.0,
+                allowed=3.0,
+                passed=True,
+                conclusive=True,
+                denominator=4,
+            ),
+        ],
+    )
+    facts = build_facts(**sample_run)
+    assert facts.budget_limits["max_invariant_violations"] == "3"
 
 
 def test_regression_samples_are_capped_and_truncated(sample_run: dict[str, Any]) -> None:

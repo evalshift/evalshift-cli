@@ -42,6 +42,9 @@ _SEMANTIC_KIND = "semantic"
 # a tool-selection row.
 _TOOL_CONFORMANCE_KIND = "tool_selection.conformance"
 _TOOL_DIVERGENCE_KIND = "tool_selection.divergence"
+# Hand-written trace rules. Selected by slug like every other budget; no
+# legacy name prefix exists, because no row predating the slug can be one.
+_INVARIANTS_KIND = "trace_invariants"
 # Legacy selection, kept only for records checkpointed before ``EvalRecord.kind``
 # existed. Never add a new metric on top of these: an evaluator's ``name`` is
 # whatever the user typed in evalshift.yaml, so a name-prefix filter silently
@@ -82,6 +85,7 @@ BUDGET_LABELS: dict[str, str] = {
     "min_equivalence_rate": "Equivalent-or-better rate",
     "max_tool_argument_drift": "Tool-argument drift",
     "max_tool_divergence": "Tool-selection divergence",
+    "max_invariant_violations": "Trace-rule violations",
     "max_cost_increase": "Cost increase",
     "max_latency_increase": "Latency increase",
 }
@@ -97,13 +101,16 @@ BUDGET_MEANINGS: dict[str, str] = {
     ),
     "max_tool_argument_drift": ("how often the target filled tool arguments differently"),
     "max_tool_divergence": "how often the target called different tools than the source",
+    "max_invariant_violations": (
+        "the number of examples where the target broke a hand-written trace rule"
+    ),
     "max_cost_increase": "how much more the target model costs to run",
     "max_latency_increase": "how much slower the target model answers",
 }
 
 # The budgets whose values are whole counts, not rates — rendered bare where
 # every other budget renders as a percentage.
-_COUNT_BUDGETS = frozenset({"max_critical_regressions"})
+_COUNT_BUDGETS = frozenset({"max_critical_regressions", "max_invariant_violations"})
 
 # Two-sided 95% normal quantile — the confidence level of every Wilson interval
 # below. The exact quantile rather than the textbook ``1.96`` (nominal coverage
@@ -390,10 +397,12 @@ def evaluate_migration_policy(
     floor = policy.tool_argument_drift_floor
     overall = _metrics(records=blocking_records, calls=calls, drift_floor=floor)
     overall_divergence, overall_divergence_n = _tool_divergence_counts(blocking_records)
+    overall_invariants, overall_invariants_n = _invariant_violation_counts(blocking_records)
     overall_denominators = _budget_denominators(
         metrics=overall,
         tool_argument_records=_tool_argument_record_count(blocking_records),
         tool_divergence_records=overall_divergence_n,
+        invariant_records=overall_invariants_n,
         calls=calls,
     )
     overall_budgets = _budget_results(
@@ -402,6 +411,7 @@ def evaluate_migration_policy(
         scope="overall",
         denominators=overall_denominators,
         divergence_count=overall_divergence,
+        invariant_violations=overall_invariants,
         cost_measured=_has_measured_ratio(calls, field="cost_usd"),
         latency_measured=_has_measured_ratio(calls, field="latency_ms"),
     )
@@ -434,10 +444,12 @@ def evaluate_migration_policy(
             drift_floor=slice_policy.tool_argument_drift_floor,
         )
         scoped_divergence, scoped_divergence_n = _tool_divergence_counts(scoped_records)
+        scoped_invariants, scoped_invariants_n = _invariant_violation_counts(scoped_records)
         scoped_denominators = _budget_denominators(
             metrics=scoped_metrics,
             tool_argument_records=_tool_argument_record_count(scoped_records),
             tool_divergence_records=scoped_divergence_n,
+            invariant_records=scoped_invariants_n,
             calls=calls,
         )
         budgets = _budget_results(
@@ -446,6 +458,7 @@ def evaluate_migration_policy(
             scope=name,
             denominators=scoped_denominators,
             divergence_count=scoped_divergence,
+            invariant_violations=scoped_invariants,
             cost_measured=_has_measured_ratio(calls, field="cost_usd"),
             latency_measured=_has_measured_ratio(calls, field="latency_ms"),
         )
@@ -520,6 +533,14 @@ def evaluate_migration_policy(
             else None
         )
 
+    invariant_breaches = _invariant_breaches(gating_budgets)
+    if invariant_breaches:
+        # `_verdict_for` already fails on these; repeated here because the
+        # slice rules above can still demote its answer to conditional_pass,
+        # and a broken trace rule is not softened by any of them.
+        verdict = "fail"
+        reason = _invariant_reason(invariant_breaches)
+
     if policy.fail_on_dropped_params and dropped_params:
         # An explicit opt-in, so it overrides every other verdict including a
         # clean pass: the user has said the constraint *is* the contract, and
@@ -557,6 +578,9 @@ def evaluate_migration_policy(
             # run this fails, so without this line the verdict names no
             # number the reader can go and look at.
             *_slice_budget_notes(gating_budgets),
+            # A rule both models broke is still a failure, but it is also the
+            # one signal that the rule itself may be what needs a look.
+            *_shared_invariant_notes(blocking_records),
             # Appended, never substituted: a sub-granular budget does not
             # change what the run measured, so it must not displace the advice
             # the verdict earned — it explains how the gate was really set.
@@ -747,6 +771,24 @@ def _tool_divergence_counts(records: list[EvalRecord]) -> tuple[int, int]:
     return sum(1 for r in rows if r.delta < 0), len(rows)
 
 
+def _invariant_violation_counts(records: list[EvalRecord]) -> tuple[int, int]:
+    """``(violated, total)`` distinct examples over this scope's ``trace_invariants`` rows.
+
+    Counted per ``(prompt_id, example_id)``, not per row: each
+    ``trace_invariants`` entry writes its own row for an example, so two rule
+    sets would otherwise count one example twice and double the denominator.
+    An example is violated when the target broke at least one rule in any
+    entry: any target score below 1.0, which also catches a row averaged over
+    repeated samples where one sample broke a rule. Judged against the rules
+    alone -- a rule the source broke too is still broken, which is the reason
+    the evaluator exists.
+    """
+    rows = [r for r in _evidence(records) if _is_kind(r, _INVARIANTS_KIND)]
+    examples = {(r.prompt_id, r.example_id) for r in rows}
+    violated = {(r.prompt_id, r.example_id) for r in rows if r.target_score < 1.0}
+    return len(violated), len(examples)
+
+
 def _metrics(
     *,
     records: list[EvalRecord],
@@ -806,6 +848,7 @@ def _budget_results(
     scope: str,
     denominators: Mapping[str, int],
     divergence_count: int,
+    invariant_violations: int,
     cost_measured: bool,
     latency_measured: bool,
 ) -> list[BudgetResult]:
@@ -819,7 +862,10 @@ def _budget_results(
     ``denominators["max_tool_divergence"]`` (see
     :func:`_tool_divergence_counts`); it arrives as a count rather than a rate
     because the Wilson interval needs the count either way, and rebuilding one
-    from the other rounds. ``cost_measured`` /
+    from the other rounds. ``invariant_violations`` is the numerator of
+    ``max_invariant_violations`` over ``denominators["max_invariant_violations"]``
+    (see :func:`_invariant_violation_counts`); that budget's row is emitted only
+    when the denominator is positive. ``cost_measured`` /
     ``latency_measured`` are the call-derived budgets' conclusiveness flags and
     stay separate from their denominators: those ratios also default to 0.0
     with a perfectly good call count behind them, when both roles average zero
@@ -864,7 +910,7 @@ def _budget_results(
     divergence_rate = _rate(divergence_count, divergence_n)
     divergence_low, divergence_high = _wilson_interval(divergence_count, divergence_n)
     divergence_breached = divergence_rate > policy.max_tool_divergence
-    return [
+    results = [
         BudgetResult(
             name="max_overall_regression_rate",
             observed=metrics.regression_rate,
@@ -947,6 +993,24 @@ def _budget_results(
             denominator=denominators["max_latency_increase"],
         ),
     ]
+    invariant_n = denominators["max_invariant_violations"]
+    if invariant_n > 0:
+        # Emitted only where a trace rule was checked: a "measured nothing"
+        # row on every project that never wrote one would be noise in the
+        # report and the insights. A count, so no interval: a breach is a
+        # breach, and conclusive however small the sample.
+        results.append(
+            BudgetResult(
+                name="max_invariant_violations",
+                observed=float(invariant_violations),
+                allowed=float(policy.max_invariant_violations),
+                passed=invariant_violations <= policy.max_invariant_violations,
+                scope=scope,
+                conclusive=True,
+                denominator=invariant_n,
+            ),
+        )
+    return results
 
 
 def _budget_denominators(
@@ -954,6 +1018,7 @@ def _budget_denominators(
     metrics: PolicyMetricSummary,
     tool_argument_records: int,
     tool_divergence_records: int,
+    invariant_records: int,
     calls: list[Call],
 ) -> dict[str, int]:
     """Every budget's own denominator for one scope, keyed by budget name.
@@ -966,7 +1031,7 @@ def _budget_denominators(
     the one it was *judged* on.
 
     The companion of :data:`_RATE_CEILING_DENOMINATORS`, which names the rate
-    ceilings' rows in prose; this covers all seven budgets, because
+    ceilings' rows in prose; this covers every budget, because
     ``BUNDLE_SPEC.md`` asks every emitted budget for its sample size.
     """
     return {
@@ -989,6 +1054,9 @@ def _budget_denominators(
         # axis is configured on or off.
         "max_tool_argument_drift": tool_argument_records,
         "max_tool_divergence": tool_divergence_records,
+        # The exception: distinct examples, not rows -- the budget is a count
+        # of examples, and each rule set writes its own row per example.
+        "max_invariant_violations": invariant_records,
         **{
             name: _call_ratio_denominator(calls, field=call_field)
             for name, call_field in _CALL_RATIO_FIELDS.items()
@@ -1199,6 +1267,11 @@ def _verdict_for(
     comparisons: list[ComparisonResult],
     budgets: list[BudgetResult],
 ) -> MigrationVerdict:
+    if _invariant_breaches(budgets):
+        # Before the small-sample early return: a broken trace rule is an
+        # assertion the team wrote down, not a statistic, so it needs no
+        # sample size to mean something -- in a slice exactly as overall.
+        return "fail"
     if comparisons and all(c.severity == "insufficient" for c in comparisons):
         return "inconclusive"
     if any(not b.passed and b.conclusive for b in budgets):
@@ -1264,6 +1337,60 @@ def _slice_budget_notes(budgets: list[BudgetResult]) -> list[str]:
         + f". Keep {b.scope} on the source model or widen that budget."
         for b in budgets
         if b.scope != "overall" and not b.passed and b.conclusive
+    ]
+
+
+def _invariant_breaches(budgets: list[BudgetResult]) -> list[BudgetResult]:
+    """The breached ``max_invariant_violations`` rows -- always conclusive."""
+    return [b for b in budgets if b.name == "max_invariant_violations" and not b.passed]
+
+
+def _invariant_reason(breaches: list[BudgetResult]) -> str:
+    """Why a broken trace rule failed the run, naming the worst scope."""
+    worst = max(breaches, key=lambda b: b.observed)
+    where = "" if worst.scope == "overall" else f" in the '{worst.scope}' slice"
+    return (
+        f"the target broke a hand-written trace rule on {int(worst.observed)} of "
+        f"{worst.denominator} examples{where}, over the {int(worst.allowed)} allowed by "
+        "migration_policy.max_invariant_violations. Trace rules are assertions, so no "
+        "sample size softens them."
+    )
+
+
+def _violated_rule_ids(raw: Any) -> set[str]:
+    """The ``rule_id`` of every violation in one side's metadata list."""
+    if not isinstance(raw, list):
+        return set()
+    return {rule for v in raw if isinstance(v, dict) and isinstance(rule := v.get("rule_id"), str)}
+
+
+def _shared_invariant_notes(records: list[EvalRecord]) -> list[str]:
+    """One line when the source broke the same rule on the same example as the target.
+
+    Not an exemption -- the target still fails -- but a shared break is the
+    signal that either both models get this wrong or the rule no longer
+    matches the toolset, and only the rule's owner can say which.
+    """
+    shared_rules: set[str] = set()
+    # Distinct examples, not rows: two rule sets sharing a break on one
+    # example are still one example.
+    examples: set[tuple[str, str]] = set()
+    for r in _evidence(records):
+        if not _is_kind(r, _INVARIANTS_KIND):
+            continue
+        common = _violated_rule_ids(r.metadata.get("source_violations")) & _violated_rule_ids(
+            r.metadata.get("target_violations")
+        )
+        if common:
+            shared_rules |= common
+            examples.add((r.prompt_id, r.example_id))
+    if not examples:
+        return []
+    return [
+        f"The source model also broke {', '.join(sorted(shared_rules))} on {len(examples)} "
+        "example(s) where the target did. Either both models break the rule or it no "
+        "longer matches the toolset: review it with its owner rather than raising "
+        "max_invariant_violations."
     ]
 
 
@@ -1413,6 +1540,11 @@ def _slice_policy(
             base.max_tool_divergence
             if override.max_tool_divergence is None
             else override.max_tool_divergence
+        ),
+        max_invariant_violations=(
+            base.max_invariant_violations
+            if override.max_invariant_violations is None
+            else override.max_invariant_violations
         ),
         tool_argument_drift_floor=(
             base.tool_argument_drift_floor

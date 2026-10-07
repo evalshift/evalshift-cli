@@ -126,6 +126,7 @@ migration_policy:
   min_equivalence_rate: 0.75
   max_tool_argument_drift: 0.20
   max_tool_divergence: 0.20  # share of pairs where the target routed elsewhere
+  max_invariant_violations: 0  # examples where the target broke a blocking trace rule
   tool_argument_drift_floor: 0.9   # below this a call counts as drifted
   max_cost_increase: 0.30    # target may cost up to 30% more
   max_latency_increase: 0.30 # …and be up to 30% slower
@@ -196,6 +197,25 @@ means the target called a tool the source did not, or skipped one it did.
 On a teacher-forced multi-round replay the row's score is the mean over the
 replayed rounds, so an example counts as diverged if **any** round diverged.
 
+`max_invariant_violations` is a **count**, not a rate: the number of examples
+on which the target broke at least one rule of a blocking
+[`trace_invariants`](#evaluatorstrace_invariants) evaluator, judged against the
+rules alone — a rule the source broke too still counts against the target. The
+default `0` fails on the first broken rule. Examples are counted distinctly by
+`(prompt_id, example_id)`: every `trace_invariants` entry writes its own row, and
+an example that broke rules in two entries counts once, over a denominator of
+the distinct examples with a blocking row. A row averaged over
+`samples_per_example` repeats counts when any one sample broke a rule. Because
+a rule is an assertion the team wrote down rather than a statistic, a breach is
+always conclusive: no interval softens it, it carries no `1/n` granularity
+warning, and it turns `inconclusive` and `conditional_pass` into `fail` even
+when the suite is too small for the paired tests. The same holds per slice: a
+slice whose own `max_invariant_violations` breaches reads `fail` however few
+comparisons it has. The budget's row appears only in scopes that scored at least
+one blocking `trace_invariants` row, so a project with no trace rules (or only
+advisory ones) sees no new budget row. It is overridable per slice like the
+others.
+
 A `tool_selection.conformance` row where **both** models missed the recorded
 ground truth by the same margin is excluded from every policy rate: its zero
 delta is a shared failure, not evidence the migration is safe. Such rows are
@@ -263,6 +283,16 @@ Two behaviours to know:
   `conclusive: false` on a scope that scored zero records — their
   `0/0` default looks clean but measures nothing.
 
+* **`max_invariant_violations` is conclusive by construction.** It counts
+  distinct examples, so it has no interval and no "too small to be sure": a breach
+  fails the run (or the slice) outright, overriding `inconclusive` and
+  `conditional_pass`, and the verdict's `reason` names the scope and the
+  count. Only blocking `trace_invariants` evaluators count toward it. When the
+  source broke the same rule on the same example, `recommendations` adds a
+  line saying so — not an exemption, but a hint that either both models break
+  the rule or the rule no longer matches the toolset, which its owner should
+  review.
+
 * **`fail_on_dropped_params` gates constraints, not scores.** Default
   `false`. A promoted capture can pin generation parameters
   (`response_format`, `tool_choice`, `parallel_tool_calls`, `top_p`, a
@@ -312,6 +342,8 @@ the snapshot each run pushed. `policy` is `null` when no `migration_policy` is
 configured, and on a `migration_decision.json` written before this field
 existed. See [What `push` sends](hosted.md#what-push-sends-block-by-block) for
 the upload contract and the notices `push` prints around a policy-less run.
+Because every budget is resolved, the snapshot carries `max_invariant_violations`
+(at its default `0`) even for a config that never mentions trace rules.
 
 ## `prompts`
 
@@ -404,8 +436,9 @@ bad generations fall back to deterministic templated prose.
 
 ## `evaluators`
 
-Seven sub-keys, all optional — `structural`, `semantic`, `tool_selection`,
-`tool_arguments`, `tool_trace_structure`, `agent_trace` and `llm_judge`, each
+Eight sub-keys, all optional — `structural`, `semantic`, `tool_selection`,
+`tool_arguments`, `tool_trace_structure`, `agent_trace`, `trace_invariants` and
+`llm_judge`, each
 documented below. **At least one evaluator must be configured for
 `evalshift evaluate` to do anything.**
 
@@ -610,6 +643,122 @@ evaluators:
       dangerous_tools: ["issue_refund"]
 ```
 
+### `evaluators.trace_invariants`
+
+A list. Each entry is a set of hand-written rules that every in-scope tool-call
+trace must satisfy, checked on **both** sides of every pair and judged against
+the rules, not against the source: a rule the source also broke still counts
+against the target. See [Evaluators → Trace invariants](evaluators.md#trace-invariants)
+for when to reach for it.
+
+Write it in the top-level `evaluators:` block (outside the `capture sync`
+managed region) or in a suite's own `evaluators:` override. `capture sync`
+keeps a managed suite entry's `trace_invariants` when it regenerates that
+entry — see [`managed`](#managed).
+
+```yaml
+evaluators:
+  trace_invariants:
+    - name: payments_contract
+      owner: "@payments-team"     # optional; echoed onto every record and the report
+      applies_to: ["checkout-*"]  # prompt-id globs; default ["*"]
+      blocking: true              # default; false = reported, never gates
+      traces: replayed            # default; `imported` checks `evalshift traces import` traces
+      rules:
+        - id: auth-before-charge
+          type: order
+          before: authenticate
+          after: charge_card
+        - id: no-legacy-refund
+          type: forbidden
+          tools: [refund_v1]
+        - id: one-charge
+          type: call_count
+          tool: charge_card
+          max_calls: 1              # min_calls, max_calls or both; both equal = exact
+        - id: must-book
+          type: required
+          tools: [create_booking]
+        - id: sane-amount
+          type: arguments
+          tool: charge_card
+          json_schema:
+            type: object
+            required: [amount]
+            properties:
+              amount: {type: number, minimum: 0.01, maximum: 5000}
+
+migration_policy:
+  max_invariant_violations: 0     # default; examples where the target broke any blocking rule
+```
+
+| Field        | Type   | Default      | Description |
+| ------------ | ------ | ------------ | ----------- |
+| `name`       | string | (required)   | Identifier surfaced in scores and reports. |
+| `applies_to` | list   | `["*"]`      | Glob list of prompt ids. **Enforced here**, unlike on the other families: a prompt outside these globs is never checked, gets no row and is never counted. If the globs match no prompt in a run (with `traces: imported`, no imported trace pair), `evaluate` prints a warning naming the entry and its `applies_to`, because none of its rules were checked (`compare` scores quietly and does not print it); matching at least one prompt stays silent. |
+| `blocking`   | bool   | `true`       | `true` counts target violations toward [`max_invariant_violations`](#migration_policy); `false` still checks and reports them, but never gates. |
+| `traces`     | string | `replayed`   | `replayed` checks the tool calls `evalshift run` replayed (a pair whose replay recorded no tool trace gets no row). `imported` checks the traces brought in with [`evalshift traces import`](traces.md); `evaluate` fails on a run with no `traces.jsonl`, naming `trace_invariants (traces: imported)` in the error. |
+| `owner`      | string | `null`       | Free text (a team or a handle). Echoed onto every record and into the report, so a violation names who to ask. Nothing enforces it. |
+| `rules`      | list   | (required)   | At least one rule. Every rule has an `id` (unique within the entry; it names violations in reports) and a `type`. |
+
+The unit of checking is a **response**: one model turn, plus the tool calls
+already in its **context** before it answered. On a replayed trace there is one
+response per replayed round, and round *k*'s context is the tool calls on the
+example's `history` assistant turns plus the *recorded* calls of the rounds the
+teacher-forced replay fed back before it; the model's own earlier rounds are
+never context, because the replay never feeds them back. An imported trace is
+one response with an empty context — every call in it was the agent's own.
+Context calls can never *be* violations, since the model under test did not
+make them, but they can satisfy or count toward a rule:
+
+| `type`       | Fields | Violated when | Context role |
+| ------------ | ------ | ------------- | ------------ |
+| `forbidden`  | `tools` (list) | the model calls any tool in `tools` (one violation per call) | none |
+| `required`   | `tools` (list) | some tool in `tools` is called in no response by the model | none: a call only in the context does not satisfy it. Use `call_count` `min_calls` when the conversation may already contain the call |
+| `order`      | `before`, `after` (two different tools) | the model calls `after` and no `before` precedes it, either in the context or earlier in the same response | a context `before` satisfies it |
+| `call_count` | `tool`, `min_calls` and/or `max_calls` (at least one; `max_calls` ≥ `min_calls`) | `max_calls`: a model call to `tool` takes the running count past it, counting context calls first (one violation per excess call). `min_calls`: at the end of the last response, context calls plus the model's calls to `tool` number fewer than it (one violation). Both set and equal is exact cardinality | context calls count, toward both bounds |
+| `arguments`  | `tool`, `json_schema` | a model call to `tool` has arguments that fail `json_schema` (Draft 2020-12, itself validated when the config loads) | none |
+
+"Earlier in the same response" means emitted earlier; imported traces are
+ordered by `sequence_index`, so the two modes agree.
+
+**Scoring.** Each side scores the share of rules it broke zero times —
+`(rules − rules broken) / rules` — so a rule broken three times costs the same
+as one broken once, and `delta = target − source`. The record's kind is
+`trace_invariants`; its metadata carries `rules_checked`, `source_violations`
+and `target_violations` (each a list of `{rule_id, rule_type, tool,
+round_index, detail}`), `owner` when set, and the failure category
+`INVARIANT_VIOLATION` when the target broke anything. With
+`samples_per_example` above 1 the example's row keeps every scored sample's
+violations, each tagged with its `sample` ordinal. The HTML report's
+**Trace rules broken** panel and `report.json`'s `invariant_violations` list
+every rule the target broke, whatever the delta — including those of advisory
+(`blocking: false`) entries, which never count toward the budget — with the
+owner and whether the source broke it too. Each row carries the entry's
+`blocking` flag, and the panel tags `blocking: false` rows **advisory**.
+
+Four things to know:
+
+- **`required` and `min_calls` are not vacuous.** `order`, `arguments` and a
+  `call_count` with only `max_calls` say nothing about a trace that never calls
+  the tool. `required` and `call_count` with `min_calls` fail on every in-scope
+  trace that lacks the calls. A single-shot replay sees only the first
+  response, so scope them with `applies_to`, or use them with
+  `capture sync --rounds all` or with imported traces.
+- **`required` counts the model's calls; `call_count` counts the
+  conversation's.** `required` asks whether the model under test made the
+  call. `call_count` asks whether the conversation contains it, so a recorded
+  history that already called `charge_card` satisfies `min_calls: 1` and
+  leaves `max_calls: 1` no room.
+- **Teacher-forced rounds see recorded context.** Round *k* is judged with the
+  recorded rounds before it as context, not the model's own earlier rounds.
+  That applies to `min_calls` too: it is judged on the last response's context
+  plus that response's own calls.
+- **Malformed arguments fail any schema that requires a field.** Arguments the
+  model emitted as unparseable JSON are recorded as
+  `{"_raw": …, "_parse_error": true}`, which fails any `json_schema` that
+  requires a field.
+
 ### `evaluators.llm_judge`
 
 A list of pairwise judges. Each entry has:
@@ -769,8 +918,8 @@ suites:
 
 The block takes the same families as the top-level `evaluators:` — `structural`,
 `semantic`, `llm_judge`, `tool_selection`, `tool_arguments`,
-`tool_trace_structure`, `agent_trace` — and resolution is **family-level
-replacement**:
+`tool_trace_structure`, `agent_trace`, `trace_invariants` — and resolution is
+**family-level replacement**:
 
 - A family the suite does **not** mention is inherited from the top level.
 - A family it **does** mention replaces the top-level one wholesale. There is no
@@ -787,9 +936,15 @@ a name that has no `suites:` entry, resolves to the top-level block.
 
 ### `managed`
 
-`capture sync` regenerates a managed suite's entire entry — `path` and
+`capture sync` regenerates a managed suite's entry — `path` and
 `evaluators` — from what that suite's captures contain, so hand edits inside the
-marker-delimited region are overwritten. Set `managed: false` to freeze an entry:
+marker-delimited region are overwritten. The one exception is
+`evaluators.trace_invariants`: no capture can derive a team's rules, so sync
+copies a managed entry's existing `trace_invariants` block into the entry it
+regenerates, verbatim. The marker comment above the region still says hand edits
+are overwritten; that text cannot change (sync finds the region by matching it
+exactly), so this paragraph is where the exception is written down. Every other
+hand edit is overwritten. Set `managed: false` to freeze an entry:
 
 ```yaml
 suites:
@@ -883,7 +1038,9 @@ key on evaluator names across runs, so regenerating a suite must not rename what
 it already wired. `structural` is deliberately not derived: nothing in a capture
 says what shape an answer must have. Sync regenerates only the suites it just
 promoted and carries every other entry in the region forward verbatim, and
-`managed: false` freezes an entry entirely (see [`suites`](#suites)).
+`managed: false` freezes an entry entirely (see [`suites`](#suites)). A
+regenerated entry keeps its hand-written `evaluators.trace_invariants` (see
+[`managed`](#managed)).
 Captures with no recorded events are skipped, and captures whose replayed
 content duplicates an already-promoted case (or an earlier capture in the
 same run) are skipped too — duplicate examples inflate *n* and corrupt the

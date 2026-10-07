@@ -21,22 +21,37 @@ from evalshift_cli.cli.commands.evaluate import (
     SCORES_FILENAME,
     _build_evaluators,
     _coverage_for,
+    _is_agent_trace_evaluator,
+    _is_tool_evaluator,
     _pair_calls,
     _PairedCalls,
+    _reduce_sample_cells,
+    _score_agent_traces,
     _score_all,
     _score_one,
+    _ScoredCell,
 )
 from evalshift_cli.cli.main import app
-from evalshift_cli.config.models import ToolSelectionEvaluatorConfig
-from evalshift_cli.evaluators.base import PairedScore
+from evalshift_cli.config.models import (
+    EvaluatorsConfig,
+    ToolSelectionEvaluatorConfig,
+    TraceInvariantsEvaluatorConfig,
+)
+from evalshift_cli.evaluators.base import EvalRecord, PairedScore
+from evalshift_cli.evaluators.failures import INVARIANT_VIOLATION
 from evalshift_cli.evaluators.llm_judge import PairwiseJudgeEvaluator
 from evalshift_cli.evaluators.semantic import CosineSimilarityEvaluator
 from evalshift_cli.evaluators.tool_models import ToolCall, ToolTrace
 from evalshift_cli.evaluators.tool_selection import ToolSelectionEvaluator
+from evalshift_cli.evaluators.trace_invariants import (
+    ImportedTraceInvariantsEvaluator,
+    TraceInvariantsEvaluator,
+)
 from evalshift_cli.models.client import ModelClient
 from evalshift_cli.runner.checkpoint import append_call, read_state, write_state
 from evalshift_cli.runner.models import Call, EvaluatorCoverage, RunModels, RunState
 from evalshift_cli.suite.models import ChatMessage, Suite, SuiteExample
+from evalshift_cli.traces.loader import TRACES_FILENAME
 from tests.unit.suite_examples import suite_example
 
 runner = CliRunner()
@@ -462,6 +477,7 @@ class TestEvaluateErrors:
 
         assert result.exit_code == 1
         assert "agent_trace evaluators require imported traces" in result.stdout
+        assert "trace_invariants" not in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -1468,3 +1484,371 @@ class TestEvaluateWithSamples:
             assert row["metadata"]["samples"]["scored"] == 2
         coverage = read_state(run_dir).evaluator_coverage
         assert [(c.attempted, c.recorded) for c in coverage] == [(2, 2), (2, 2)]
+
+
+# ---------------------------------------------------------------------------
+# trace_invariants — build, applies_to scoping, per-sample violations
+# ---------------------------------------------------------------------------
+
+_INVARIANTS = {
+    "name": "payments",
+    "rules": [{"id": "no-v1", "type": "forbidden", "tools": ["refund_v1"]}],
+}
+
+
+def _tool_pair(prompt_id: str, example_id: str, target_tool: str) -> _PairedCalls:
+    def call(role: str, tool: str) -> Call:
+        return Call(
+            run_id="r1",
+            prompt_id=prompt_id,
+            example_id=example_id,
+            model_id=f"m/{role}",
+            role=role,  # type: ignore[arg-type]
+            trace=ToolTrace(calls=[ToolCall(tool_name=tool, sequence_index=0)]),
+        )
+
+    return _PairedCalls(
+        prompt_id=prompt_id,
+        example_id=example_id,
+        source=call("source", "lookup"),
+        target=call("target", target_tool),
+    )
+
+
+def _imported_trace_line(prompt_id: str, role: str, tool: str) -> str:
+    return json.dumps(
+        {
+            "run_id": "r1",
+            "prompt_id": prompt_id,
+            "example_id": "e1",
+            "role": role,
+            "events": [
+                {
+                    "type": "tool_call",
+                    "sequence_index": 0,
+                    "timestamp": "2026-06-09T12:00:00Z",
+                    "metadata": {},
+                    "name": tool,
+                    "arguments": {},
+                },
+            ],
+        },
+    )
+
+
+def _write_imported_traces(run_dir: Path, prompt_ids: list[str]) -> list[_PairedCalls]:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    lines = [
+        _imported_trace_line(prompt_id, role, tool)
+        for prompt_id in prompt_ids
+        for role, tool in (("source", "lookup"), ("target", "refund_v1"))
+    ]
+    (run_dir / TRACES_FILENAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return [_tool_pair(prompt_id, "e1", "refund_v1") for prompt_id in prompt_ids]
+
+
+class TestTraceInvariantsWiring:
+    def test_build_routes_on_traces(self, tmp_path: Path) -> None:
+        cfg = EvaluatorsConfig(
+            trace_invariants=[
+                TraceInvariantsEvaluatorConfig.model_validate(_INVARIANTS),
+                TraceInvariantsEvaluatorConfig.model_validate(
+                    {**_INVARIANTS, "name": "imported", "traces": "imported"},
+                ),
+            ],
+        )
+        built = _build_evaluators(cfg, tmp_path, judge_client=ModelClient())
+        assert isinstance(built[0], TraceInvariantsEvaluator)
+        assert isinstance(built[1], ImportedTraceInvariantsEvaluator)
+
+    def test_each_variant_lands_on_its_own_scoring_path(self, tmp_path: Path) -> None:
+        cfg = EvaluatorsConfig(
+            trace_invariants=[
+                TraceInvariantsEvaluatorConfig.model_validate(_INVARIANTS),
+                TraceInvariantsEvaluatorConfig.model_validate(
+                    {**_INVARIANTS, "name": "imported", "traces": "imported"},
+                ),
+            ],
+        )
+        replayed, imported = _build_evaluators(cfg, tmp_path, judge_client=ModelClient())
+        assert _is_tool_evaluator(replayed)
+        assert not _is_agent_trace_evaluator(replayed)
+        assert _is_agent_trace_evaluator(imported)
+        assert not _is_tool_evaluator(imported)
+
+    def test_the_config_blocking_flag_rides_on_the_evaluator(self, tmp_path: Path) -> None:
+        cfg = EvaluatorsConfig(
+            trace_invariants=[
+                TraceInvariantsEvaluatorConfig.model_validate({**_INVARIANTS, "blocking": False}),
+            ],
+        )
+        (built,) = _build_evaluators(cfg, tmp_path, judge_client=ModelClient())
+        assert built.blocking is False  # type: ignore[attr-defined]
+
+    async def test_a_prompt_outside_applies_to_is_never_attempted(self) -> None:
+        evaluator = TraceInvariantsEvaluator(
+            TraceInvariantsEvaluatorConfig.model_validate({**_INVARIANTS, "applies_to": ["pay*"]}),
+        )
+        cells = await _score_all(
+            Console(),
+            [evaluator],  # type: ignore[list-item]
+            [_tool_pair("payments", "e1", "refund_v1"), _tool_pair("support", "e2", "refund_v1")],
+            "r1",
+            {},
+            concurrency=2,
+            quiet=True,
+        )
+        assert [(c.prompt_id, c.record is not None) for c in cells] == [("payments", True)]
+        coverage = _coverage_for(cells)
+        assert (coverage[0].attempted, coverage[0].unmeasured) == (1, [])
+
+    async def test_imported_prompt_outside_applies_to_is_skipped(self, tmp_path: Path) -> None:
+        evaluator = ImportedTraceInvariantsEvaluator(
+            TraceInvariantsEvaluatorConfig.model_validate(
+                {**_INVARIANTS, "traces": "imported", "applies_to": ["pay*"]},
+            ),
+        )
+        run_dir = tmp_path / "r1"
+        pairs = _write_imported_traces(run_dir, ["support"])
+
+        cells = await _score_agent_traces(
+            run_dir=run_dir,
+            evaluators=[evaluator],  # type: ignore[list-item]
+            pairs=pairs,
+            run_id="r1",
+        )
+
+        assert cells == []
+
+    async def test_imported_prompt_inside_applies_to_is_scored(self, tmp_path: Path) -> None:
+        evaluator = ImportedTraceInvariantsEvaluator(
+            TraceInvariantsEvaluatorConfig.model_validate(
+                {**_INVARIANTS, "traces": "imported", "applies_to": ["pay*"]},
+            ),
+        )
+        run_dir = tmp_path / "r1"
+        pairs = _write_imported_traces(run_dir, ["payments", "support"])
+
+        cells = await _score_agent_traces(
+            run_dir=run_dir,
+            evaluators=[evaluator],  # type: ignore[list-item]
+            pairs=pairs,
+            run_id="r1",
+        )
+
+        assert [(c.prompt_id, c.kind) for c in cells] == [("payments", "trace_invariants")]
+        record = cells[0].record
+        assert record is not None
+        assert record.target_score < 1.0
+        assert record.metadata["failure_categories"] == [INVARIANT_VIOLATION]
+
+    def test_sample_reduction_keeps_every_samples_violations(self) -> None:
+        """Review Focus 1: the lead sample was clean, sample 2 broke the rule."""
+
+        def cell(index: int, target_violations: list[dict[str, Any]]) -> _ScoredCell:
+            target_score = 0.0 if target_violations else 1.0
+            metadata: dict[str, Any] = {
+                "rules_checked": ["no-v1"],
+                "source_violations": [],
+                "target_violations": target_violations,
+            }
+            if target_violations:
+                metadata["failure_categories"] = [INVARIANT_VIOLATION]
+            return _ScoredCell(
+                prompt_id="p",
+                example_id="e1",
+                evaluator_name="payments",
+                kind="trace_invariants",
+                record=EvalRecord(
+                    run_id="r1",
+                    prompt_id="p",
+                    example_id="e1",
+                    evaluator_name="payments",
+                    kind="trace_invariants",
+                    source_score=1.0,
+                    target_score=target_score,
+                    delta=target_score - 1.0,
+                    metadata=metadata,
+                ),
+                sample_index=index,
+            )
+
+        broken = {
+            "rule_id": "no-v1",
+            "rule_type": "forbidden",
+            "tool": "refund_v1",
+            "round_index": 0,
+            "detail": "called forbidden tool 'refund_v1'",
+        }
+        (reduced,) = _reduce_sample_cells([cell(0, []), cell(1, []), cell(2, [broken])])
+        assert reduced.record is not None
+        assert reduced.record.target_score < 1.0
+        assert reduced.record.metadata["target_violations"] == [{**broken, "sample": 2}]
+        assert INVARIANT_VIOLATION in reduced.record.metadata["failure_categories"]
+
+    async def test_other_families_reduced_metadata_gains_no_violation_keys(self) -> None:
+        cells = await _cells({"ex1": ["0.2", "0.4", "0.9"]})
+        (cell,) = cells
+        assert cell.record is not None
+        assert set(cell.record.metadata) == {"raw", "samples"}
+
+
+# ---------------------------------------------------------------------------
+# trace_invariants that checked nothing -- an applies_to typo must not be silent
+# ---------------------------------------------------------------------------
+
+
+def _write_invariants_config(
+    tmp_path: Path,
+    *,
+    applies_to: list[str],
+    traces: str = "replayed",
+    with_agent_trace: bool = False,
+) -> Path:
+    agent_trace_block = (
+        """
+          agent_trace:
+            - name: trace_safety
+              dangerous_tools: [issue_refund]"""
+        if with_agent_trace
+        else ""
+    )
+    cfg_yaml = f"""
+        version: 1
+        prompts:
+          - id: greet
+            detection: manual
+            content: "Hi {{name}}"
+            variables: [name]
+        defaults:
+          source_model: gemini-2.5-flash
+          target_model: gemini-2.5-pro
+        evaluators:
+          trace_invariants:
+            - name: payments_contract
+              applies_to: {json.dumps(applies_to)}
+              traces: {traces}
+              rules:
+                - id: no-v1
+                  type: forbidden
+                  tools: [refund_v1]{agent_trace_block}
+    """
+    path = tmp_path / "evalshift.yaml"
+    path.write_text(cfg_yaml, encoding="utf-8")
+    return path
+
+
+def _evaluate_output(tmp_path: Path, *, quiet: bool = False) -> str:
+    from evalshift_cli.cli.commands.evaluate import run_evaluate
+
+    console = Console(record=True, width=400)
+    run_evaluate(
+        run_id="r_20260601_aaaaaa",
+        config_path=tmp_path / "evalshift.yaml",
+        runs_base=tmp_path / ".evalshift" / "runs",
+        console=console,
+        quiet=quiet,
+    )
+    return console.export_text()
+
+
+def _write_greet_traces(tmp_path: Path) -> None:
+    run_dir = tmp_path / ".evalshift" / "runs" / "r_20260601_aaaaaa"
+    lines = [
+        _imported_trace_line("greet", role, tool).replace('"e1"', f'"{example_id}"')
+        for example_id in ("ex1", "ex2")
+        for role, tool in (("source", "lookup"), ("target", "lookup"))
+    ]
+    (run_dir / TRACES_FILENAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class TestTraceInvariantsThatCheckedNothing:
+    def test_a_replayed_evaluator_matching_no_prompt_warns(self, tmp_path: Path) -> None:
+        _write_invariants_config(tmp_path, applies_to=["checkout-*"])
+        _scaffold_run(tmp_path)
+
+        output = _evaluate_output(tmp_path)
+
+        assert "payments_contract" in output
+        assert "checked nothing" in output
+        assert "['checkout-*']" in output
+
+    def test_an_imported_evaluator_matching_no_trace_pair_warns(self, tmp_path: Path) -> None:
+        _write_invariants_config(tmp_path, applies_to=["pay*"], traces="imported")
+        _scaffold_run(tmp_path)
+        _write_greet_traces(tmp_path)
+
+        output = _evaluate_output(tmp_path)
+
+        assert "payments_contract" in output
+        assert "checked nothing" in output
+        assert "['pay*']" in output
+        assert "imported trace pair" in output
+
+    def test_partial_scoping_stays_silent(self, tmp_path: Path) -> None:
+        _write_invariants_config(tmp_path, applies_to=["gre*", "checkout-*"])
+        _scaffold_run(tmp_path)
+
+        assert "checked nothing" not in _evaluate_output(tmp_path)
+        state = read_state(tmp_path / ".evalshift" / "runs" / "r_20260601_aaaaaa")
+        assert [(c.evaluator_name, c.attempted) for c in state.evaluator_coverage] == [
+            ("payments_contract", 2)
+        ]
+
+    def test_an_imported_evaluator_that_scored_stays_silent(self, tmp_path: Path) -> None:
+        _write_invariants_config(tmp_path, applies_to=["gre*"], traces="imported")
+        _scaffold_run(tmp_path)
+        _write_greet_traces(tmp_path)
+
+        assert "checked nothing" not in _evaluate_output(tmp_path)
+        scores = tmp_path / ".evalshift" / "runs" / "r_20260601_aaaaaa" / SCORES_FILENAME
+        assert len(scores.read_text(encoding="utf-8").splitlines()) == 2
+
+    def test_quiet_suppresses_the_warning(self, tmp_path: Path) -> None:
+        _write_invariants_config(tmp_path, applies_to=["checkout-*"])
+        _scaffold_run(tmp_path)
+
+        assert "checked nothing" not in _evaluate_output(tmp_path, quiet=True)
+
+    def test_the_cli_shows_the_warning(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _write_invariants_config(tmp_path, applies_to=["checkout-*"])
+        run_id = _scaffold_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["evaluate", run_id])
+
+        assert result.exit_code == 0
+        assert "checked nothing" in " ".join(result.stdout.split())
+
+
+class TestMissingImportedTracesNamesTheFamily:
+    def test_imported_trace_invariants_alone_is_named(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _write_invariants_config(tmp_path, applies_to=["*"], traces="imported")
+        run_id = _scaffold_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["evaluate", run_id])
+
+        assert result.exit_code == 1
+        stdout = " ".join(result.stdout.split())
+        assert "trace_invariants (traces: imported) evaluators require imported traces" in stdout
+        assert "agent_trace" not in stdout
+
+    def test_both_families_are_named(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _write_invariants_config(
+            tmp_path, applies_to=["*"], traces="imported", with_agent_trace=True
+        )
+        run_id = _scaffold_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["evaluate", run_id])
+
+        assert result.exit_code == 1
+        stdout = " ".join(result.stdout.split())
+        assert (
+            "agent_trace and trace_invariants (traces: imported) evaluators require imported traces"
+        ) in stdout

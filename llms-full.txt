@@ -85,7 +85,7 @@ as one section under the pipeline block (also on stage failure); errors are neve
 | scores.jsonl | evaluate | one EvalRecord per (pair x evaluator): source/target scores in [0,1], delta |
 | analysis.json | analyze | per-(prompt,evaluator,slice) statistics + severity |
 | migration_decision.json | analyze | policy verdict (only when migration_policy configured) |
-| report.json + report.html | report | payload + single-file HTML (no external assets, dark-only) |
+| report.json + report.html | report | payload + single-file HTML (no external assets, dark-only). report.json top-level invariant_violations: one row per trace rule the target broke (see evaluators.trace_invariants) |
 | insights.json | report | cached machine-written narrative (optional; --no-insights skips) |
 | traces.jsonl | traces import | optional BYO agent traces |
 | run_bundle.json.gz | bundle/push | optional hosted upload bundle |
@@ -323,6 +323,10 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   carried forward VERBATIM (raw mappings, not revalidated -- a malformed hand edit is never
   silently deleted). Partition guarantee: syncing one suite cannot disturb another.
   managed: false on an entry -> left alone; sync prints the entry it WOULD have written.
+  EXCEPTION for regenerated managed entries: a hand-written evaluators.trace_invariants block
+  is copied VERBATIM into the regenerated entry (no capture can derive a team's rules). The
+  marker comment still says hand edits are overwritten -- its text is matched exactly to find
+  the region, so it cannot change; this is the documented exception.
   Sync never touches config OUTSIDE the markers, so a stale top-level tool evaluator block
   is yours to delete by hand.
   Mapping: first model input -> inputs (bare string lands under --input-var), recorded tool
@@ -608,7 +612,41 @@ evaluators:                         # every evaluator config also takes blocking
       check_arguments: bool = true
       check_missing_verification: bool = true
       verification_tools: [str]
-      dangerous_tools: [str]
+      dangerous_tools: [str]          # flags target calls IN EXCESS of the source's (relative)
+  trace_invariants:                 # list; hand-written rules, BOTH sides judged vs the RULES
+    - name: str                     #   (not vs the source): a rule the source also broke still
+      applies_to: ["*"]             #   counts. applies_to IS ENFORCED here (other families
+      #   accept it unenforced): an out-of-scope prompt gets no row and is never counted.
+      #   Globs matching NO prompt (imported: no trace pair) -> evaluate prints a warning
+      #   naming the entry + applies_to (not under quiet, so not in `compare`); >=1 match
+      #   stays silent.
+      #   traces: imported with no traces.jsonl -> evaluate errors naming the family.
+      blocking: bool = true         # false = checked + reported, never counts toward the budget
+      traces: replayed|imported = replayed   # imported = traces from `traces import`
+      owner: str|null = null        # free text, echoed onto records + report; unenforced
+      rules:                        # >=1; id unique within the entry; discriminated on type
+        - {id: str, type: forbidden, tools: [str]}           # any model call to one -> 1 per call
+        - {id: str, type: required, tools: [str]}            # a tool the MODEL called in no response
+        - {id: str, type: order, before: str, after: str}    # model calls `after` with no `before`
+          #   earlier (context or earlier in same response); before != after
+        - {id: str, type: call_count, tool: str, min_calls: int>=0|null, max_calls: int>=0|null}
+          #   >=1 bound; max>=min; equal = exact. max: running count (context first) past it,
+          #   1 per excess call. min: context + model calls at end of LAST response < it (1)
+        - {id: str, type: arguments, tool: str, json_schema: {...}}  # Draft 2020-12, checked at
+          #   load; {"_parse_error": true} args fail any schema that requires a field
+      # Unit = RESPONSE (one model turn) + CONTEXT (tool calls already in it). Replayed: one
+      #   response per round; round k context = history assistant tool_calls + RECORDED rounds
+      #   0..k-1 the teacher-forced replay fed back (never the model's own earlier rounds).
+      #   Imported: one response, empty context. Context calls are never violations; they
+      #   satisfy `order` and count toward both call_count bounds; `required` ignores them.
+      # required / min_calls are NOT vacuous (fail every in-scope trace lacking the call); on a
+      #   single-shot replay they see only the first response -> scope with applies_to, or use
+      #   --rounds all / imported traces. order/arguments/max-only call_count are vacuous when
+      #   the tool is never called. Replayed pairs with no tool trace get no row.
+      # Score per side = (rules - rules broken) / rules; kind slug trace_invariants; metadata
+      #   rules_checked, source_violations, target_violations (each [{rule_id, rule_type, tool,
+      #   round_index, detail}], with sample ordinal when samples_per_example > 1), owner;
+      #   failure_categories [INVARIANT_VIOLATION] when the target broke anything.
 suites:                             # managed block; capture sync rewrites between
   <name>:                           # ">>> evalshift suites" markers
     source: captured|jsonl = captured
@@ -622,6 +660,7 @@ suites:                             # managed block; capture sync rewrites betwe
       tool_arguments: [...]|null    #   [] or null = REMOVE the inherited family
       tool_trace_structure: [...]|null   # absent vs null are DIFFERENT instructions
       agent_trace: [...]|null            # (resolution reads model_fields_set)
+      trace_invariants: [...]|null       # kept verbatim by capture sync on managed entries
   # Resolved by EvalShiftConfig.evaluators_for(suite_name) -- the single resolution point;
   # evaluate, report and the hosted bundle all route through it, so scored set == reported set.
   # RunState.suite_name carries the name (set by run/compare from --suite-name; None for a raw
@@ -633,6 +672,8 @@ migration_policy:                   # optional; fractions not percents
   max_tool_argument_drift: float = 0.20 (0..1)
   max_tool_divergence: float = 0.20 (0..1)   # share of tool_selection.divergence rows that regressed
                                               # (multi-round replay: any diverged round counts)
+  max_invariant_violations: int = 0 (>=0)    # COUNT of examples where the target broke a
+                                              # blocking trace_invariants rule; always conclusive
   tool_argument_drift_floor: float = 0.9 (0..1)  # target arg score below which a call counts as drifted
   max_cost_increase: float = 0.30 (0..10)
   max_latency_increase: float = 0.30 (0..10)
@@ -807,6 +848,18 @@ actually wrote scores.jsonl rows (kind == "llm_judge", or the legacy name prefix
 resolved provider equals an arm's renders a third "The judge graded its own relatives" banner
 after the two above (self-preference bias; advisory, no policy knob). Empty when no config is
 loadable, no judge contributed, or no judge overlaps. Provider "other" never matches.
+Trace-rule violations (report.json invariant_violations: list of {prompt_id, example_id,
+evaluator_name, owner, rule_id, rule_type, tool, round_index, detail, source_also, blocking,
+sample}):
+one row per violation in a trace_invariants record's target_violations, WHATEVER the delta (a
+rule both sides broke scores delta 0 and never reaches the top regressions, yet fails the run);
+errored records list nothing. source_also = the source broke the same rule_id on that example.
+sample = null on a single-sample run, else the zero-based ordinal among the samples that
+scored successfully (NOT the raw sample_index). Advisory (blocking: false) entries' violations
+ARE listed; only blocking ones count toward max_invariant_violations. blocking = the record's
+flag (false = advisory entry). report.html renders the same rows as a "Trace rules broken"
+panel (rule, owner, detail, "Source too?"), tagging blocking=false rows with a muted
+"advisory" badge.
 
 ## Migration policy verdict algorithm
 
@@ -837,6 +890,19 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
   tool divergence) report conclusive: false when the scope scored 0 records - their 0/0 default
   measures nothing. The two per-axis budgets also need one of THEIR OWN rows: a scope with no
   tool_arguments evaluator, or with divergence: off, is unmeasured however much else it scored.
+- max_invariant_violations: a COUNT (not a rate) of DISTINCT examples (prompt_id, example_id)
+  with any blocking trace_invariants row whose target_score < 1.0 (each entry writes its own
+  row, so an example breaking two entries counts ONCE; a row averaged over samples counts if
+  ANY sample broke a rule);
+  judged vs the rules alone, so a rule the source broke too still counts. CONCLUSIVE BY
+  CONSTRUCTION: no CI (ci_low/ci_high null), no 1/n warning; a breach -> fail, overriding
+  inconclusive and conditional_pass, even when every comparison is insufficient, and in a
+  SLICE exactly as overall (a slice whose own max_invariant_violations breaches reads fail
+  however few comparisons it has). reason names the worst scope + count. Source broke the same
+  rule on the same example -> one recommendations line (both models break it, or the rule is
+  stale: review with its owner; its example count is distinct examples too) -- advice, not an
+  exemption. The budget row is emitted ONLY in scopes that scored >= 1 BLOCKING
+  trace_invariants row; denominator = distinct examples with such a row.
 - A SHARED GROUND-TRUTH MISS is not equivalence. A tool_selection.conformance row grades each
   side absolutely, so both can miss at the same height (0.0/0.0 where both models called a tool
   the recording never made). delta == 0 read as "equivalent" and is the whole of the
@@ -882,7 +948,9 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
   complement, same rows) / max_critical_regressions - counted over MEASUREMENTS, so an
   evaluator scoring two axes contributes two rows per example and that is correct;
   tool_arguments rows for max_tool_argument_drift; tool_selection.divergence rows for
-  max_tool_divergence; the error-free calls behind both averages (both roles summed,
+  max_tool_divergence; distinct examples with a blocking trace_invariants row for
+  max_invariant_violations; the
+  error-free calls behind both averages (both roles summed,
   0 when either role has none) for max_cost_increase / max_latency_increase. Slices report
   their own counts. Three readings, all distinct: 0 = counted and the sample was empty
   (observed is a default, passed is vacuous); positive int = that many units counted;
@@ -908,7 +976,8 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
   Advisory (blocking: false) evaluators never count as blind gates: advisory-ness is read
   from the scored rows OR from the "advisory:" note on a zero-row comparison, via one shared
   helper, so a silent advisory evaluator neither demotes the verdict nor gets named.
-  inconclusive: all comparisons insufficient, or unconfirmed rate-budget breach.
+  inconclusive: all comparisons insufficient, or unconfirmed rate-budget breach (never when
+  max_invariant_violations is breached -- that is fail).
   pass: otherwise.
 - Semantic drift above min_similarity counts as equivalent, not regression. min_equivalence_rate
   floors the NON-REGRESSION rate: equivalent and improved both count toward it.
@@ -928,7 +997,9 @@ migration_policy is configured; inconclusive exits 0).
   as-is, so re-run `bundle RUN_ID` after a config edit. Either way this is
   what lets the hosted gate check a PR against the exact budgets the bundle's own verdict
   used, instead of a separate, web-edited policy -- see `evalshift push` above and
-  docs/hosted.md. null on the inconclusive_decision path (no migration_policy configured) and
+  docs/hosted.md. decision.policy always carries max_invariant_violations (default 0), even
+  for a config with no trace rules, so the hosted server must accept that field.
+  null on the inconclusive_decision path (no migration_policy configured) and
   on a migration_decision.json written before this field existed. evalshift.yaml is the
   source of truth for the policy; the web app's per-project policy view is becoming a
   read-only display of the snapshot each run pushed.
@@ -1018,7 +1089,8 @@ content leaves the machine.
     concurrency, cache, max_cost_usd, max_tokens, samples_per_example); slices (always [] --
     a legacy key kept so eval_config_hash stays stable; the top-level config key is removed);
     full evaluators block INCLUDING each llm_judge criterion_prompt text (keep judge criteria
-    free of secrets).
+    free of secrets). An EMPTY trace_invariants list is dropped from it, so configs without
+    trace rules keep their eval_config_hash; adding rules changes it.
   - dataset_snapshot: suite path, size, slice names, examples_hash. No example content.
 - NEVER uploads: provider API keys; the hosted token (never inside a bundle); prompt bodies /
   system prompts (manual content -> content_hash; python_string bodies never enter the config);
@@ -1192,7 +1264,7 @@ evaluators:
       blocking: false
 migration_policy: {max_overall_regression_rate: 0.30, max_critical_regressions: 1,
   min_equivalence_rate: 0.75, max_tool_argument_drift: 0.20, max_tool_divergence: 0.20,
-  max_cost_increase: 0.30, max_latency_increase: 0.30}
+  max_invariant_violations: 0, max_cost_increase: 0.30, max_latency_increase: 0.30}
   # ^ the model-upgrade profile = the MigrationPolicy field defaults. init does NOT
   #   scaffold tool_argument_drift_floor; it is inherited at 0.9. Tighter presets:
   #   --profile cost-reduction|quantization|provider-switch|local-model.
@@ -1226,7 +1298,8 @@ suites:
         - {name: routing_args, against: expected}
 # <<< evalshift suites <<<
 # Keeping a hand edit (severity_floor: high, a per-field strategy)? Set `managed: false` on
-# that entry -- otherwise the next sync regenerates it.
+# that entry -- otherwise the next sync regenerates it. (evaluators.trace_invariants is the
+# one hand edit sync keeps on a managed entry.)
 
 # golden.jsonl rows
 {"id": "ex_security_01", "inputs": {"query": "User account_42 had 5 failed login attempts in the last hour"}, "tags": ["security"], "expected_tools": [{"tool_name": "notify_security_team", "match_strategy": "subset"}], "toolset_ref": "sha256:1a2b3c..."}

@@ -144,6 +144,8 @@ pre {
 .badge-ok { color: var(--ok); background: var(--ok-tint); border-color: var(--ok-edge); }
 .badge-warn { color: var(--warn); background: var(--warn-tint); border-color: var(--warn-edge); }
 .badge-bad { color: var(--bad); background: var(--bad-tint); border-color: var(--bad-edge); }
+/* A broken rule from a `blocking: false` entry: reported, never gates. */
+.advisory-tag { color: var(--dim2); }
 
 .notice {
   padding: 14px 16px;

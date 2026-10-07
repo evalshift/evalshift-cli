@@ -44,6 +44,7 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -65,6 +66,7 @@ from evalshift_cli.config.loader import ConfigError, load_config
 from evalshift_cli.config.models import EvalShiftConfig, EvaluatorsConfig
 from evalshift_cli.evaluators.agent_trace import AgentTraceEvaluator
 from evalshift_cli.evaluators.base import EvalRecord, Evaluator, EvaluatorError, PairedScore
+from evalshift_cli.evaluators.failures import INVARIANT_VIOLATION
 from evalshift_cli.evaluators.llm_judge import PairwiseJudgeEvaluator
 from evalshift_cli.evaluators.semantic import CosineSimilarityEvaluator, _cosine
 from evalshift_cli.evaluators.structural import (
@@ -80,6 +82,8 @@ from evalshift_cli.evaluators.tool_arguments import (
 from evalshift_cli.evaluators.tool_models import ToolSpec
 from evalshift_cli.evaluators.tool_selection import ToolSelectionEvaluator
 from evalshift_cli.evaluators.tool_trace_structure import ToolTraceStructureEvaluator
+from evalshift_cli.evaluators.trace_invariants import KIND as TRACE_INVARIANTS_KIND
+from evalshift_cli.evaluators.trace_invariants import build_trace_invariants_evaluator
 from evalshift_cli.models.capabilities import honors_temperature
 from evalshift_cli.models.client import ModelClient
 from evalshift_cli.models.registry import resolve_model
@@ -239,6 +243,10 @@ def run_evaluate(
             quiet=quiet,
         ),
     )
+
+    if not quiet:
+        for evaluator in _unchecked_trace_invariants(evaluators, coverage):
+            console.print(_unchecked_trace_invariants_warning(evaluator))
 
     output_path = run_dir / SCORES_FILENAME
     with output_path.open("w", encoding="utf-8") as fh:
@@ -443,6 +451,11 @@ def _build_evaluators(
         _add(ToolTraceStructureEvaluator(tts), blocking=tts.blocking)  # type: ignore[arg-type]
     for agent_trace in evaluators_cfg.agent_trace:
         _add(AgentTraceEvaluator(agent_trace), blocking=agent_trace.blocking)  # type: ignore[arg-type]
+    # ``traces: replayed`` builds a ``score_pair`` evaluator and ``imported``
+    # a ``score_trace_pair`` one, so the method-based dispatch below routes
+    # each to its own path without knowing about the family.
+    for ti in evaluators_cfg.trace_invariants:
+        _add(build_trace_invariants_evaluator(ti), blocking=ti.blocking)  # type: ignore[arg-type]
 
     return out
 
@@ -553,6 +566,68 @@ def _is_tool_evaluator(evaluator: Evaluator) -> bool:
 def _is_agent_trace_evaluator(evaluator: Evaluator) -> bool:
     """True iff ``evaluator`` consumes imported :class:`AgentTrace` pairs."""
     return hasattr(evaluator, "score_trace_pair")
+
+
+def _applies(evaluator: Evaluator, prompt_id: str) -> bool:
+    """Whether ``evaluator`` is scoped to ``prompt_id`` at all.
+
+    An evaluator outside its scope was never asked, so it gets no cell: no
+    row, and no coverage attempt that would later read as "unmeasured".
+    Only evaluators that define ``applies`` are scoped; every other family
+    keeps today's behaviour, where ``applies_to`` is accepted but unenforced.
+
+    Args:
+        evaluator: Any built evaluator.
+        prompt_id: The prompt a pair was produced from.
+
+    Returns:
+        ``False`` only when the evaluator defines ``applies`` and it rejects
+        ``prompt_id``.
+    """
+    applies = getattr(evaluator, "applies", None)
+    return True if applies is None else bool(applies(prompt_id))
+
+
+def _unchecked_trace_invariants(
+    evaluators: list[Evaluator],
+    coverage: list[EvaluatorCoverage],
+) -> list[Evaluator]:
+    """The ``trace_invariants`` evaluators that were handed no pair at all.
+
+    :func:`_applies` gives an out-of-scope pair no cell, so an ``applies_to``
+    that matches nothing leaves no row *and* no coverage entry: the run
+    would read clean without a word about the rules. Any cell -- recorded,
+    errored or unmeasured -- books a coverage entry, so a missing entry is
+    exactly "checked nothing". Partial scoping (one prompt matched) has an
+    entry and stays silent.
+
+    Args:
+        evaluators: Every evaluator built for the run.
+        coverage: The run's per-axis coverage from :func:`_coverage_for`.
+
+    Returns:
+        The ``trace_invariants`` evaluators with no coverage entry, in
+        configured order.
+    """
+    attempted = {c.evaluator_name for c in coverage if c.kind == TRACE_INVARIANTS_KIND}
+    return [
+        e
+        for e in evaluators
+        if _evaluator_kind(e) == TRACE_INVARIANTS_KIND and e.name not in attempted
+    ]
+
+
+def _unchecked_trace_invariants_warning(evaluator: Evaluator) -> str:
+    """The console line for a ``trace_invariants`` evaluator that checked nothing."""
+    config = getattr(evaluator, "config", None)
+    applies_to = list(getattr(config, "applies_to", ["*"]))
+    target = "imported trace pair" if _is_agent_trace_evaluator(evaluator) else "pair"
+    return (
+        f"[yellow]⚠[/yellow] trace_invariants evaluator {escape(repr(evaluator.name))} "
+        f"checked nothing: applies_to {escape(repr(applies_to))} matched no {target} "
+        "in this run, so none of its rules were checked. Check the globs against "
+        "the run's prompt ids."
+    )
 
 
 def _pair_calls(run_dir: Path) -> list[_PairedCalls]:
@@ -702,7 +777,12 @@ async def _score_all(
     if not evaluators:
         return []
 
-    work = [(pair, evaluator) for pair in pairs for evaluator in evaluators]
+    work = [
+        (pair, evaluator)
+        for pair in pairs
+        for evaluator in evaluators
+        if _applies(evaluator, pair.prompt_id)
+    ]
     sem = asyncio.Semaphore(concurrency)
     progress: Progress | None = None
     task_id: TaskID | None = None
@@ -810,11 +890,53 @@ def _reduce_one_group(group: list[_ScoredCell]) -> _ScoredCell:
             "explanation": explanation,
             "metadata": {
                 **lead.metadata,
+                **_merged_violations(successful),
                 "samples": _samples_metadata(len(group), successful),
             },
         },
     )
     return replace(first, record=reduced, sample_index=0)
+
+
+_VIOLATION_KEYS = ("source_violations", "target_violations")
+
+
+def _merged_violations(records: list[EvalRecord]) -> dict[str, Any]:
+    """Every scored sample's trace-rule violations, not only the lead's.
+
+    A reduced row's scores are means over samples, so one broken sample in
+    three pulls ``target_score`` below 1.0 and the gate counts it -- but the
+    row's metadata is the lead sample's, which may be the clean one. Without
+    this the report would show a failed example and no violation to read.
+    ``sample`` is the ordinal among the scored samples. Empty for rows that
+    carry no violation lists, which is every family but ``trace_invariants``.
+
+    Args:
+        records: The successfully scored samples of one example, lead first.
+
+    Returns:
+        Metadata keys to overlay on the lead's: the merged violation lists,
+        and ``failure_categories`` with ``INVARIANT_VIOLATION`` when any
+        sample's target broke a rule.
+    """
+    merged: dict[str, Any] = {}
+    for key in _VIOLATION_KEYS:
+        if not any(key in record.metadata for record in records):
+            continue
+        merged[key] = [
+            {**violation, "sample": ordinal}
+            for ordinal, record in enumerate(records)
+            for violation in record.metadata.get(key) or []
+            if isinstance(violation, dict)
+        ]
+    if merged.get("target_violations"):
+        categories = [
+            c for c in records[0].metadata.get("failure_categories") or [] if isinstance(c, str)
+        ]
+        if INVARIANT_VIOLATION not in categories:
+            categories.append(INVARIANT_VIOLATION)
+        merged["failure_categories"] = categories
+    return merged
 
 
 def _samples_metadata(n: int, successful: list[EvalRecord]) -> dict[str, Any]:
@@ -879,6 +1001,20 @@ def _cells_for(
     ]
 
 
+def _imported_trace_families(evaluators: list[Evaluator]) -> str:
+    """Name the configured families that read ``traces.jsonl``, in a stable order.
+
+    Both ``agent_trace`` and ``trace_invariants`` with ``traces: imported``
+    land here, and an error that named only the first sent a user who
+    configured only the second looking for an evaluator they never wrote.
+    """
+    labels = {
+        TRACE_INVARIANTS_KIND: "trace_invariants (traces: imported)",
+    }
+    kinds = sorted({_evaluator_kind(e) for e in evaluators})
+    return " and ".join(labels.get(kind, kind) for kind in kinds)
+
+
 async def _score_agent_traces(
     *,
     run_dir: Path,
@@ -889,7 +1025,7 @@ async def _score_agent_traces(
     traces_path = run_dir / TRACES_FILENAME
     if not traces_path.exists():
         raise EvaluatorError(
-            "agent_trace evaluators require imported traces. "
+            f"{_imported_trace_families(evaluators)} evaluators require imported traces. "
             f"Run: evalshift traces import {run_id} --source ... --target ...",
         )
     try:
@@ -905,6 +1041,8 @@ async def _score_agent_traces(
     cells: list[_ScoredCell] = []
     for trace_pair in trace_pairs:
         for evaluator in evaluators:
+            if not _applies(evaluator, trace_pair.prompt_id):
+                continue
             try:
                 record = await evaluator.score_trace_pair(  # type: ignore[attr-defined]
                     run_id=run_id,

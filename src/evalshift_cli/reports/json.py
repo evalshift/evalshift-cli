@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -217,6 +217,34 @@ class ExampleRow:
 
 
 @dataclass(frozen=True, slots=True)
+class InvariantViolationRow:
+    """One trace rule the target broke on one example.
+
+    Listed whatever the delta: a rule both models broke scores ``delta == 0``
+    and would never surface among the top regressions, yet a *blocking* entry
+    still counts against ``max_invariant_violations`` under a policy.
+    ``blocking`` is the record's flag: ``False`` rows come from a
+    ``blocking: false`` entry and are reported but never gate.
+    """
+
+    prompt_id: str
+    example_id: str
+    evaluator_name: str
+    owner: str | None
+    rule_id: str
+    rule_type: str
+    tool: str
+    round_index: int
+    detail: str
+    source_also: bool
+    blocking: bool
+    # Zero-based ordinal among the scored samples, set only on a row reduced
+    # over ``samples_per_example > 1``: the same rule then appears once per
+    # sample that broke it. ``None`` on a single-sample run.
+    sample: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PromptSection:
     """Per-prompt slice of the report payload."""
 
@@ -265,6 +293,9 @@ class ReportData:
     # self-preference note under the banners. Empty when no judge overlaps,
     # no judge contributed a score, or the report ran without a config.
     judge_family_overlap: list[dict[str, Any]] = field(default_factory=list)
+    # Every trace rule the target broke, one row per violation, whatever the
+    # delta. Empty when no ``trace_invariants`` evaluator scored the run.
+    invariant_violations: list[InvariantViolationRow] = field(default_factory=list)
 
 
 def build_report_payload(
@@ -341,6 +372,57 @@ def build_report_payload(
             judge_models or {},
             source_model=state.models.source,
             target_model=state.models.target,
+        ),
+        invariant_violations=_invariant_violations(scores),
+    )
+
+
+def _invariant_violations(scores: list[EvalRecord]) -> list[InvariantViolationRow]:
+    """One row per trace rule the target broke, read off ``trace_invariants`` records.
+
+    ``source_also`` is whether the source broke the same rule (by ``rule_id``,
+    on any sample) on the same example: a rule both sides break is more
+    likely a rule to review than a migration regression. Errored records
+    carry no verdict and list nothing.
+    """
+    rows: list[InvariantViolationRow] = []
+    for r in scores:
+        if r.kind != "trace_invariants" or r.error is not None:
+            continue
+        source_rules = {
+            v.get("rule_id")
+            for v in r.metadata.get("source_violations") or []
+            if isinstance(v, dict)
+        }
+        owner = r.metadata.get("owner")
+        for v in r.metadata.get("target_violations") or []:
+            if not isinstance(v, dict):
+                continue
+            sample = v.get("sample")
+            rows.append(
+                InvariantViolationRow(
+                    prompt_id=r.prompt_id,
+                    example_id=r.example_id,
+                    evaluator_name=r.evaluator_name,
+                    owner=owner if isinstance(owner, str) else None,
+                    rule_id=str(v.get("rule_id", "")),
+                    rule_type=str(v.get("rule_type", "")),
+                    tool=str(v.get("tool", "")),
+                    round_index=int(v.get("round_index", 0)),
+                    detail=str(v.get("detail", "")),
+                    source_also=v.get("rule_id") in source_rules,
+                    blocking=r.blocking,
+                    sample=sample if isinstance(sample, int) else None,
+                ),
+            )
+    return sorted(
+        rows,
+        key=lambda row: (
+            row.prompt_id,
+            row.example_id,
+            row.rule_id,
+            row.round_index,
+            -1 if row.sample is None else row.sample,
         ),
     )
 
@@ -1088,12 +1170,14 @@ def _to_jsonable(report: ReportData) -> dict[str, Any]:
         "dropped_params": report.dropped_params,
         "samples_per_example": report.samples_per_example,
         "judge_family_overlap": report.judge_family_overlap,
+        "invariant_violations": [asdict(v) for v in report.invariant_violations],
     }
 
 
 __all__ = [
     "REPORT_JSON_FILENAME",
     "SHARED_GROUND_TRUTH_NOTE_PREFIX",
+    "InvariantViolationRow",
     "PromptEconomics",
     "PromptSection",
     "ReportData",

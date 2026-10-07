@@ -139,6 +139,7 @@ _EVALUATOR_FAMILIES: dict[str, str] = {
     "tool_trace_structure": "Tool sequence",
     "semantic": "Semantic",
     "structural": "Structure",
+    "trace_invariants": "Trace rules",
 }
 
 # Axis labels, keyed on the record's ``kind`` slug and never on the
@@ -514,6 +515,7 @@ def render_html(report: ReportData, *, insight: Insight | None = None) -> str:
         dropped_params=report.dropped_params,
         samples_per_example=report.samples_per_example,
         judge_family_overlap=report.judge_family_overlap,
+        invariant_violations=report.invariant_violations,
         suite_name=_suite_name(report.suite_path),
         source_cost_usd=role_totals["source"]["cost"],
         target_cost_usd=role_totals["target"]["cost"],

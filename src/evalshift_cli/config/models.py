@@ -15,8 +15,10 @@ gives us real validation and keeps ``mypy --strict`` happy.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from evalshift_cli.suite.tags import RESERVED_SLICE_NAME
@@ -385,6 +387,161 @@ class AgentTraceEvaluatorConfig(_StrictModel):
     dangerous_tools: list[str] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Trace invariants — hand-written rules every in-scope trace must satisfy
+# ---------------------------------------------------------------------------
+
+
+class ForbiddenToolsRule(_StrictModel):
+    """The model must never call any tool in ``tools``."""
+
+    type: Literal["forbidden"]
+    id: str = Field(min_length=1)
+    tools: list[str] = Field(min_length=1)
+
+
+class RequiredToolsRule(_StrictModel):
+    """Every tool in ``tools`` must be called at least once by the model.
+
+    The only rule that is not vacuous on a trace that never mentions its
+    tools, so scope it with ``applies_to``: on a single-shot replay it sees
+    the first response only.
+    """
+
+    type: Literal["required"]
+    id: str = Field(min_length=1)
+    tools: list[str] = Field(min_length=1)
+
+
+class ToolOrderRule(_StrictModel):
+    """Every call to ``after`` must be preceded by a call to ``before``.
+
+    "Preceded" counts the calls already in the response's context (recorded
+    history, and on a teacher-forced replay the recorded earlier rounds) and
+    calls emitted earlier in the same response.
+    """
+
+    type: Literal["order"]
+    id: str = Field(min_length=1)
+    before: str = Field(min_length=1)
+    after: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _distinct_tools(self) -> Self:
+        """A tool cannot be required to precede itself."""
+        if self.before == self.after:
+            raise ValueError(f"order rule {self.id!r}: before and after name the same tool")
+        return self
+
+
+class CallCountRule(_StrictModel):
+    """Between ``min_calls`` and ``max_calls`` calls to ``tool`` in the conversation.
+
+    Both bounds count the calls already in a response's context plus the
+    model's own, so a recorded history that already charged leaves the model
+    one charge fewer. ``max_calls`` is checked at every call; ``min_calls`` at
+    the end of the last response. Exact cardinality is both bounds equal.
+    Mirrors ``min_chars``/``max_chars`` on the length evaluator: at least one
+    bound is required.
+    """
+
+    type: Literal["call_count"]
+    id: str = Field(min_length=1)
+    tool: str = Field(min_length=1)
+    min_calls: int | None = Field(default=None, ge=0)
+    max_calls: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _bounded(self) -> Self:
+        """Require at least one bound, and a non-empty range when both are set."""
+        if self.min_calls is None and self.max_calls is None:
+            raise ValueError(
+                f"call_count rule {self.id!r}: at least one of 'min_calls' or 'max_calls' "
+                "is required",
+            )
+        if (
+            self.min_calls is not None
+            and self.max_calls is not None
+            and self.max_calls < self.min_calls
+        ):
+            raise ValueError(
+                f"call_count rule {self.id!r}: max_calls ({self.max_calls}) is below "
+                f"min_calls ({self.min_calls})",
+            )
+        return self
+
+
+class ArgumentsRule(_StrictModel):
+    """Every call to ``tool`` must have arguments valid under ``json_schema``.
+
+    JSON Schema Draft 2020-12, checked at config load so a typo in the schema
+    fails ``evalshift.yaml`` rather than every call it was meant to guard.
+    """
+
+    type: Literal["arguments"]
+    id: str = Field(min_length=1)
+    tool: str = Field(min_length=1)
+    json_schema: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _schema_is_valid(self) -> Self:
+        """Reject a schema that is not itself valid Draft 2020-12."""
+        try:
+            Draft202012Validator.check_schema(self.json_schema)
+        except SchemaError as exc:
+            raise ValueError(
+                f"arguments rule {self.id!r}: json_schema is not valid JSON Schema: {exc.message}",
+            ) from exc
+        return self
+
+
+InvariantRule = Annotated[
+    ForbiddenToolsRule | RequiredToolsRule | ToolOrderRule | CallCountRule | ArgumentsRule,
+    Field(discriminator="type"),
+]
+"""One hand-written trace rule; ``type`` selects which."""
+
+
+class TraceInvariantsEvaluatorConfig(_StrictModel):
+    """Configuration for the trace-invariants evaluator.
+
+    Deterministic rules every in-scope trace must satisfy, checked on both
+    sides of every pair independently of each other: a rule the source also
+    broke is still broken. ``migration_policy.max_invariant_violations``
+    turns a target violation into a failed verdict.
+
+    Attributes:
+        name: Stable identifier surfaced in reports.
+        applies_to: Glob list of prompt ids this evaluator applies to. Unlike
+            the other families (where the field is not yet enforced), a prompt
+            outside these globs is never checked and never counted.
+        blocking: Whether violations can fail the migration verdict.
+        traces: ``replayed`` (default) checks the traces ``evalshift run``
+            replayed; ``imported`` checks traces brought in with
+            ``evalshift traces import``.
+        owner: Free-text owner of these rules (a team or handle), echoed onto
+            every record and the report so a violation names who to ask.
+        rules: The rules, at least one, ids unique within this evaluator.
+    """
+
+    name: str = Field(min_length=1)
+    applies_to: list[str] = Field(default_factory=lambda: ["*"])
+    blocking: bool = True
+    traces: Literal["replayed", "imported"] = "replayed"
+    owner: str | None = None
+    rules: list[InvariantRule] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _unique_rule_ids(self) -> Self:
+        """Rule ids name violations in reports, so they must not collide."""
+        seen: set[str] = set()
+        for rule in self.rules:
+            if rule.id in seen:
+                raise ValueError(f"trace_invariants {self.name!r}: duplicate rule id {rule.id!r}")
+            seen.add(rule.id)
+        return self
+
+
 class EvaluatorsConfig(_StrictModel):
     """Container for all evaluator configurations attached to a run."""
 
@@ -399,6 +556,8 @@ class EvaluatorsConfig(_StrictModel):
     )
     # CLI Phase 2 — imported bring-your-own-agent trace evaluators.
     agent_trace: list[AgentTraceEvaluatorConfig] = Field(default_factory=list)
+    # Hand-written trace rules, checked on both sides regardless of the source.
+    trace_invariants: list[TraceInvariantsEvaluatorConfig] = Field(default_factory=list)
 
     @property
     def tool_evaluator_names(self) -> frozenset[str]:
@@ -441,6 +600,7 @@ class SliceMigrationPolicy(_StrictModel):
     min_equivalence_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     max_tool_argument_drift: float | None = Field(default=None, ge=0.0, le=1.0)
     max_tool_divergence: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_invariant_violations: int | None = Field(default=None, ge=0)
     tool_argument_drift_floor: float | None = Field(default=None, ge=0.0, le=1.0)
     max_cost_increase: float | None = Field(default=None, ge=0.0, le=10.0)
     max_latency_increase: float | None = Field(default=None, ge=0.0, le=10.0)
@@ -479,6 +639,9 @@ class MigrationPolicy(_StrictModel):
             those scores would be worse than failing. Not available per slice:
             a model either accepts a parameter or does not, which is not a
             property any subset of examples can vary.
+        max_invariant_violations: Most examples on which the target may break
+            a blocking ``trace_invariants`` rule before the policy fails. A
+            count, not a rate; ``0`` (default) fails on the first violation.
     """
 
     max_overall_regression_rate: float = Field(default=0.30, ge=0.0, le=1.0)
@@ -496,6 +659,10 @@ class MigrationPolicy(_StrictModel):
     # divergence score below 1.0 means the target called a tool the source did
     # not, or skipped one it did — a behavioural difference at any magnitude.
     max_tool_divergence: float = Field(default=0.20, ge=0.0, le=1.0)
+    # Examples on which the target broke a blocking trace rule. A count, not a
+    # rate, and zero by default: a rule is an assertion the team wrote down,
+    # so a single break is a finding rather than noise to budget for.
+    max_invariant_violations: int = Field(default=0, ge=0)
     # Argument scoring is continuous: a reworded search query or an omitted
     # optional filter lands below 1.0 without being wrong. Counting every
     # negative delta would weigh a 0.98 the same as a 0.0 and burn the drift
@@ -553,6 +720,7 @@ class SuiteEvaluatorsOverride(_StrictModel):
     tool_arguments: list[ToolArgumentsEvaluatorConfig] | None = None
     tool_trace_structure: list[ToolTraceStructureEvaluatorConfig] | None = None
     agent_trace: list[AgentTraceEvaluatorConfig] | None = None
+    trace_invariants: list[TraceInvariantsEvaluatorConfig] | None = None
 
 
 class SuiteSource(_StrictModel):
@@ -740,16 +908,23 @@ class EvalShiftConfig(_StrictModel):
 __all__ = [
     "DEFAULT_JUDGE_MODEL",
     "AgentTraceEvaluatorConfig",
+    "ArgumentsRule",
+    "CallCountRule",
     "Defaults",
     "EvalShiftConfig",
     "EvaluatorsConfig",
+    "ForbiddenToolsRule",
+    "InvariantRule",
     "LLMJudgeConfig",
     "PromptDefinition",
+    "RequiredToolsRule",
     "SemanticEvaluatorConfig",
     "StructuralEvaluatorConfig",
     "SuiteEvaluatorsOverride",
     "SuiteSource",
     "ToolArgumentsEvaluatorConfig",
+    "ToolOrderRule",
     "ToolSelectionEvaluatorConfig",
     "ToolTraceStructureEvaluatorConfig",
+    "TraceInvariantsEvaluatorConfig",
 ]
