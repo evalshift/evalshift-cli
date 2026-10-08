@@ -574,6 +574,24 @@ def test_violation_entries_are_filtered_to_the_server_contract() -> None:
     assert row["scores"][0]["violations"]["target"] == [{**NO_DELETE, "sample": 1}]
 
 
+def test_a_populated_violations_row_validates_against_the_vendored_schema() -> None:
+    """A drift guard, not a red-first test: it passes on arrival and must keep passing.
+
+    The fixture bundle's rows carry no violations, so the end-to-end schema
+    test never sees a populated ``ScoreViolation``. This one does — with the
+    optional ``sample`` ordinal set — so a CLI-side field the server does not
+    accept, or a re-vendored schema that tightens the shape, fails here
+    instead of as a 422 after upload.
+    """
+    row = _rows([_rule_record("ex1", target_violations=[{**NO_DELETE, "sample": 1}])], ("ex1",))[
+        "ex1"
+    ]["scores"][0]
+    assert row["violations"]["target"], "the guard is vacuous without a populated entry"
+    Draft202012Validator(
+        {"$ref": "#/$defs/ExampleScore", "$defs": _vendored_schema()["bundle"]["$defs"]}
+    ).validate(row)
+
+
 def test_a_pair_nothing_measured_is_not_reported_as_passed() -> None:
     """``all()`` over an empty list is ``True`` — absence read as success.
 
