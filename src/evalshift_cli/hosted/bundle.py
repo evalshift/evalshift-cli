@@ -29,6 +29,7 @@ from evalshift_cli.cli.commands.evaluate import SCORES_FILENAME
 from evalshift_cli.config.loader import ConfigError, load_config
 from evalshift_cli.config.models import EvalShiftConfig, EvaluatorsConfig
 from evalshift_cli.evaluators.base import EvalRecord
+from evalshift_cli.evaluators.trace_invariants import KIND as KIND_INVARIANTS
 from evalshift_cli.hosted.trace_events import from_tool_trace
 from evalshift_cli.insights.stage import read_bundle_insight
 from evalshift_cli.reports.economics import (
@@ -463,6 +464,11 @@ def _build_examples(
                         "target_score": item.target_score,
                         "delta": item.delta,
                         "error": item.error,
+                        # Added 2026-10-08; hosted EvalShift accepts both since
+                        # its phase-29 deploy. Everything else in ``metadata``
+                        # stays local — see ``_score_violations``.
+                        "explanation": item.explanation or None,
+                        "violations": _score_violations(item),
                     }
                     for item in pair_scores
                 ],
@@ -512,6 +518,38 @@ def _tool_match(
     if not tool_records:
         return None
     return all(item.delta >= 0 for item in tool_records)
+
+
+#: What a ``violations`` entry may carry on the wire — the server's
+#: ``ScoreViolation`` model is ``extra="forbid"``, so anything else the
+#: evaluator ever adds to ``Violation.to_dict()`` must be dropped here, not
+#: discovered as a 422 after the bundle has uploaded.
+_VIOLATION_KEYS = ("rule_id", "rule_type", "tool", "round_index", "detail", "sample")
+
+
+def _score_violations(record: EvalRecord) -> dict[str, list[dict[str, Any]]] | None:
+    """Which rules each side broke, for a ``trace_invariants`` row that measured.
+
+    Read off the ``source_violations`` / ``target_violations`` metadata the
+    evaluator wrote (``Violation.to_dict()``, plus a ``sample`` ordinal on a
+    repeated-sampling run). ``None`` on every other evaluator and on an errored
+    row — an errored row has no verdict, and an empty ``target`` list would read
+    as a clean one. ``rules_checked``, ``owner`` and ``failure_categories``
+    stay local: the first two ship in ``evaluator_config``, the third in
+    ``decision``.
+    """
+    if record.kind != KIND_INVARIANTS or record.error is not None:
+        return None
+
+    def entries(key: str) -> list[dict[str, Any]]:
+        raw = record.metadata.get(key) or []
+        return [
+            {field: item[field] for field in _VIOLATION_KEYS if field in item}
+            for item in raw
+            if isinstance(item, dict)
+        ]
+
+    return {"source": entries("source_violations"), "target": entries("target_violations")}
 
 
 def _slice_name(example: SuiteExample | None) -> str | None:

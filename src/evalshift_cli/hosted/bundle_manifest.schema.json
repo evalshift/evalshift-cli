@@ -859,6 +859,18 @@
             "title": "Evaluator Name",
             "type": "string"
           },
+          "explanation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Explanation"
+          },
           "kind": {
             "default": "",
             "title": "Kind",
@@ -871,6 +883,17 @@
           "target_score": {
             "title": "Target Score",
             "type": "number"
+          },
+          "violations": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ScoreViolations"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -1549,6 +1572,78 @@
           "latency_ms_p95"
         ],
         "title": "RoleEconomics",
+        "type": "object"
+      },
+      "ScoreViolation": {
+        "additionalProperties": false,
+        "description": "One trace rule one side broke, attributed to one call or one missing tool.\n\nMirrors the CLI's ``evaluators.invariants.Violation.to_dict()`` field for\nfield. ``sample`` is the zero-based sample ordinal on a\n``samples_per_example > 1`` run and absent otherwise.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "round_index": {
+            "minimum": 0,
+            "title": "Round Index",
+            "type": "integer"
+          },
+          "rule_id": {
+            "minLength": 1,
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_type": {
+            "title": "Rule Type",
+            "type": "string"
+          },
+          "sample": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sample"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "rule_type",
+          "tool",
+          "round_index",
+          "detail"
+        ],
+        "title": "ScoreViolation",
+        "type": "object"
+      },
+      "ScoreViolations": {
+        "additionalProperties": false,
+        "description": "Both sides' broken rules for one ``trace_invariants`` score row.\n\nCarried as two lists rather than one tagged list so a reader can tell \"the\nsource broke this rule too\" by rule id without a join. A rule both sides\nbroke still fails the target \u2014 the CLI's policy counts it \u2014 which is the\nreason the source list is worth sending at all.",
+        "properties": {
+          "source": {
+            "items": {
+              "$ref": "#/$defs/ScoreViolation"
+            },
+            "title": "Source",
+            "type": "array"
+          },
+          "target": {
+            "items": {
+              "$ref": "#/$defs/ScoreViolation"
+            },
+            "title": "Target",
+            "type": "array"
+          }
+        },
+        "title": "ScoreViolations",
         "type": "object"
       },
       "SliceAggregate": {
