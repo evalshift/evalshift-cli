@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from evalshift_cli.analysis.policy import is_shared_ground_truth_miss
-from evalshift_cli.analysis.statistics import AXIS_NOTE_PREFIX
+from evalshift_cli.analysis.statistics import ADVISORY_NOTE_PREFIX, AXIS_NOTE_PREFIX
 from evalshift_cli.cli.commands.analyze import ANALYSIS_FILENAME, MIGRATION_DECISION_FILENAME
 from evalshift_cli.cli.commands.evaluate import SCORES_FILENAME
 from evalshift_cli.evaluators.base import EvalRecord
@@ -338,7 +338,8 @@ def build_report_payload(
     truncated = sum(1 for c in calls if c.truncated)
     cost = sum(c.cost_usd for c in calls)
 
-    summary = _build_executive_summary(analysis)
+    advisory = _advisory_evaluator_names(analysis, scores)
+    summary = _build_executive_summary(analysis, advisory)
     sections = _build_prompt_sections(
         analysis,
         scores,
@@ -346,6 +347,7 @@ def build_report_payload(
         suite,
         tool_evaluator_names,
         agent_traces,
+        advisory=advisory,
     )
 
     return ReportData(
@@ -554,9 +556,39 @@ def _n_examples(calls: list[Call]) -> int:
     return len({c.example_id for c in calls})
 
 
-def _build_executive_summary(analysis: dict[str, Any]) -> list[dict[str, Any]]:
-    """One row per prompt summarising the worst non-all-slice severity."""
-    by_prompt: dict[str, dict[str, Any]] = {}
+def _advisory_evaluator_names(analysis: dict[str, Any], scores: list[EvalRecord]) -> set[str]:
+    """Names of the ``blocking: false`` evaluators, as the policy gate sees them.
+
+    From the records when there are records -- every row carries the config
+    flag -- and from the ``advisory:`` note ``analyze`` stamps on the
+    synthesized comparison of an advisory evaluator that scored nothing.
+    Mirrors :func:`evalshift_cli.analysis.policy._advisory_evaluator_names`,
+    which works on parsed comparisons rather than the raw ``analysis.json``
+    rows this module renders.
+    """
+    names = {record.evaluator_name for record in scores if not record.blocking}
+    for comparison in analysis.get("comparisons", []):
+        notes = comparison.get("notes") or []
+        if any(isinstance(note, str) and note.startswith(ADVISORY_NOTE_PREFIX) for note in notes):
+            names.add(comparison["evaluator_name"])
+    return names
+
+
+def _build_executive_summary(
+    analysis: dict[str, Any],
+    advisory: set[str],
+) -> list[dict[str, Any]]:
+    """One row per prompt: the comparison that speaks for it.
+
+    The worst severity wins; ties go to the most negative effect size, then
+    the smaller corrected p-value -- the order :func:`reports.html._headline_comparison`
+    and the insights use, so this table, the header's average score change
+    and the hero panel beside them quote the same row rather than whichever
+    evaluator ``analyze`` happened to list first. Advisory (``blocking:
+    false``) evaluators are passed over while the prompt has a gating one: a
+    rule the target satisfied by calling no tools at all once read as the
+    prompt's "+9% improved" directly above a failed verdict.
+    """
     severity_rank = {
         "critical": 0,
         "high": 1,
@@ -566,13 +598,25 @@ def _build_executive_summary(analysis: dict[str, Any]) -> list[dict[str, Any]]:
         "none": 5,
         "insufficient": 6,
     }
+
+    def order(comparison: dict[str, Any]) -> tuple[int, float, float]:
+        return (
+            severity_rank.get(comparison["severity"], 99),
+            float(comparison.get("effect_size", 0.0)),
+            float(comparison.get("p_value_corrected", 1.0)),
+        )
+
+    by_prompt: dict[str, list[dict[str, Any]]] = {}
     for c in analysis["comparisons"]:
-        prompt = c["prompt_id"]
-        rank = severity_rank.get(c["severity"], 99)
-        existing = by_prompt.get(prompt)
-        if existing is None or rank < severity_rank.get(existing["severity"], 99):
-            by_prompt[prompt] = c
-    return [by_prompt[k] for k in sorted(by_prompt)]
+        by_prompt.setdefault(c["prompt_id"], []).append(c)
+    rows: list[dict[str, Any]] = []
+    for prompt in sorted(by_prompt):
+        gating = [c for c in by_prompt[prompt] if c["evaluator_name"] not in advisory]
+        # A prompt scored only by advisory evaluators keeps its row -- the
+        # table is one line per prompt -- and that row is then the best
+        # advisory one, tagged as such where it is listed in full.
+        rows.append(min(gating or by_prompt[prompt], key=order))
+    return rows
 
 
 def _build_prompt_sections(
@@ -582,6 +626,8 @@ def _build_prompt_sections(
     suite: Suite,
     tool_evaluator_names: frozenset[str],
     agent_traces: dict[TraceKey, AgentTrace],
+    *,
+    advisory: set[str],
 ) -> list[PromptSection]:
     # One displayed output per (prompt, example, role): sample 0. Keyed by
     # role below, so every sample must not overwrite the one before it.
@@ -604,10 +650,15 @@ def _build_prompt_sections(
         # Aggregate rows: pick the implicit "all" slice rows for this prompt.
         # Only these are annotated: the slice table renders significant
         # severities only, and a shared miss is always ``none``.
-        aggregates_all = _annotate_shared_misses(
-            [c for c in prompt_comparisons if c["slice_name"] == "all"],
-            prompt_records,
-        )
+        # ``advisory`` rides on the row so the evaluator table can tag a
+        # ``blocking: false`` entry the way the broken-rules panel does.
+        aggregates_all = [
+            {**row, "advisory": row["evaluator_name"] in advisory}
+            for row in _annotate_shared_misses(
+                [c for c in prompt_comparisons if c["slice_name"] == "all"],
+                prompt_records,
+            )
+        ]
         # Slice rows: every non-all comparison for this prompt.
         slice_rows = [c for c in prompt_comparisons if c["slice_name"] != "all"]
         # Top regressions: the 5 records with the most-negative delta.

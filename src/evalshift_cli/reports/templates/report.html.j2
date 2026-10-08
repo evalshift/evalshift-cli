@@ -559,7 +559,9 @@
                 <span class="stack">
                   <span class="eval-name">{{ evaluator_label(row.evaluator_name, axis) }}</span>
                   <code class="eval-id">{{ row.evaluator_name }}{% if axis %} · {{ axis }}{% endif %}</code>
-                  {% if axis_blurb(axis) %}<span class="eval-axis">{{ axis_blurb(axis) }}</span>{% endif %}
+                  {% if row.get("advisory") %}<span class="badge advisory-tag" title="blocking: false in evalshift.yaml — reported, never gates">advisory</span>{% endif %}
+                  {% set measures = axis_blurb(axis) or kind_blurb(row.get("kind", "")) %}
+                  {% if measures %}<span class="eval-axis">{{ measures }}</span>{% endif %}
                 </span>
               </td>
               <td class="num {{ "warn" if unmeasured else "" }}">{{ row.n }}</td>

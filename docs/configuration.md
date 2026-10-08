@@ -728,14 +728,27 @@ as one broken once, and `delta = target − source`. The record's kind is
 `trace_invariants`; its metadata carries `rules_checked`, `source_violations`
 and `target_violations` (each a list of `{rule_id, rule_type, tool,
 round_index, detail}`), `owner` when set, and the failure category
-`INVARIANT_VIOLATION` when the target broke anything. With
-`samples_per_example` above 1 the example's row keeps every scored sample's
-violations, each tagged with its `sample` ordinal. The HTML report's
-**Trace rules broken** panel and `report.json`'s `invariant_violations` list
-every rule the target broke, whatever the delta — including those of advisory
-(`blocking: false`) entries, which never count toward the budget — with the
-owner and whether the source broke it too. Each row carries the entry's
-`blocking` flag, and the panel tags `blocking: false` rows **advisory**.
+`INVARIANT_VIOLATION` when the target broke anything. The report's **Top
+regression causes** panel (and `failure_categories` in
+`migration_decision.json`) counts that category the way the budget does —
+distinct examples on which the target broke a *blocking* rule — so an advisory
+violation, or a second entry broken on the same example, never inflates it
+past the figure the verdict used. With `samples_per_example` above 1 the
+example's row keeps every scored sample's violations, each tagged with its
+`sample` ordinal. The HTML report's **Trace rules broken** panel and
+`report.json`'s `invariant_violations` list every rule the target broke,
+whatever the delta — including those of advisory (`blocking: false`) entries,
+which never count toward the budget — with the owner and whether the source
+broke it too. Each row carries the entry's `blocking` flag, and the panel tags
+`blocking: false` rows **advisory**. So does the **Overall, by evaluator**
+table, where every `trace_invariants` row also says what it measures: each
+side judged against the entry's rules, not against the other side. The
+per-prompt **Executive summary** — and the header's mean score Δ, which
+averages its rows — is drawn from blocking evaluators only (worst severity
+first, ties to the most negative effect size), falling back to advisory ones
+on a prompt that has nothing else, so an advisory rule the target satisfied by
+calling no tools cannot read as the prompt's improvement above a failed
+verdict.
 
 Four things to know:
 

@@ -19,6 +19,7 @@ from evalshift_cli.analysis.policy import BUDGET_LABELS, BUDGET_MEANINGS
 from evalshift_cli.analysis.statistics import AXIS_NOTE_PREFIX, UNMEASURED_NOTE_PREFIX
 from evalshift_cli.evaluators.failures import category_label
 from evalshift_cli.evaluators.tool_selection import KIND_CONFORMANCE, KIND_DIVERGENCE
+from evalshift_cli.evaluators.trace_invariants import KIND as KIND_INVARIANTS
 from evalshift_cli.insights.models import Insight
 from evalshift_cli.reports.json import (
     SHARED_GROUND_TRUTH_NOTE_PREFIX,
@@ -161,6 +162,14 @@ _AXIS_BLURBS: dict[str, str] = {
     KIND_DIVERGENCE: "the target graded against what the source did",
 }
 
+# The same for a single-axis family whose name alone does not say what the
+# score is measured against. A trace-rule row is judged against rules the
+# team wrote, not against the other side: its delta is a difference in rules
+# kept, and a rule both models broke is a zero that is not "no change".
+_KIND_BLURBS: dict[str, str] = {
+    KIND_INVARIANTS: "each side judged against the entry's hand-written rules",
+}
+
 # Statistical tests, spelled out for the row tooltip.
 _TEST_LABELS: dict[str, str] = {
     "paired_t": "paired t-test",
@@ -184,6 +193,11 @@ def _axis_of(notes: Sequence[str] | None) -> str:
 def _axis_blurb(kind: str) -> str:
     """One phrase saying what an axis compares, or ``""`` for a plain evaluator."""
     return _AXIS_BLURBS.get(kind, "")
+
+
+def _kind_blurb(kind: str) -> str:
+    """One phrase saying what a family's score is measured against, or ``""``."""
+    return _KIND_BLURBS.get(kind, "")
 
 
 def _evaluator_label(name: str, kind: str = "") -> str:
@@ -479,6 +493,7 @@ def render_html(report: ReportData, *, insight: Insight | None = None) -> str:
     env.globals["evaluator_label"] = _evaluator_label
     env.globals["axis_of"] = _axis_of
     env.globals["axis_blurb"] = _axis_blurb
+    env.globals["kind_blurb"] = _kind_blurb
     env.globals["test_label"] = _test_label
     env.globals["regression_reason"] = _regression_reason
     env.globals["tool_list"] = _tool_list

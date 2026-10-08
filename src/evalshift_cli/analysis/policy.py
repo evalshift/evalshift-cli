@@ -22,6 +22,7 @@ from evalshift_cli.config.models import MigrationPolicy, SliceMigrationPolicy
 from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.evaluators.failures import (
     BROKEN_HARNESS_CAUSES,
+    INVARIANT_VIOLATION,
     SEMANTIC_REGRESSION,
     TOOL_GROUND_TRUTH_MISS,
 )
@@ -1485,13 +1486,26 @@ def _blocking_regressions(comparisons: list[ComparisonResult]) -> list[BlockingR
 
 
 def _failure_categories(records: list[EvalRecord]) -> list[FailureCategoryCount]:
+    """Count each failure category over the rows that carry it.
+
+    ``INVARIANT_VIOLATION`` is the exception: every ``trace_invariants`` row
+    carries it when the target broke a rule, advisory or not, source too or
+    not -- so counting rows read "8" in the report's causes panel and the
+    narrative built on it, above a verdict that counted 5. The category is
+    counted the way ``max_invariant_violations`` is, by
+    :func:`_invariant_violation_counts` over the blocking rows, so the two can
+    never disagree.
+    """
     counter: Counter[str] = Counter()
     for r in records:
         raw = r.metadata.get("failure_categories", [])
         if isinstance(raw, list):
             for item in raw:
-                if isinstance(item, str) and item:
+                if isinstance(item, str) and item and item != INVARIANT_VIOLATION:
                     counter[item] += 1
+    violated, _ = _invariant_violation_counts([r for r in records if r.blocking])
+    if violated:
+        counter[INVARIANT_VIOLATION] = violated
     return [
         FailureCategoryCount(category=category, count=count)
         for category, count in counter.most_common()
