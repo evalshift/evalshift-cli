@@ -521,11 +521,12 @@ def _tool_match(
     return all(item.delta >= 0 for item in tool_records)
 
 
-#: What a ``violations`` entry may carry on the wire — the server's
-#: ``ScoreViolation`` model is ``extra="forbid"``, so anything else the
-#: evaluator ever adds to ``Violation.to_dict()`` must be dropped here, not
-#: discovered as a 422 after the bundle has uploaded.
-_VIOLATION_KEYS = ("rule_id", "rule_type", "tool", "round_index", "detail", "sample")
+#: The fields a ``violations`` entry may carry on the wire — an allowlist, not
+#: the metadata keys the lists are read from. The server's ``ScoreViolation``
+#: model is ``extra="forbid"``, so anything else the evaluator ever adds to
+#: ``Violation.to_dict()`` must be dropped here, not discovered as a 422 after
+#: the bundle has uploaded.
+_VIOLATION_WIRE_FIELDS = ("rule_id", "rule_type", "tool", "round_index", "detail", "sample")
 
 
 def _score_violations(record: EvalRecord) -> dict[str, list[dict[str, Any]]] | None:
@@ -545,7 +546,7 @@ def _score_violations(record: EvalRecord) -> dict[str, list[dict[str, Any]]] | N
     def entries(key: str) -> list[dict[str, Any]]:
         raw = record.metadata.get(key) or []
         return [
-            {field: item[field] for field in _VIOLATION_KEYS if field in item}
+            {field: item[field] for field in _VIOLATION_WIRE_FIELDS if field in item}
             for item in raw
             if isinstance(item, dict)
         ]
