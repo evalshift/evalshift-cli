@@ -657,8 +657,9 @@ evaluators:                         # every evaluator config also takes blocking
       #   failure_categories [INVARIANT_VIOLATION] when the target broke anything (the decision's
       #   failure_categories count it as the budget does: distinct examples with a blocking
       #   target violation -- never per row, never for advisory entries).
-      #   push uploads explanation + source/target violations per row (not
-      #   rules_checked/owner/failure_categories).
+      #   push uploads explanation + source/target violations per row;
+      #   rules_checked/owner/failure_categories are not repeated on the score row (they
+      #   already ship in evaluator_config / decision).
 suites:                             # managed block; capture sync rewrites between
   <name>:                           # ">>> evalshift suites" markers
     source: captured|jsonl = captured
@@ -1117,8 +1118,9 @@ content leaves the machine.
   system prompts (manual content -> content_hash; python_string bodies never enter the config);
   suite conversation histories (`history`, embedded system messages included); tool
   definitions/schemas (toolsets); raw.jsonl; imported agent traces (traces.jsonl; only the
-  trace-rule verdicts computed on them upload -- see examples[] above); the SQLite response
-  cache; .evalshift/captures/; state.json; report.json; report.html.
+  verdicts computed on them upload -- agent_trace scores and trace_invariants rule results --
+  never the timelines; see examples[] above); the SQLite response cache; .evalshift/captures/;
+  state.json; report.json; report.html.
 - Hashes that replace content (dataset_hash, examples_hash, prompts[].content_hash) are
   SHA-256 over canonical JSON, so hosted diffs/baselines align without the content.
 - Residual risk: inputs/expected/outputs/traces upload verbatim — customer data or secrets a
