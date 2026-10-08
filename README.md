@@ -263,7 +263,11 @@ shape, `fail-on` modes, and baseline behavior.
 
 Migrating an agent (a prompt that uses tools)? EvalShift detects
 regressions in *which* tools the new model calls, *what* arguments it
-passes, and in what order and parallelism within a response. By default
+passes, and in what order and parallelism within a response. Hand-written
+`trace_invariants` rules (auth before a charge, a tool that must never be
+called, at most one charge, argument bounds) hold *both* models to a
+contract whatever the source did, gated by
+`migration_policy.max_invariant_violations`. By default
 each example is one model call scored against the first recorded round;
 promote with `--rounds all` to replay every recorded round teacher-forced,
 with the recorded tool results fed back and each round scored on its own.
@@ -289,7 +293,10 @@ assets, works offline) has:
 
 * **Migration verdict** — the policy decision up top: which budgets failed, the
   top regression causes, and the recommendation.
-* **Executive summary** — one row per prompt with a severity badge.
+* **Executive summary** — one row per prompt with a severity badge, drawn from
+  blocking evaluators (advisory ones only when nothing else scored the prompt).
+* **Trace rules broken** — every hand-written trace rule the target broke,
+  with its owner and whether the source broke it too; advisory rows are tagged.
 * **What changed, in plain language** — the verdict, the economics and the
   behavioural drift explained by `defaults.insights_model`. Every figure in it
   is copied from the computed statistics, never generated. Needs a provider

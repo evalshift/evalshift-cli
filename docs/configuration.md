@@ -504,7 +504,7 @@ A list. Each entry has:
 | `name`            | string | (required)    | Identifier surfaced in reports.  |
 | `conformance`     | enum   | `expected`    | Ground-truth axis: `expected` / `expected_set` / `off`. `expected_set` is `expected` made order-insensitive: multiset recall of `example.expected_tools` names. Use it when the expected calls are a parallel fan-out whose order carries no meaning. |
 | `divergence`      | enum   | `set`         | Target-vs-source axis: `set` (Jaccard on tool names) / `exact` (sequence equality) / `first` (first call only) / `off`. |
-| `applies_to`      | list   | `["*"]`       | Glob list of prompt ids. |
+| `applies_to`      | list   | `["*"]`       | Glob list of prompt ids (accepted, not yet enforced — only [`trace_invariants`](#evaluatorstrace_invariants) enforces it). |
 | `severity_floor`  | enum   | `null`        | If set, surfaces in metadata so the analysis layer can floor severity. |
 
 The two axes are independent and each writes **its own record**, under
@@ -535,7 +535,7 @@ deprecated, and a config still carrying one fails validation.
 | Field                   | Type   | Default | Description |
 | ----------------------- | ------ | ------- | ----------- |
 | `name`                  | string | (required) | Identifier. |
-| `applies_to`            | list   | `["*"]` | Glob list. |
+| `applies_to`            | list   | `["*"]` | Glob list of prompt ids (accepted, not yet enforced — only [`trace_invariants`](#evaluatorstrace_invariants) enforces it). |
 | `against`               | enum   | `source` | What arguments are compared to: `source` (drift from the source model) or `expected` (correctness against `expected_tools[].arguments`, scored on both sides). |
 | `strategies`            | dict   | `{}`    | Per-field strategy overrides (`exact`/`subset`/`numeric`/`semantic`/`auto`). |
 | `default_strategy`      | enum   | `auto`  | Strategy for fields `strategies` does not name. `auto` is the ladder below; `exact` restores byte-equality scoring. |
@@ -611,7 +611,7 @@ unaffected: it counts calls whose *target* score fell below
 | Field                 | Type   | Default | Description |
 | --------------------- | ------ | ------- | ----------- |
 | `name`                | string | (required) | Identifier. |
-| `applies_to`          | list   | `["*"]` | Glob list. |
+| `applies_to`          | list   | `["*"]` | Glob list of prompt ids (accepted, not yet enforced — only [`trace_invariants`](#evaluatorstrace_invariants) enforces it). |
 | `check_call_count`    | bool   | `true`  | Score the number of tool calls. |
 | `check_parallelism`   | bool   | `true`  | Score parallel-vs-sequential alignment. |
 | `check_refusals`      | bool   | `true`  | Score refusal alignment; mismatches force `severity_floor: high`. |
@@ -626,7 +626,7 @@ the normal `raw.jsonl` model-call artifact.
 | Field                        | Type   | Default | Description |
 | ---------------------------- | ------ | ------- | ----------- |
 | `name`                       | string | required | Identifier surfaced in scores and reports. |
-| `applies_to`                 | list   | `["*"]` | Glob list of prompt ids. |
+| `applies_to`                 | list   | `["*"]` | Glob list of prompt ids (accepted, not yet enforced — only [`trace_invariants`](#evaluatorstrace_invariants) enforces it). |
 | `check_tool_order`           | bool   | `true`  | Compare source and target tool-call order. |
 | `check_arguments`            | bool   | `true`  | Compare arguments for same-name matched tool calls. |
 | `check_missing_verification` | bool   | `true`  | Check dangerous tools have an earlier verification tool. |
@@ -740,9 +740,10 @@ example's row keeps every scored sample's violations, each tagged with its
 whatever the delta — including those of advisory (`blocking: false`) entries,
 which never count toward the budget — with the owner and whether the source
 broke it too. Each row carries the entry's `blocking` flag, and the panel tags
-`blocking: false` rows **advisory**. So does the **Overall, by evaluator**
-table, where every `trace_invariants` row also says what it measures: each
-side judged against the entry's rules, not against the other side. The
+`blocking: false` rows **advisory**. The **Overall, by evaluator** table tags
+every advisory (`blocking: false`) evaluator's row the same way, and every
+`trace_invariants` row there also says what it measures: each side judged
+against the entry's rules, not against the other side. The
 per-prompt **Executive summary** — and the header's mean score Δ, which
 averages its rows — is drawn from blocking evaluators only (worst severity
 first, ties to the most negative effect size), falling back to advisory ones

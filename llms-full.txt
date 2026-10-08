@@ -143,10 +143,11 @@ evalshift init [-f/--force] [-d/--directory DIR] [--ci] [--wire-agents/--no-wire
   Without --ci, warns after writing when an existing .github/workflows/*.yml pins an older or
   newer evalshift-version than this CLI, or none (advisory, exit 0; see CI pin drift). --ci writes
   the pin itself and does not warn about the file it just wrote.
-  PROFILE budgets (regression/critical/equivalence/arg-drift/tool-divergence/cost/latency):
-    model-upgrade (default): .30/1/.75/.20/.20/.30/.30 (= MigrationPolicy defaults)
-    cost-reduction: .02/0/.97/.01/.02/.05/.30 | local-model: .05/0/.90/.02/.05/.00/.50
-    quantization: .02/0/.97/.005/.02/.00/.20 | provider-switch: .03/0/.95/.01/.03/.20/.40
+  PROFILE budgets (regression/critical/equivalence/arg-drift/tool-divergence/
+  trace-rule-violations/cost/latency; every profile pins trace-rule violations at 0):
+    model-upgrade (default): .30/1/.75/.20/.20/0/.30/.30 (= MigrationPolicy defaults)
+    cost-reduction: .02/0/.97/.01/.02/0/.05/.30 | local-model: .05/0/.90/.02/.05/0/.00/.50
+    quantization: .02/0/.97/.005/.02/0/.00/.20 | provider-switch: .03/0/.95/.01/.03/0/.20/.40
 evalshift doctor
   Env/config check. Exit 1 ONLY when an existing evalshift.yaml fails validation (the row shows
   the problem count + "run `evalshift validate` for details"; validate prints each problem);
@@ -191,9 +192,11 @@ evalshift report RUN_ID [-c CONFIG] [--open] [--insights/--no-insights (default 
   report.html layout: header (run id, source->target, suite, examples/calls, spend) ->
   verdict / advisory-signal / economics panels -> six-cell run strip (examples, calls,
   failed/truncated, total cost, latency delta, mean score delta) -> recommendations +
-  top regression causes -> executive summary -> insights narrative -> one section per
-  prompt (economics, per-example, by-evaluator, slices, top regressions as collapsible
-  cards) -> methodology. Dark-only, no external assets, no JS. Rendered surfaces show
+  top regression causes -> executive summary (one row per prompt, drawn from blocking
+  evaluators; advisory ones only on a prompt nothing else scored) -> insights narrative ->
+  "Trace rules broken" panel (only when the target broke a hand-written trace rule;
+  blocking: false rows tagged advisory) -> one section per prompt (economics, per-example,
+  by-evaluator, slices, top regressions as collapsible cards) -> methodology. Dark-only, no external assets, no JS. Rendered surfaces show
   display names, never internal identifiers: failure categories as plain language
   (TOOL_SELECTION_DRIFT -> "Different tools chosen"; map in evaluators/failures.py), budgets
   as their labels (max_tool_divergence -> "Tool-selection divergence"; map in
@@ -636,7 +639,8 @@ evaluators:                         # every evaluator config also takes blocking
           #   load; {"_parse_error": true} args fail any schema that requires a field
       # Unit = RESPONSE (one model turn) + CONTEXT (tool calls already in it). Replayed: one
       #   response per round; round k context = history assistant tool_calls + RECORDED rounds
-      #   0..k-1 the teacher-forced replay fed back (never the model's own earlier rounds).
+      #   1..k-1 the teacher-forced replay fed back (never the model's own earlier rounds;
+      #   replay numbering as in "run" above -- a violation's round_index is 0-based).
       #   Imported: one response, empty context. Context calls are never violations; they
       #   satisfy `order` and count toward both call_count bounds; `required` ignores them.
       # required / min_calls are NOT vacuous (fail every in-scope trace lacking the call); on a
@@ -861,8 +865,8 @@ scored successfully (NOT the raw sample_index). Advisory (blocking: false) entri
 ARE listed; only blocking ones count toward max_invariant_violations. blocking = the record's
 flag (false = advisory entry). report.html renders the same rows as a "Trace rules broken"
 panel (rule, owner, detail, "Source too?"), tagging blocking=false rows with a muted
-"advisory" badge. The "Overall, by evaluator" table tags an advisory entry's row the same way
-and says what a trace-rule row measures (each side judged against the entry's rules). The
+"advisory" badge. The "Overall, by evaluator" table tags every advisory (blocking: false)
+evaluator's row the same way and says what a trace-rule row measures (each side judged against the entry's rules). The
 per-prompt executive summary (and the header's mean score Δ, the mean of its rows) is drawn
 from blocking evaluators only -- worst severity first, ties to the most negative effect size,
 the order the hero panel and the narrative use -- falling back to advisory ones on a prompt
@@ -1005,7 +1009,9 @@ migration_policy is configured; inconclusive exits 0).
   what lets the hosted gate check a PR against the exact budgets the bundle's own verdict
   used, instead of a separate, web-edited policy -- see `evalshift push` above and
   docs/hosted.md. decision.policy always carries max_invariant_violations (default 0), even
-  for a config with no trace rules, so the hosted server must accept that field.
+  for a config with no trace rules; the hosted server stores it (accepted since 2026-10-08)
+  and never re-evaluates it -- a run that carries its own policy is answered with the CLI's
+  decision, only policy-less runs get the server's six-budget re-check.
   null on the inconclusive_decision path (no migration_policy configured) and
   on a migration_decision.json written before this field existed. evalshift.yaml is the
   source of truth for the policy; the web app's per-project policy view is becoming a
@@ -1282,7 +1288,8 @@ suites: {}                         # init writes the managed region LAST, after
 
 # evalshift.yaml — agent prompt (tool-calling additions). Tool evaluators live in the
 # PER-SUITE block `capture sync` generates, not at the top level: a tool-free suite that
-# inherits a tool evaluator scores an empty denominator = an inconclusive gate.
+# inherits a tool evaluator scores an empty denominator = an inconclusive gate. Hand-written
+# trace_invariants are the exception (top level is fine; sync keeps them on managed entries).
 prompts:
   - id: customer_routing
     detection: python_string
@@ -1404,14 +1411,17 @@ All severities "none" -> usually genuinely no significant difference; check n (<
 Verdict "inconclusive" -> (1) all evaluators advisory (fresh init: flip blocking: true as the
 suite grows), (2) rate-budget breach unconfirmed by Wilson CI (grow the suite), (3) all n<5,
 (4) every blocking row excluded as a shared ground-truth miss -> fix the harness, not the
-sample size; more pairs from the same setup are more excluded rows.
+sample size; more pairs from the same setup are more excluded rows. Exception: a breached
+max_invariant_violations is never inconclusive -- a count, it fails however small the sample.
 "broken eval harness" row -> the SOURCE model failed ground truth captured from itself. The
 suite does not describe the model under test: re-capture it against the agent actually running,
 or set conformance: off. Any verdict printed beside it is arithmetic over the wrong suite.
 analyze/compare print the specific reason + recommended fix under the verdict line (also in
 migration_decision.json as reason/recommendations).
 --resume aborts -> config or suite path changed since the run started (config_hash mismatch); start
-  fresh. Suite contents are not hashed: an edited suite at the same path resumes silently.
+  fresh. A CLI upgrade that added config fields moves the hash too (an older CLI's in-progress
+  run cannot be resumed). Suite contents are not hashed: an edited suite at the same path
+  resumes silently.
 Failed calls -> recorded in raw.jsonl with error, pair gets an errored 0.5/0.5 row excluded from
 the statistics; fresh run
 retries them (cache serves the successes; for a multi-round tool example, the rounds before the failed one).

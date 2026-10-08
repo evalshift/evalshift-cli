@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `evaluators.trace_invariants`: hand-written rules over tool-call traces —
-  `forbidden`, `required`, `order`, `call_count` (min/max/exact per tool) and
+  `forbidden`, `required`, `order`, `call_count` (`min_calls` and/or
+  `max_calls` per tool; equal bounds = an exact count) and
   `arguments` (JSON Schema) — checked on both sides of every pair, on replayed
   traces or (`traces: imported`) on imported ones. A rule the target breaks
   counts whatever the source did. Its `applies_to` is enforced: a prompt
@@ -23,16 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rule, so an example that broke rules in two entries counts once. A breach
   fails the run even when the suite is too small for statistics, and a
   slice whose own budget breaches reads `fail` however few comparisons it has.
-  Pushed bundles' `decision.policy` now always carries the field, so pushing
-  needs an evalshift-server that accepts `max_invariant_violations` in policy
-  snapshots; this CLI release waits on that server deploy.
+  `analyze` adds a recommendation when the source broke the same rules the
+  target did: review the rule with its owner rather than raising the budget.
+  Pushed bundles' `decision.policy` now always carries the field; hosted
+  EvalShift accepts and stores it since 2026-10-08 (it never re-evaluates it —
+  a run that carries its own policy is answered with the CLI's decision).
 - The HTML report lists every broken trace rule in a "Trace rules broken"
   panel, with its owner and whether the source broke it too — advisory
   (`blocking: false`) entries included, though only blocking ones count
   toward the budget; those rows are tagged "advisory". `report.json` carries
   the same rows under a new top-level `invariant_violations` key, each with
-  the entry's `blocking` flag. The "Overall, by evaluator" table tags such an
-  entry's row too and says what a trace-rule row measures, and the "Top
+  the entry's `blocking` flag. The "Overall, by evaluator" table tags every
+  advisory (`blocking: false`) evaluator's row the same way and says what a
+  trace-rule row measures, and the "Top
   regression causes" panel counts `INVARIANT_VIOLATION` as the budget does —
   distinct examples with a blocking target violation — so the narrative never
   quotes a figure the verdict did not use.

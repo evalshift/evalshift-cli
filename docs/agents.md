@@ -22,8 +22,9 @@ The killer scenario it catches:
 
 * **`ToolTrace` data model**: provider-agnostic, populated from
   Anthropic / OpenAI / Gemini responses.
-* **Three new evaluators**: `tool_selection`, `tool_arguments`,
-  `tool_trace_structure`.
+* **Four new evaluators**: `tool_selection`, `tool_arguments`,
+  `tool_trace_structure`, and hand-written `trace_invariants` (both sides
+  judged against your rules, not against each other).
 * **Suite extension**: optional `expected_tools`, `expected_tool_count`,
   `expected_no_tools`, `expected_parallel` per example, plus a required
   `toolset_ref` or inline `tools` — see [Suite ground truth](#suite-ground-truth).
@@ -85,7 +86,9 @@ defaults:
 
 evaluators:
   # Top-level: what every suite is scored with. Tool evaluators do not belong
-  # here — `capture sync` writes them per suite (see below).
+  # here — `capture sync` writes them per suite (see below). Hand-written
+  # `trace_invariants` are the exception: top level is fine, and sync keeps
+  # them on the managed entries it rewrites.
   semantic:
     embedding_model: gemini/gemini-embedding-001
     blocking: false
@@ -599,6 +602,13 @@ perfection. A pair on which both models miss your recorded ground truth
 identically is not a ✗ — it is the same pair before and after, and what
 is wrong is the ground truth. Look for **Ground truth missed by both**
 in the evaluator table when that happens.
+
+A **Trace rules broken** panel appears when the target broke a hand-written
+[`trace_invariants`](configuration.md#evaluatorstrace_invariants) rule: every
+broken rule with its owner and whether the source broke it too, whatever the
+delta, advisory (`blocking: false`) rows tagged **advisory**. `report.json`
+carries the same rows under `invariant_violations`, and the evaluator table
+tags an advisory entry's row the same way.
 
 ## Troubleshooting
 

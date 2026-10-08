@@ -207,10 +207,12 @@ Every other tool evaluator treats "the source did it" as correct:
 the source, so a wrong call both models make scores as agreement.
 `trace_invariants` judges **both** sides against rules your team wrote —
 `forbidden` tools, `required` tools, an `order` between two tools, a
-`call_count` (min, max or exact per tool) and `arguments` that must satisfy a
-JSON Schema. A rule the target breaks counts against it whatever the source
-did, and `migration_policy.max_invariant_violations` (default `0`) fails the
-run on it, even on a suite too small for statistics.
+`call_count` (`min_calls` and/or `max_calls` per tool; equal bounds = an exact
+count) and `arguments` that must satisfy a JSON Schema. A rule the target
+breaks counts against it whatever the source did, and for a blocking entry
+(the default) `migration_policy.max_invariant_violations` (default `0`) fails
+the run on it, even on a suite too small for statistics; `blocking: false`
+entries are reported but never gate.
 
 Write rules only for invariants where a silent miss is expensive: auth before
 a write, a deprecated endpoint that must stay unused, at most one charge,
@@ -227,8 +229,9 @@ recording. Configuration, rule semantics and scoring:
 
 ## Mixing evaluators
 
-You can configure several at once. They all run on every (prompt,
-example) pair, and the analysis layer treats each as a separate
+You can configure several at once. Most run on every (prompt, example)
+pair — `trace_invariants` only on the prompts its `applies_to` matches,
+and only on pairs with a trace to check — and the analysis layer treats each as a separate
 comparison (so BH correction adjusts for the multiple-test count
 correctly).
 

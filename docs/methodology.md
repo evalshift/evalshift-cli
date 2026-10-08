@@ -336,10 +336,11 @@ counted every one of them and still measured nothing, so it reports a positive
 denominator beside `conclusive: false`. Reading either field as a stand-in for
 the other loses that.
 
-The field exists for the hosted gate. `GET /runs/{run_id}/policy-check`
-re-decides an uploaded run against the project's *current* policy and never saw
-the underlying records, so without a sample size it cannot tell a clean run from
-an empty one. Bundles written before the field omit it entirely, and a missing
+The field exists for the hosted gate. For a run pushed without a policy,
+`GET /runs/{run_id}/policy-check` re-decides it against the project's *current*
+policy (a run that carries its own `decision.policy` is answered with the CLI's
+stored decision instead), and the server never saw the underlying records, so
+without a sample size it cannot tell a clean run from an empty one. Bundles written before the field omit it entirely, and a missing
 `denominator` means **unknown, not zero** — the server falls back to
 `conclusive` for those. This CLI always knows its own denominators, so every
 budget it emits carries an integer.

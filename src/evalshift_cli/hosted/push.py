@@ -633,7 +633,7 @@ def _policy_yaml_block(policy: dict[str, Any]) -> str | None:
     CLI's model rejects is a block that would break the file it is pasted into.
 
     Only the keys the server actually sent survive (``exclude_unset``). A
-    web-app policy has six of the nine budgets; writing out the other three
+    web-app policy has six of the ten budgets; writing out the other four
     would pin today's CLI defaults into the user's file as if they had chosen
     them, and they are meant to move with the CLI.
     """
