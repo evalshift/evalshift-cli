@@ -1576,7 +1576,7 @@
       },
       "ScoreViolation": {
         "additionalProperties": false,
-        "description": "One trace rule one side broke, attributed to one call or one missing tool.\n\nMirrors the CLI's ``evaluators.invariants.Violation.to_dict()`` field for\nfield. ``sample`` is the zero-based sample ordinal on a\n``samples_per_example > 1`` run and absent otherwise.",
+        "description": "One trace rule one side broke, attributed to one call or one missing tool.\n\nMirrors the CLI's ``evaluators.invariants.Violation.to_dict()`` plus the\n``sample`` ordinal its repeated-sampling merge adds (zero-based; absent on\na single-sample run).",
         "properties": {
           "detail": {
             "title": "Detail",
