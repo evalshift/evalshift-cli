@@ -95,6 +95,8 @@ def test_example_rows_carry_split_ids_and_hoisted_metrics(built_bundle_path: Pat
         "target_score",
         "delta",
         "error",
+        "explanation",
+        "violations",
     }
     for key in (
         "worst_delta_score",
@@ -475,6 +477,119 @@ def _rows(scores: list[EvalRecord], example_ids: tuple[str, ...]) -> dict[str, d
         tool_evaluator_names=frozenset({"routing"}),
     )
     return {row["example_id"]: row for row in rows}
+
+
+NO_DELETE: dict[str, Any] = {
+    "rule_id": "no-delete",
+    "rule_type": "forbidden",
+    "tool": "delete_file",
+    "round_index": 0,
+    "detail": "delete_file was called",
+}
+
+
+def _rule_record(
+    example_id: str,
+    *,
+    target_violations: list[dict[str, Any]],
+    source_violations: list[dict[str, Any]] | None = None,
+    error: str | None = None,
+) -> EvalRecord:
+    """A ``trace_invariants`` row as ``TraceInvariantsEvaluator._record`` writes it."""
+    broken = sorted({v["rule_id"] for v in target_violations})
+    return EvalRecord(
+        run_id="r1",
+        prompt_id="replay",
+        example_id=example_id,
+        evaluator_name="contracts",
+        kind="trace_invariants",
+        source_score=1.0 if not source_violations else 0.5,
+        target_score=1.0 if not target_violations else 0.5,
+        delta=(1.0 if not target_violations else 0.5) - (1.0 if not source_violations else 0.5),
+        explanation=(
+            f"target broke {len(broken)} trace rule(s): {', '.join(broken)}"
+            if broken
+            else "target kept every trace rule"
+        ),
+        metadata={
+            "rules_checked": ["no-delete"],
+            "source_violations": source_violations or [],
+            "target_violations": target_violations,
+            "owner": "payments",
+            **({"failure_categories": ["INVARIANT_VIOLATION"]} if target_violations else {}),
+        },
+        error=error,
+    )
+
+
+def test_trace_rule_rows_carry_the_explanation_and_both_sides_violations() -> None:
+    row = _rows([_rule_record("ex1", target_violations=[NO_DELETE])], ("ex1",))["ex1"]
+    score = row["scores"][0]
+    assert score["explanation"] == "target broke 1 trace rule(s): no-delete"
+    assert score["violations"] == {"source": [], "target": [NO_DELETE]}
+
+
+def test_the_source_side_violations_ride_along() -> None:
+    """A rule both sides broke still fails the target; the source list is what lets a reader see that."""
+    row = _rows(
+        [_rule_record("ex1", target_violations=[NO_DELETE], source_violations=[NO_DELETE])],
+        ("ex1",),
+    )["ex1"]
+    assert row["scores"][0]["violations"]["source"] == [NO_DELETE]
+
+
+def test_rules_checked_owner_and_failure_categories_stay_local() -> None:
+    """They are in the uploaded evaluator config and decision already — the row must not repeat them."""
+    row = _rows([_rule_record("ex1", target_violations=[NO_DELETE])], ("ex1",))["ex1"]
+    score = row["scores"][0]
+    assert "metadata" not in score
+    assert set(score["violations"]) == {"source", "target"}
+
+
+def test_other_evaluators_carry_null_violations_and_their_explanation() -> None:
+    record = _record("ex1", "semantic", 1.0, 0.8).model_copy(update={"explanation": "cosine 0.80"})
+    score = _rows([record], ("ex1",))["ex1"]["scores"][0]
+    assert score["violations"] is None
+    assert score["explanation"] == "cosine 0.80"
+
+
+def test_an_empty_explanation_is_sent_as_null() -> None:
+    score = _rows([_record("ex1", "semantic", 1.0, 0.8)], ("ex1",))["ex1"]["scores"][0]
+    assert score["explanation"] is None
+
+
+def test_an_errored_trace_rule_row_carries_no_violations() -> None:
+    """An evaluator that broke measured nothing; an empty target list would read as a clean target."""
+    record = _rule_record("ex1", target_violations=[], error="trace missing")
+    record = record.model_copy(update={"metadata": {}})
+    assert _rows([record], ("ex1",))["ex1"]["scores"][0]["violations"] is None
+
+
+def test_violation_entries_are_filtered_to_the_server_contract() -> None:
+    """A future key on ``Violation.to_dict()`` must not reach a schema that forbids unknown properties."""
+    row = _rows(
+        [_rule_record("ex1", target_violations=[{**NO_DELETE, "sample": 1, "severity": "high"}])],
+        ("ex1",),
+    )["ex1"]
+    assert row["scores"][0]["violations"]["target"] == [{**NO_DELETE, "sample": 1}]
+
+
+def test_a_populated_violations_row_validates_against_the_vendored_schema() -> None:
+    """A drift guard, not a red-first test: it passes on arrival and must keep passing.
+
+    The fixture bundle's rows carry no violations, so the end-to-end schema
+    test never sees a populated ``ScoreViolation``. This one does — with the
+    optional ``sample`` ordinal set — so a CLI-side field the server does not
+    accept, or a re-vendored schema that tightens the shape, fails here
+    instead of as a 422 after upload.
+    """
+    row = _rows([_rule_record("ex1", target_violations=[{**NO_DELETE, "sample": 1}])], ("ex1",))[
+        "ex1"
+    ]["scores"][0]
+    assert row["violations"]["target"], "the guard is vacuous without a populated entry"
+    Draft202012Validator(
+        {"$ref": "#/$defs/ExampleScore", "$defs": _vendored_schema()["bundle"]["$defs"]}
+    ).validate(row)
 
 
 def test_a_pair_nothing_measured_is_not_reported_as_passed() -> None:

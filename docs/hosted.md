@@ -108,7 +108,10 @@ The output is `.evalshift/runs/<run-id>/run_bundle.json.gz`. It carries:
   any final text, refusal messages and round markers. No `model_call` events
   or tool results are included. A stream over 256 KB keeps its leading events
   and is flagged `truncated`. Imported agent traces (`traces import`) stay
-  local and are not uploaded,
+  local and are not uploaded; the verdicts `evaluate` computes on them do —
+  scores, explanations, and for `trace_invariants` the broken rules (tool
+  names and, for `arguments` rules, the quoted offending value; see
+  [What `push` sends](#what-push-sends-block-by-block)),
 - the aggregate, `analysis`, and the policy `decision`,
 - `economics` — a run-level per-role rollup of calls, tokens, cost and latency,
 - `methodology_notes` and the evaluator config and dataset snapshot,
@@ -295,7 +298,7 @@ The bundle itself contains:
 | Block | What is inside |
 | --- | --- |
 | `manifest` | Run id, `org/project` slug, source and target model ids, suite name, git commit SHA, branch name, PR number, the **local suite file path** as a string (it can reveal directory or user names), two content hashes, the run timestamp, and the CLI version. |
-| `examples[]` — one row per prompt × example | The example's template variables (`inputs`) **verbatim**; its `expected` reference output **verbatim**; both models' **full output text**; tool-call traces from the replay: each side's tool calls (names, arguments, call ids) with round markers, any final text and refusal messages, capped at 256 KB per side. Imported agent traces (`traces import`) are not uploaded; per-evaluator scores and error strings; per-side cost and latency; tags and slice names. |
+| `examples[]` — one row per prompt × example | The example's template variables (`inputs`) **verbatim**; its `expected` reference output **verbatim**; both models' **full output text**; tool-call traces from the replay: each side's tool calls (names, arguments, call ids) with round markers, any final text and refusal messages, capped at 256 KB per side. Imported agent traces (`traces import`) are not uploaded; per-evaluator scores, error strings and one-line explanations (`target won`, `tie`, `target broke 1 trace rule(s): no-delete`); for each `trace_invariants` evaluator, the rules each side broke — rule id, rule type, tool, round, a one-line detail that may quote an argument value, and the sample ordinal on a repeated-sampling run — so the hosted report can name the rule, not only count it (`rules_checked`, `owner` and `failure_categories` are not repeated on the score row; they already ship in `evaluator_config` / `decision`) — including rules checked on imported traces (`traces: imported`), so an entry can name a tool, and for an `arguments` rule quote the offending value, from a timeline that otherwise stays local; per-side cost and latency; tags and slice names. |
 | `aggregate`, `analysis`, `decision`, `economics` | Pass/fail counts, statistical comparisons, the migration verdict, and per-role token/cost/latency rollups. Numbers and verdict labels, not content. `decision.policy` is the resolved `migration_policy` this run's verdict was computed under — every top-level budget with its default applied, plus `slices` — or `null` when no `migration_policy` is configured. It therefore carries `max_invariant_violations` (default `0`) even when the config has no trace rules; hosted EvalShift accepts and stores it (since 2026-10-08) but never re-evaluates it — a run that carries its own policy is answered with the CLI's decision, which did check it, and only runs pushed without a policy fall back to the server's six-budget re-check. It is what lets the hosted gate check a pull request against the exact budgets the verdict used, instead of a separate policy configured elsewhere. |
 | `methodology_notes` | The model ids and the statistical-contract sentences shown in every report. |
 | `insights` | The machine-written run narrative, when one was generated. It is prose *about* your run and can paraphrase or quote the regressions it summarizes. |
@@ -316,7 +319,9 @@ The bundle itself contains:
   in the bundle; only the calls a model actually made at run time appear, in
   the traces.
 - **Local artefacts**: `raw.jsonl` (the raw provider requests and responses),
-  imported agent traces (`traces.jsonl`), the SQLite response cache,
+  imported agent traces (`traces.jsonl`; only the verdicts computed on them
+  upload — `agent_trace` scores and `trace_invariants` rule results — never
+  the timelines; see the `examples[]` row above), the SQLite response cache,
   `.evalshift/captures/`, `state.json`, `report.json`, and `report.html`.
 
 The content hashes that replace this data (`dataset_hash`, `examples_hash`,

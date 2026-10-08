@@ -226,13 +226,17 @@ evalshift login [--token es_...] [--host URL] [--no-browser] [--timeout SECS=900
 evalshift logout | evalshift whoami [--host] [--token]
 evalshift bundle RUN_ID [-c] [-s/--suite] [--suite-name] [-o/--output PATH] [--project org/project]
   Builds run_bundle.json.gz locally, no upload. Payload: manifest, examples (inputs, both
-  outputs, per-evaluator scores, cost/latency deltas, traces[] — the replay's own tool-call
-  trace, one stream per model side: ordered tool calls w/ names, arguments, call ids; round
-  markers; any final text; refusal messages. NO model_call events, NO tool results; a stream
-  over 256KB keeps its leading events and is flagged truncated. Imported traces (traces import)
-  stay LOCAL, never bundled. Same trace shown on the hosted run-detail page), aggregate,
-  analysis, decision (decision.policy = resolved migration_policy w/ CLI defaults applied, or
-  null when none is configured -- see "Migration policy verdict algorithm" below),
+  outputs, per-evaluator scores (each score row also carries explanation (str|null) and, on
+  trace_invariants rows that measured, violations {source: [...], target: [...]} of {rule_id,
+  rule_type, tool, round_index, detail, sample (on repeated-sampling runs)} -- the rest of
+  the record's metadata stays local), cost/latency deltas, traces[] — the replay's own
+  tool-call trace, one stream per model side: ordered tool calls w/ names, arguments, call
+  ids; round markers; any final text; refusal messages. NO model_call events, NO tool
+  results; a stream over 256KB keeps its leading events and is flagged truncated. Imported
+  traces (traces import) stay LOCAL, never bundled (trace-rule verdicts on them do). Same
+  trace shown on the hosted run-detail page), aggregate, analysis, decision
+  (decision.policy = resolved migration_policy w/ CLI defaults applied, or null when none is
+  configured -- see "Migration policy verdict algorithm" below),
   # examples[].passed is False when the pair scored NO rows: all() over an empty list is True,
   #   and "nothing measured" reading as "passed" is the same silence-as-success bug as the
   #   fabricated skip scores. Example.passed is a required non-nullable bool server-side, so
@@ -653,6 +657,9 @@ evaluators:                         # every evaluator config also takes blocking
       #   failure_categories [INVARIANT_VIOLATION] when the target broke anything (the decision's
       #   failure_categories count it as the budget does: distinct examples with a blocking
       #   target violation -- never per row, never for advisory entries).
+      #   push uploads explanation per row, and source_violations/target_violations as
+      #   violations.source/.target; rules_checked/owner/failure_categories are not repeated
+      #   on the score row (they already ship in evaluator_config / decision).
 suites:                             # managed block; capture sync rewrites between
   <name>:                           # ">>> evalshift suites" markers
     source: captured|jsonl = captured
@@ -1091,8 +1098,10 @@ content leaves the machine.
   - examples[] (one per prompt x example): `inputs` VERBATIM; `expected` VERBATIM; both models'
     FULL output text; traces = the replay's own tool calls (names, arguments, call ids,
     round markers; final text; refusal messages; no tool results; stream capped 256KB/side,
-    flagged truncated); imported agent traces are NOT uploaded; per-evaluator scores + error
-    strings; per-side cost/latency; tags/slice names; turn_index.
+    flagged truncated); imported agent traces are NOT uploaded (trace-rule verdicts on them
+    do); per-evaluator scores + error strings + one-line explanation; on trace_invariants
+    rows, violations {source, target} = the rules each side broke (detail can quote an
+    argument value); per-side cost/latency; tags/slice names; turn_index.
   - aggregate/analysis/decision/economics: numbers and verdict labels, not content.
   - methodology_notes: model ids + statistical-contract sentences.
   - insights: the machine-written narrative — prose that can quote the regressions it
@@ -1108,8 +1117,10 @@ content leaves the machine.
 - NEVER uploads: provider API keys; the hosted token (never inside a bundle); prompt bodies /
   system prompts (manual content -> content_hash; python_string bodies never enter the config);
   suite conversation histories (`history`, embedded system messages included); tool
-  definitions/schemas (toolsets); raw.jsonl; imported agent traces (traces.jsonl); the SQLite
-  response cache; .evalshift/captures/; state.json; report.json; report.html.
+  definitions/schemas (toolsets); raw.jsonl; imported agent traces (traces.jsonl; only the
+  verdicts computed on them upload -- agent_trace scores and trace_invariants rule results --
+  never the timelines; see examples[] above); the SQLite response cache; .evalshift/captures/;
+  state.json; report.json; report.html.
 - Hashes that replace content (dataset_hash, examples_hash, prompts[].content_hash) are
   SHA-256 over canonical JSON, so hosted diffs/baselines align without the content.
 - Residual risk: inputs/expected/outputs/traces upload verbatim — customer data or secrets a

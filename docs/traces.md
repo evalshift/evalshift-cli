@@ -5,7 +5,10 @@ your own runtime — EvalShift never runs your agent — and are imported into a
 completed local run, after which `evaluate`, `analyze`, and `report` work as
 usual. Imported traces stay local: `evaluate` scores them and the local report
 shows them, but `push` uploads only the replay's own tool-call trace (see
-[Hosted](#hosted)).
+[Hosted](#hosted)). The timelines are not uploaded; the verdicts `evaluate`
+computes on them are — scores, explanations, and for `trace_invariants` the
+broken rules (tool names and, for `arguments` rules, the quoted offending
+value).
 
 ## Import
 
@@ -155,7 +158,11 @@ evalshift replay case <run-id> <example-id> --model target --trace
 Imported traces are not uploaded. They stay in
 `.evalshift/runs/<run-id>/traces.jsonl`, where `evaluate` (the `agent_trace`
 evaluator and `trace_invariants` entries with `traces: imported`), the local
-report and `diff case` / `inspect case` / `replay case` read them.
+report and `diff case` / `inspect case` / `replay case` read them. The
+verdicts `evaluate` computes on them do upload — scores, explanations, and for
+`trace_invariants` the broken rules (tool names and, for `arguments` rules, the
+quoted offending value); see the privacy model's
+[What `push` sends](hosted.md#what-push-sends-block-by-block).
 
 `evalshift bundle` / `evalshift push` carry only the replay's own tool-call
 trace — one stream per model side with the tool calls (names, arguments, call
