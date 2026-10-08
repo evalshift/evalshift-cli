@@ -465,8 +465,9 @@ def _build_examples(
                         "delta": item.delta,
                         "error": item.error,
                         # Added 2026-10-08; hosted EvalShift accepts both since
-                        # its phase-29 deploy. Everything else in ``metadata``
-                        # stays local — see ``_score_violations``.
+                        # its 2026-10 deploy that added the columns. Everything
+                        # else in ``metadata`` stays local — see
+                        # ``_score_violations``.
                         "explanation": item.explanation or None,
                         "violations": _score_violations(item),
                     }

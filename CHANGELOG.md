@@ -50,12 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exception.
 - `push` now uploads each score row's one-line `explanation` and, for
   `trace_invariants` rows, the rules each side broke (`violations.source` /
-  `violations.target`: rule id, type, tool, round, detail, sample). Hosted
-  EvalShift shows them on the example detail and on share links instead of
-  only the violation count. `rules_checked`, `owner` and `failure_categories`
-  are not repeated on the score row (they already ship in `evaluator_config` /
-  `decision`). Requires the hosted service's 2026-10-08 phase-29 deploy;
-  nothing else in the bundle changed.
+  `violations.target`: rule id, type, tool, round, detail, and sample on
+  repeated-sampling runs). Hosted EvalShift shows them on the example detail
+  and on share links instead of only the violation count. `rules_checked`,
+  `owner` and `failure_categories` are not repeated on the score row (they
+  already ship in `evaluator_config` / `decision`). Requires a hosted service
+  that accepts the two fields (hosted EvalShift was updated before this
+  release); nothing else in the bundle changed.
 
 ### Changed
 
