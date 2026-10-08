@@ -137,7 +137,10 @@ evaluators:
 An imported trace is checked as one response with no prior context: every call
 in it, in `sequence_index` order, was the agent's own. A rule the target breaks
 counts toward `migration_policy.max_invariant_violations` whatever the source
-did.
+did, when the entry is blocking (the default); `blocking: false` entries are
+reported but never gate. The entry's `applies_to` scopes imported pairs by
+`prompt_id`, and `evaluate` fails on a run with no `traces.jsonl`, naming
+`trace_invariants (traces: imported)` in the error.
 
 Debug commands become trace-aware:
 

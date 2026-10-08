@@ -218,7 +218,7 @@
               }
             ],
             "default": null,
-            "description": "How many units `observed` was computed over \u2014 records for the rate budgets, tool-bearing records for tool drift, paired calls for the cost and latency ratios. 0 means the budget was evaluated against an empty sample, so `observed` is a default and not a measurement. Null means no sample size was reported, which is NOT the same as zero: bundles written before this field existed omit it, and consumers must treat its absence as 'unknown' and fall back to `conclusive`.",
+            "description": "How many units `observed` was computed over \u2014 records for the rate budgets, tool-bearing records for tool drift, the distinct examples a blocking trace rule was checked on for `max_invariant_violations`, and the error-free calls behind the per-role means for the cost and latency ratios. 0 means the budget was evaluated against an empty sample, so `observed` is a default and not a measurement. Null means no sample size was reported, which is NOT the same as zero: bundles written before this field existed omit it, and consumers must treat its absence as 'unknown' and fall back to `conclusive`.",
             "title": "Denominator"
           },
           "name": {

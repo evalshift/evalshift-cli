@@ -98,7 +98,9 @@ since, and continues from where it left off. Already-completed calls
 (including ones that errored at the LLM layer) are skipped.
 
 A config change or a different suite path between attempts aborts the
-resume — start a fresh run instead. The suite's *contents* are not checked,
+resume — start a fresh run instead. Upgrading the CLI counts when the release
+added config fields (they join the hashed canonical dump), so an older CLI's
+in-progress run cannot be resumed after upgrading. The suite's *contents* are not checked,
 so after editing examples, start a fresh run yourself.
 
 ## How do I push a run to hosted EvalShift?
@@ -179,6 +181,11 @@ Three common causes, all by design:
 2. **A rate budget was breached but the 95% Wilson interval can't
    confirm it** at this suite size — grow the suite.
 3. **All comparisons were `insufficient`** (n < 5).
+
+A breached `max_invariant_violations` is the exception to all three: it is a
+count, conclusive however small the sample, so a blocking hand-written trace
+rule the target broke reads `fail`, never `inconclusive` — even when every
+comparison is insufficient.
 
 `analyze` and `compare` print the specific reason and the recommended fix
 under the verdict line, and record them in `migration_decision.json`
