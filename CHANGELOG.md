@@ -31,7 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`blocking: false`) entries included, though only blocking ones count
   toward the budget; those rows are tagged "advisory". `report.json` carries
   the same rows under a new top-level `invariant_violations` key, each with
-  the entry's `blocking` flag.
+  the entry's `blocking` flag. The "Overall, by evaluator" table tags such an
+  entry's row too and says what a trace-rule row measures, and the "Top
+  regression causes" panel counts `INVARIANT_VIOLATION` as the budget does —
+  distinct examples with a blocking target violation — so the narrative never
+  quotes a figure the verdict did not use.
 - `evalshift init` scaffolds `max_invariant_violations: 0` in every
   `--profile` policy block, beside the other budgets. Older CLIs reject the
   field, so bump the CI action's `evalshift-version` pin to this release
@@ -43,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The report's per-prompt Executive summary — and the header's mean score Δ,
+  which averages its rows — now picks each prompt's worst severity with ties
+  broken toward the most negative effect size (the order the hero panel and
+  the narrative already used) instead of whichever evaluator `analyze` listed
+  first, and skips advisory (`blocking: false`) evaluators while the prompt
+  has a gating one. An advisory rule the target satisfied by calling no tools
+  at all could otherwise read as the prompt's "+9% improved" above a failed
+  verdict.
 - Upgrading moves the resume `config_hash`: the new config fields are part of
   every config's canonical dump, so a run left in progress by an older CLI
   cannot be `--resume`d after upgrading (it fails with the usual config-hash

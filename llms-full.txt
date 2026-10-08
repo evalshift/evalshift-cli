@@ -646,7 +646,9 @@ evaluators:                         # every evaluator config also takes blocking
       # Score per side = (rules - rules broken) / rules; kind slug trace_invariants; metadata
       #   rules_checked, source_violations, target_violations (each [{rule_id, rule_type, tool,
       #   round_index, detail}], with sample ordinal when samples_per_example > 1), owner;
-      #   failure_categories [INVARIANT_VIOLATION] when the target broke anything.
+      #   failure_categories [INVARIANT_VIOLATION] when the target broke anything (the decision's
+      #   failure_categories count it as the budget does: distinct examples with a blocking
+      #   target violation -- never per row, never for advisory entries).
 suites:                             # managed block; capture sync rewrites between
   <name>:                           # ">>> evalshift suites" markers
     source: captured|jsonl = captured
@@ -859,7 +861,12 @@ scored successfully (NOT the raw sample_index). Advisory (blocking: false) entri
 ARE listed; only blocking ones count toward max_invariant_violations. blocking = the record's
 flag (false = advisory entry). report.html renders the same rows as a "Trace rules broken"
 panel (rule, owner, detail, "Source too?"), tagging blocking=false rows with a muted
-"advisory" badge.
+"advisory" badge. The "Overall, by evaluator" table tags an advisory entry's row the same way
+and says what a trace-rule row measures (each side judged against the entry's rules). The
+per-prompt executive summary (and the header's mean score Δ, the mean of its rows) is drawn
+from blocking evaluators only -- worst severity first, ties to the most negative effect size,
+the order the hero panel and the narrative use -- falling back to advisory ones on a prompt
+with nothing else.
 
 ## Migration policy verdict algorithm
 

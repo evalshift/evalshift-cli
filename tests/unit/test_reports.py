@@ -2615,3 +2615,128 @@ class TestInvariantViolationsPanel:
         from evalshift_cli.reports.html import _kind_label
 
         assert _kind_label("trace_invariants") == "Trace rules"
+
+
+def _append_comparisons(run_dir: Path, rows: list[dict[str, Any]]) -> None:
+    """Add aggregate comparisons to the scaffold's ``analysis.json``."""
+    path = run_dir / ANALYSIS_FILENAME
+    analysis = json.loads(path.read_text(encoding="utf-8"))
+    analysis["comparisons"].extend(rows)
+    path.write_text(json.dumps(analysis), encoding="utf-8")
+
+
+class TestAdvisoryEvaluatorsInSummary:
+    """A ``blocking: false`` evaluator never speaks for a prompt that has a gate."""
+
+    @staticmethod
+    def _comparison(evaluator_name: str, delta: float, **overrides: Any) -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "prompt_id": "greet",
+            "evaluator_name": evaluator_name,
+            "kind": "trace_invariants",
+            "slice_name": "all",
+            "n": 2,
+            "test": "wilcoxon",
+            "statistic": 0.0,
+            "p_value": 1.0,
+            "p_value_corrected": 1.0,
+            "effect_size": 0.3 if delta > 0 else -0.3 if delta < 0 else 0.0,
+            "effect_size_ci_low": -0.6,
+            "effect_size_ci_high": 0.6,
+            "delta_avg_score": delta,
+            "severity": "none",
+            "notes": [],
+        }
+        row.update(overrides)
+        return row
+
+    @staticmethod
+    def _record(
+        evaluator_name: str, delta: float, *, blocking: bool, prompt_id: str = "greet"
+    ) -> dict[str, Any]:
+        return {
+            "run_id": "r_20260601_aaaaaa",
+            "prompt_id": prompt_id,
+            "example_id": "ex1",
+            "evaluator_name": evaluator_name,
+            "kind": "trace_invariants",
+            "source_score": 1.0 if delta <= 0 else 0.0,
+            "target_score": 1.0 if delta >= 0 else 0.0,
+            "delta": delta,
+            "blocking": blocking,
+        }
+
+    def _run(
+        self, tmp_path: Path, records: list[dict[str, Any]], comparisons: list[dict[str, Any]]
+    ) -> Path:
+        run_dir = _run_dir_with_scores(tmp_path, records)
+        _append_comparisons(run_dir, comparisons)
+        return run_dir
+
+    def _mixed_run(self, tmp_path: Path) -> Path:
+        # The advisory row is listed first, so it won every severity tie.
+        return self._run(
+            tmp_path,
+            [
+                self._record("notes_watch", 1.0, blocking=False),
+                self._record("payments", -1.0, blocking=True),
+            ],
+            [self._comparison("notes_watch", 0.5), self._comparison("payments", -0.5)],
+        )
+
+    def test_executive_summary_prefers_a_blocking_evaluator_over_an_advisory_one(
+        self, tmp_path: Path
+    ) -> None:
+        rows = build_report_payload(self._mixed_run(tmp_path)).executive_summary
+        assert [(r["prompt_id"], r["evaluator_name"]) for r in rows] == [("greet", "payments")]
+
+    def test_executive_summary_breaks_a_severity_tie_toward_the_worst_effect(
+        self, tmp_path: Path
+    ) -> None:
+        run_dir = self._run(
+            tmp_path,
+            [
+                self._record("a_improved", 1.0, blocking=True),
+                self._record("b_regressed", -1.0, blocking=True),
+            ],
+            [self._comparison("a_improved", 0.5), self._comparison("b_regressed", -0.5)],
+        )
+        rows = build_report_payload(run_dir).executive_summary
+        assert [r["evaluator_name"] for r in rows] == ["b_regressed"]
+
+    def test_executive_summary_keeps_a_prompt_whose_only_evaluator_is_advisory(
+        self, tmp_path: Path
+    ) -> None:
+        run_dir = self._run(
+            tmp_path,
+            [self._record("notes_watch", 1.0, blocking=False, prompt_id="side")],
+            [self._comparison("notes_watch", 0.5, prompt_id="side")],
+        )
+        rows = build_report_payload(run_dir).executive_summary
+        assert [(r["prompt_id"], r["evaluator_name"]) for r in rows] == [
+            ("greet", "structural.length"),
+            ("side", "notes_watch"),
+        ]
+
+    def test_header_average_follows_the_blocking_row(self, tmp_path: Path) -> None:
+        html = render_html(build_report_payload(self._mixed_run(tmp_path)))
+        shown = re.search(
+            r'Avg score Δ</span>\s*<span class="strip-value[^"]*">([^<]+)</span>', html
+        )
+        assert shown is not None
+        assert shown.group(1) == "-0.500"
+
+    def test_evaluator_table_tags_an_advisory_evaluator(self, tmp_path: Path) -> None:
+        html = render_html(build_report_payload(self._mixed_run(tmp_path)))
+        tagged = r'<code class="eval-id">{}</code>\s*<span class="badge advisory-tag"'
+        assert re.search(tagged.format("notes_watch"), html) is not None
+        assert re.search(tagged.format("payments"), html) is None
+
+    def test_evaluator_table_says_what_a_trace_rule_row_measures(self, tmp_path: Path) -> None:
+        run_dir = self._run(
+            tmp_path,
+            [self._record("payments", 0.0, blocking=True)],
+            [self._comparison("payments", 0.0)],
+        )
+        html = render_html(build_report_payload(run_dir))
+        assert "each side judged against the entry" in html

@@ -2975,3 +2975,34 @@ class TestInvariantViolationBudget:
         assert decision.verdict == "fail"
         assert decision.reason is not None
         assert "max_invariant_violations" in decision.reason
+
+
+class TestInvariantFailureCategory:
+    def test_the_category_counts_what_the_budget_counts(self) -> None:
+        """The causes panel must not read 3 where the budget reads 1.
+
+        Two blocking entries broke a rule on ``e1`` (two rows, one example), an
+        advisory entry broke one on ``e2``, and the source shares every break:
+        the budget observes 1 and the category must agree -- counting rows
+        made the report's causes panel and the narrative built on it name a
+        figure the verdict never used.
+        """
+        decision = _decide(
+            [
+                _invariant_record("e1", 0.0, 0.0),
+                _invariant_record("e1", 0.0, 0.0, rule_id="one-charge").model_copy(
+                    update={"evaluator_name": "refunds"}
+                ),
+                _invariant_record("e2", 0.0, 0.0, blocking=False),
+                _invariant_record("e3", 1.0, 1.0),
+            ],
+        )
+        counts = {c.category: c.count for c in decision.failure_categories}
+        assert counts[INVARIANT_VIOLATION] == 1
+        assert _budgets(decision)["max_invariant_violations"].observed == 1.0
+
+    def test_advisory_breaks_alone_write_no_category(self) -> None:
+        decision = _decide(
+            [_invariant_record("e1", 1.0, 0.0, blocking=False), _invariant_record("e2", 1.0, 1.0)],
+        )
+        assert INVARIANT_VIOLATION not in {c.category for c in decision.failure_categories}
