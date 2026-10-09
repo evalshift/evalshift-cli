@@ -33,13 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a missing one exits 1 naming the `pip install` to run. Credentials come from
   each provider's default chain and are rejected in the URI: a value with `@`
   or `?` fails to load, naming the accepted forms. No rejected value is echoed
-  back (it may be a pasted key or connection string); only its scheme is named.
+  back (it may be a pasted key or connection string); at most its scheme is
+  named.
   `capture list --json` keeps stdout pure JSON (the fetch line and warnings
   go to stderr). `doctor` reports whether the store is installed (`fail`, exit 1,
   when the extra is missing) and reachable (`warn` when it cannot be listed).
   Without `captures.store` nothing changes; a `sync` or `list` whose
   `evalshift.yaml` cannot be read or does not validate skips the fetch,
-  warning only when the file has a top-level `captures:` key.
+  warning only when the file has a top-level `captures:` key. Older CLIs
+  reject the `captures:` key, so bump the CLI (and a pinned CI action's
+  `evalshift-version`) before adding it.
 - `evaluators.trace_invariants`: hand-written rules over tool-call traces —
   `forbidden`, `required`, `order`, `call_count` (`min_calls` and/or
   `max_calls` per tool; equal bounds = an exact count) and

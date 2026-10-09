@@ -1034,6 +1034,9 @@ captures:
 | ------- | ------------- | ------- | ----------- |
 | `store` | string (URI)  | (none)  | Object store the SDK writes to. `capture sync` and `capture list` fetch new captures and toolset sidecars from it into the local directory first; `capture fetch` does only that step. |
 
+CLI versions before this release reject the `captures:` key (the config is strict), so bump
+the CLI — and a pinned GitHub Action's `evalshift-version` — before adding it.
+
 Accepted URI forms — the same grammar the SDK uses:
 
 | Form | Store | Install | Credentials |
@@ -1044,15 +1047,15 @@ Accepted URI forms — the same grammar the SDK uses:
 
 `<prefix>` is optional. Credentials never go in the URI: a value containing `@` or `?` fails
 to load, naming the accepted forms. A rejected value is never echoed back (it may be a pasted
-key or connection string); the error names only its scheme. Under the prefix the layout is exactly the local one —
+key or connection string); the error names at most its scheme. Under the prefix the layout is exactly the local one —
 `captures/<suite>/cap_<hex>.json` and `toolsets/<hex>.json` — so the bucket is a mirror of
 `.evalshift/`, not a different format.
 
 What the fetch does: it lists the bucket, downloads only objects missing locally (captures
 are immutable and toolsets content-addressed, so "exists" means "current"), skips captures
 already promoted into a suite (so `capture clean` never causes a re-download), and writes
-each file atomically. `--since 24h` (or `7d`, `30m`, an ISO date) limits a fetch to recent
-objects; `--offline` skips it and works with what is already local. Retention in the bucket
+each file atomically. `--since 24h` (or `7d`, `30m`, an ISO date) limits a fetch to recently
+written captures; `--offline` skips it and works with what is already local. Retention in the bucket
 is yours to set with a lifecycle rule; the SDK's `max_captures` does not apply there.
 
 ## Capture lifecycle
