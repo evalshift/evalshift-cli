@@ -97,6 +97,7 @@ embedder (`evaluate.py:404`). Skipping `semantic` therefore changes how `tool_ar
 
    ```
    ⚠ semantic skipped: no API key for openai/text-embedding-3-small — export OPENAI_API_KEY to enable it.
+   ⚠ llm_judge.equivalence skipped: no API key for gpt-4o-mini — export OPENAI_API_KEY to enable it.
    ```
 
    followed by `note` on the next line when set.
@@ -137,7 +138,8 @@ For each advisory `llm_judge` evaluator with comparisons, take the overall-slice
 - `n_min ≥ MIN_N_RELIABLE`:
   `The equivalence judge scored at least {n_min} pairs on every prompt — enough to gate. Set blocking: true on it in evalshift.yaml to get a pass/fail verdict.`
 - otherwise:
-  `The equivalence judge is advisory, so this run has no pass/fail verdict. It becomes reliable at {MIN_N_RELIABLE} pairs per prompt; {prompt_id} has {n_min}. Collect more examples, then set blocking: true on it.`
+  `The equivalence judge is advisory, so it does not gate this run. It becomes reliable at {MIN_N_RELIABLE} pairs per prompt; {prompt_id} has {n_min}. Collect more examples, then set blocking: true on it.`
+  ("does not gate this run" rather than "no pass/fail verdict": a cost or latency breach can still fail it.)
   (`; {prompt_id} has` is omitted on a single-prompt run in favour of `this run has {n_min}`.)
 
 The criterion is named by `criterion_name` (the part after `llm_judge.`). When there is no
@@ -172,7 +174,7 @@ not handed `recommendations`. The bundle schema: `recommendations` is already `s
   exists). `_SEMANTIC_BLOCK_DISABLED` is removed.
 - **Block comment** for the borrowed case says which provider it uses and why, needs which key,
   and that `compare` skips it and says so without one.
-- **Next steps.** When the embedding key is missing, one extra line:
+- **Next steps.** When the embedding model is *borrowed* and its key is missing, one extra line (a provider's own embedding key is the key the user needs anyway, so it is not repeated):
   `semantic uses openai/text-embedding-3-small — export OPENAI_API_KEY to enable it; compare skips it until then.`
 - **`init --ci`.** When the embedding provider differs from the main provider, the workflow's
   `env:` gains `<EMBED_KEY>: ${{ secrets.<EMBED_KEY> }}` and the CI next-steps line lists it as
