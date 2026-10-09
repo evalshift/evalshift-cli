@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -218,10 +219,18 @@ def _promoted_content_owners(
     return owners
 
 
+#: A top-level ``captures:`` key: at column 0, so neither a comment nor a nested key matches.
+_TOP_LEVEL_CAPTURES_KEY = re.compile(rb"^captures\s*:", re.MULTILINE)
+
+
 def _mentions_captures(config_path: Path) -> bool:
-    """Whether the raw config file text names ``captures`` at all (``False`` if unreadable)."""
+    """Whether the raw config file has a top-level ``captures`` key (``False`` if unreadable).
+
+    Structural rather than a substring test: ``evalshift init`` writes "captures" into its
+    comments, and a config that only mentions the word never asked for a store.
+    """
     try:
-        return b"captures" in config_path.read_bytes()
+        return _TOP_LEVEL_CAPTURES_KEY.search(config_path.read_bytes()) is not None
     except OSError:
         return False
 
@@ -232,7 +241,7 @@ def _configured_store(config_path: Path, *, console: Console, strict: bool) -> R
     A missing config file means no store. An invalid one is a hard error when ``strict``
     (``capture fetch`` has nothing else to do). Otherwise ``sync`` and ``list`` keep working on
     the local mirror the way they did before ``captures.store`` existed: an invalid or
-    unreadable file is skipped, with a warning only when its text mentions ``captures`` (a
+    unreadable file is skipped, with a warning only when it has a top-level ``captures`` key (a
     config that never asked for a store must not change their output). A missing client extra
     is always a hard error: the user asked for a store it cannot reach.
     """

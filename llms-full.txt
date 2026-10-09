@@ -331,7 +331,8 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   With captures.store set, sync runs fetch first (same summary line) unless --offline; a fetch
   failure or missing extra exits 1 before anything is promoted. --since without a store (or
   with --offline) exits 1. An unreadable or invalid evalshift.yaml skips the fetch (warning
-  only when the file mentions captures) and sync/list continue on the local mirror as before.
+  only when the file has a top-level captures: key) and sync/list continue on the local mirror
+  as before.
   Promotes EVERY capture: groups by conversation_id, orders by turn_index, one SuiteExample per
   turn; writes .evalshift/suites/<suite>/golden.jsonl and rewrites the managed suites: block in
   evalshift.yaml (between ">>> evalshift suites" markers). Content-duplicate captures skipped by

@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the extra is missing) and reachable (`warn` when it cannot be listed).
   Without `captures.store` nothing changes; a `sync` or `list` whose
   `evalshift.yaml` cannot be read or does not validate skips the fetch,
-  warning only when the file mentions `captures`.
+  warning only when the file has a top-level `captures:` key.
 - `evaluators.trace_invariants`: hand-written rules over tool-call traces —
   `forbidden`, `required`, `order`, `call_count` (`min_calls` and/or
   `max_calls` per tool; equal bounds = an exact count) and

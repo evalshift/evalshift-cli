@@ -194,6 +194,39 @@ def test_invalid_config_without_captures_stays_silent(
     assert remote.gets == []
 
 
+@pytest.mark.parametrize("command", ["sync", "list"])
+def test_invalid_init_config_with_captures_only_in_comments_stays_silent(
+    tmp_path: Path, remote: FakeRemoteStore, command: str
+) -> None:
+    # `evalshift init` output mentions "captures" in comments; that is not a store request.
+    config = tmp_path / "evalshift.yaml"
+    config.write_text(
+        render_minimal_config(profile="model-upgrade") + "\ntypo_key: 1\n", encoding="utf-8"
+    )
+    assert b"captures" in config.read_bytes()
+    result = _invoke([command, "--config", str(config)], tmp_path)
+    assert result.exit_code == 0, result.output
+    assert "skipping captures.store" not in result.output
+    assert "could not read" not in result.output
+    assert remote.gets == []
+
+
+@pytest.mark.parametrize("command", ["sync", "list"])
+def test_invalid_init_config_with_top_level_captures_warns(
+    tmp_path: Path, remote: FakeRemoteStore, command: str
+) -> None:
+    config = tmp_path / "evalshift.yaml"
+    config.write_text(
+        render_minimal_config(profile="model-upgrade")
+        + "\ntypo_key: 1\ncaptures:\n  store: s3://b/p\n",
+        encoding="utf-8",
+    )
+    result = _invoke([command, "--config", str(config)], tmp_path)
+    assert result.exit_code == 0, result.output
+    assert "skipping captures.store" in result.output
+    assert remote.gets == []
+
+
 def test_list_with_undecodable_config_stays_local_without_traceback(
     tmp_path: Path, remote: FakeRemoteStore
 ) -> None:
