@@ -967,8 +967,10 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
   correctness). Once anything gates, none of it is emitted.
   Skipped evaluators (state.json skipped_evaluators): one line each under EVERY verdict, after
   the verdict's own advice: "<label> was skipped: no API key for <model>. Export <VAR> to
-  enable it." (+ note when set). analyze and the hosted bundle pass the same list, so local
-  and hosted recommendations match; inconclusive_decision (no policy) carries them too.
+  enable it." (+ note when set). analyze and the hosted bundle pass the same list, so with a
+  migration_policy configured local and hosted recommendations match. Without one, analyze
+  writes no decision, so there are no local recommendations to match; the bundle's
+  inconclusive_decision still carries the lines.
 - The four PROPORTION budgets - max_overall_regression_rate, min_equivalence_rate,
   max_tool_argument_drift, max_tool_divergence, each a count of records over a count of
   records - are
@@ -1253,6 +1255,11 @@ content leaves the machine.
   recorded in state.json skipped_evaluators (no evaluator_coverage entry -- never attempted);
   every evaluator dropped -> ConfigError naming the vars (not NoEvaluatorsError). compare's
   evaluate row shows "semantic (no key)" / "judge (no key)".
+  UPGRADE NOTE: semantic/llm_judge default to blocking: true (library default). Before this
+  check a keyless blocking entry still ran (errors, unmeasured axis, inconclusive, compare
+  exit 0, passed --policy-gate); now compare/run/evaluate/doctor exit 1 before any call, so
+  green CI can turn red. The bare text-embedding-3-small default is now checked too. Fix:
+  export the key (CI secret) or set blocking: false to skip it with a warning.
 - Cost estimate is worst-case (every completion at the registry default_max_tokens, 4096);
   >$10 -> confirm prompt (--yes / EVALSHIFT_NONINTERACTIVE skips). defaults.max_cost_usd is
   a soft ceiling reserved for future enforcement — not yet enforced at run time.

@@ -181,7 +181,7 @@ not handed `recommendations`. The bundle schema: `recommendations` is already `s
   optional. An unset secret arrives as an empty string, which `missing_api_keys` treats as
   unset — the run warns and skips rather than failing.
 - **`doctor`** gains an `evaluator keys` row from `evaluator_key_gaps`: `fail` for a blocking gap,
-  `warn` for an advisory one, `ok` (`judge and semantic keys present`) otherwise; silent with no
+  `warn` for an advisory one, `ok` (`judge and embedding models have API keys`) otherwise; silent with no
   loadable config.
 
 Side effect, new projects only: with an embedding key present, `tool_arguments`' `auto`

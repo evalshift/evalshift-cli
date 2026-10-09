@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A judge that measured nothing (every call errored) is said to have measured
   nothing rather than told to collect more examples.
 
+### Changed
+
+- A `semantic`/`llm_judge` entry without `blocking: false` is a gate (the
+  library default). If its model has no API key, `compare`, `run`, `evaluate`
+  and `doctor` now exit 1 before any call — previously the run completed with
+  an unmeasured axis, landed on `inconclusive` and passed `--policy-gate`, so
+  CI that was green can turn red on upgrade. The bare `text-embedding-3-small`
+  default is checked for the first time. Export the key, or set
+  `blocking: false` to have it skipped with a warning.
+
 ### Fixed
 
 - A judge or embedding model with no API key no longer fails silently on every
