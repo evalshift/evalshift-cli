@@ -157,6 +157,7 @@ def run_analyze(
             records=records,
             calls=list(iter_calls(run_dir)),
             dropped_params=state.dropped_params,
+            skipped_evaluators=state.skipped_evaluators,
         )
         decision_path = run_dir / MIGRATION_DECISION_FILENAME
         decision_path.write_text(

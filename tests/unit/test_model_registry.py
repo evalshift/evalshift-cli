@@ -10,6 +10,7 @@ from evalshift_cli.models.registry import (
     UnknownModelError,
     get_model,
     list_supported,
+    missing_api_keys,
     resolve_model,
 )
 
@@ -165,3 +166,31 @@ class TestRegistryIntegrity:
         # Determinism matters for evaluations; defaults must reflect that.
         for meta in list_supported():
             assert meta.default_temperature == 0.0
+
+
+class TestMissingApiKeys:
+    def test_returns_the_aliases_when_none_is_set(self) -> None:
+        assert missing_api_keys("gemini-2.5-flash", {}) == ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+
+    def test_returns_empty_when_the_primary_is_set(self) -> None:
+        assert missing_api_keys("claude-sonnet-5", {"ANTHROPIC_API_KEY": "k"}) == ()
+
+    def test_google_alias_satisfies_gemini(self) -> None:
+        assert missing_api_keys("gemini-2.5-flash", {"GOOGLE_API_KEY": "k"}) == ()
+
+    def test_empty_string_counts_as_unset(self) -> None:
+        # An unset GitHub secret arrives as "" — that is not a key.
+        assert missing_api_keys("gpt-4o-mini", {"OPENAI_API_KEY": ""}) == ("OPENAI_API_KEY",)
+
+    def test_unknown_provider_needs_no_key(self) -> None:
+        assert missing_api_keys("mistral/mistral-large", {}) == ()
+
+
+class TestEmbeddingProviderInference:
+    def test_bare_openai_embedding_id_resolves_to_openai(self) -> None:
+        meta = resolve_model("text-embedding-3-small")
+        assert meta.provider == "openai"
+        assert meta.id == "openai/text-embedding-3-small"
+
+    def test_bare_embedding_id_now_has_a_checkable_key(self) -> None:
+        assert missing_api_keys("text-embedding-3-small", {}) == ("OPENAI_API_KEY",)

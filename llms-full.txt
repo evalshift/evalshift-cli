@@ -83,7 +83,7 @@ as one section under the pipeline block (also on stage failure); errors are neve
 
 | File | Stage | Contents |
 |---|---|---|
-| state.json | run | status (in_progress/completed/failed), models, config_hash, counters, non_deterministic_models, dropped_params, evaluator_coverage (written by evaluate: attempted vs recorded per axis, the pairs that produced no row, + the axis's blocking flag; absent flag reads as true) |
+| state.json | run | status (in_progress/completed/failed), models, config_hash, counters, non_deterministic_models, dropped_params, evaluator_coverage (written by evaluate: attempted vs recorded per axis, the pairs that produced no row, + the axis's blocking flag; absent flag reads as true), skipped_evaluators (written by evaluate: one {evaluator_name, kind, label, model, env_vars, note} per advisory semantic/llm_judge entry skipped for a missing API key; [] when all ran; absent reads as []) |
 | raw.jsonl | run | one (prompt, example, role, sample) per line: prompt, output, tokens, cost, latency, tool trace, error. A teacher-forced multi-round example is ONE row: tokens/cost/latency summed, text = last round's answer, trace.round_count = rounds, each call tagged round_index |
 | scores.jsonl | evaluate | one EvalRecord per (pair x evaluator): source/target scores in [0,1], delta |
 | analysis.json | analyze | per-(prompt,evaluator,slice) statistics + severity |
@@ -137,9 +137,16 @@ evalshift init [-f/--force] [-d/--directory DIR] [--ci] [--wire-agents/--no-wire
     [--provider gemini|openai|anthropic|deepseek] [--profile PROFILE]
   Writes ONLY a minimal capture-first evalshift.yaml: passthrough prompt
   (id: replay, detection: manual, content: "{input}", variables: [input]), advisory
-  semantic (gemini/openai; commented out for anthropic/deepseek) + llm_judge evaluators
-  (blocking: false), empty managed suites: block, migration
-  policy from --profile. --ci also writes .github/workflows/evalshift.yml. --wire-agents writes
+  semantic + llm_judge evaluators (blocking: false; both ACTIVE for every provider), empty
+  managed suites: block, migration policy from --profile. semantic.embedding_model: gemini ->
+  gemini/gemini-embedding-001, openai -> openai/text-embedding-3-small; anthropic/deepseek have
+  no embeddings endpoint, so they BORROW one: openai/text-embedding-3-small if OPENAI_API_KEY is
+  set, else gemini/gemini-embedding-001 if GEMINI_API_KEY/GOOGLE_API_KEY is set, else
+  openai/text-embedding-3-small anyway (a YAML comment names the key; compare skips semantic
+  until it exists). When the borrowed key is missing, next steps add "semantic uses <model> --
+  export <VAR> to enable it; compare skips it until then."
+  --ci also writes .github/workflows/evalshift.yml (borrowed embedding key wired in env: as a
+  second, optional secret; unset -> "" -> semantic skipped with a warning). --wire-agents writes
   EVALSHIFT.md and points AGENTS.md/CLAUDE.md/GEMINI.md/.cursorrules/copilot-instructions at it;
   creates AGENTS.md when none of those files exist. Idempotent.
   --provider prompted on TTY, else gemini. Does NOT write prompts.py/tools.yaml/golden.jsonl.
@@ -154,8 +161,8 @@ evalshift init [-f/--force] [-d/--directory DIR] [--ci] [--wire-agents/--no-wire
 evalshift doctor
   Env/config check. Exit 1 ONLY when an existing evalshift.yaml fails validation (the row shows
   the problem count + "run `evalshift validate` for details"; validate prints each problem) or
-  its captures.store needs a client extra that is not installed; missing API keys are soft
-  warnings (exit 0).
+  its captures.store needs a client extra that is not installed, or a BLOCKING semantic /
+  llm_judge model has no API key; other missing API keys are soft warnings (exit 0).
   Row 2 `evalshift-sdk`: ok ("<v> (import name `evalshift`)"); warn (exit 0) when the SDK is
   not installed, fails to import, or the name resolves to something else (an older CLI's
   leftover files, a local evalshift/ directory).
@@ -178,11 +185,21 @@ evalshift doctor
   captures.store: fail if the extra is missing (detail names pip install "evalshift[<extra>]";
   exit 1), warn if the bucket cannot be listed (exit 0), ok "<uri> reachable"; no row without
   a store (or when evalshift.yaml is invalid -- its own row reports that).
+  `evaluator keys` row (config has semantic or llm_judge; checks the top-level block + every
+  named suite's resolved set): fail (exit 1) "<label> uses <model>; export <VAR> (or set
+  blocking: false to run without it)" for a blocking evaluator with no key ("<label> uses
+  <model>; blocking because tool_arguments `<name>` uses the semantic strategy — export <VAR>
+  or change that strategy" when that entry is what makes semantic a gate); warn (exit 0)
+  "... (skipped until then)" for an advisory one; one ok
+  "judge and embedding models have API keys" otherwise; no row without a loadable config.
+  compare's doctor stage ignores this row (its own suite-scoped preflight decides).
 evalshift run [-f/--from MODEL] [-t/--to MODEL] [-c CONFIG] [-s/--suite FILE]
     [--suite-name NAME] [--resume] [-y/--yes]
   Paired run over (prompt x example x {source,target}). --from/--to override
   defaults.source_model/target_model. --suite default ./golden.jsonl; --suite-name selects a
   key under suites: in config. Costs money — always calls real models.
+  Before any call, checks arm keys AND every semantic/llm_judge model's key (see "Missing
+  judge/embedding keys" under Behavior rules).
 evalshift evaluate RUN_ID [-c CONFIG]      -> scores.jsonl
   Prints a red doctor-style "broken eval harness" row when the SOURCE model failed the recorded
   ground truth on >= 50% of >= 4 tool_selection.conformance rows, naming the rate and the likely
@@ -558,8 +575,11 @@ evaluators:                         # every evaluator config also takes blocking
       # length: min_chars/max_chars (>=1 of them); 1.0 in bounds, linear decay to 0 at 2x bound
       applies_to: ["*"]
   semantic:                         # single block, not a list
-    embedding_model: str = text-embedding-3-small
+    embedding_model: str = text-embedding-3-small   # bare text-embedding-* resolves to openai
     min_similarity: float = 0.9     # below -> SEMANTIC_REGRESSION flag
+    # init writes it ACTIVE for every provider (anthropic/deepseek borrow an OpenAI/Gemini
+    # embedder -- see init). No key for embedding_model -> skipped or refused before any
+    # call; see "Missing judge/embedding keys" under Behavior rules.
     # Yardstick is the SOURCE output, never the suite's `expected` field: this
     # measures drift, not correctness (reworded-but-right reads as drift). Init
     # writes blocking: false for it; library default is true. Judge = correctness.
@@ -745,9 +765,9 @@ captures:
 
 Model ids: built-in registry provides aliases/metadata but NEVER gates — LiteLLM is the
 call-time authority; any LiteLLM-supported model works. Unknown ids pass through with provider
-inferred by prefix: gemini-* -> google, claude-* -> anthropic, gpt-*/o1-*/o3-* -> openai,
-deepseek-* -> deepseek, else "other". Before a live run the CLI verifies the provider's key env
-var is set.
+inferred by prefix: gemini-* -> google, claude-* -> anthropic, gpt-*/o1-*/o3-* ->
+openai, text-embedding-* -> openai, deepseek-* -> deepseek, else "other". Before a live run the
+CLI verifies the provider's key env var is set -- for both arms and every judge/embedding model.
 
 DeepSeek: export DEEPSEEK_API_KEY; ids deepseek-flash / deepseek-v4-pro; a bare deepseek-* id
 (what a capture records for api.deepseek.com called via the OpenAI client) is auto-prefixed
@@ -759,8 +779,10 @@ when the verdict matters; (2) every assistant turn replayed from the recording (
 chat history alike) is sent with the single-space reasoning_content placeholder the API accepts
 -- the recording holds no DeepSeek reasoning to pass back; DeepSeek requires the field on any
 request with tools, where an empty chain may degrade multi-turn answer quality, and ignores it
-otherwise; (3) no embedding endpoint, so the semantic evaluator (needs an
-OpenAI/Gemini embedding model + key) ships commented out in the DeepSeek scaffold. DeepSeek
+otherwise; (3) no embedding endpoint, so the semantic evaluator borrows an OpenAI/Gemini
+embedding model + that provider's key: the DeepSeek scaffold writes it ACTIVE with whichever key
+is already set (OpenAI first, else Gemini, else OpenAI) and compare skips it with a warning
+naming the env var until the key exists. DeepSeek
 hosted elsewhere (hosted_vllm/, azure_ai/, bedrock/, ...) uses that host's prefix and env vars;
 tool calls still parse, but the key pre-check and the notes above apply only to the deepseek/
 API. LiteLLM also reads DEEPSEEK_API_BASE to point deepseek/ at a DeepSeek-compatible endpoint.
@@ -928,6 +950,27 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
   All evaluators advisory (fresh init) or all errored -> inconclusive with guidance, EXCEPT
   when max_cost_increase/max_latency_increase is breached -> fail (those read the run's calls,
   not evaluator records, so they gate with zero blocking evaluators).
+  Promotion advice (ONLY when no blocking record exists): per advisory llm_judge with
+  comparisons, take its overall-slice ("all") comparisons (one per prompt) and the SMALLEST n
+  (n_min) + its prompt, vs MIN_N_RELIABLE = 20:
+    n_min >= 20 -> "The <criterion> judge scored at least <n_min> pairs on every prompt --
+      enough to gate. Set blocking: true on it in evalshift.yaml to get a pass/fail verdict."
+    else -> "The <criterion> judge is advisory, so it does not gate this run. It becomes
+      reliable at 20 pairs per prompt; <prompt_id> has <n_min>. Collect more examples, then
+      set blocking: true on it." (single-prompt run: "this run has <n_min>")
+    any prompt with n == 0 (judge measured nothing, e.g. every call errored) -> instead
+      "The <criterion> judge measured nothing on <prompt_ids|this run>, so more examples will
+      not help: find out why its calls produced no verdict before relying on it." ("this run"
+      when no prompt was measured)
+  Replaces the generic "Set blocking: true on at least one trusted evaluator..." line; the
+  generic line stays when no advisory judge scored (semantic is never suggested -- drift, not
+  correctness). Once anything gates, none of it is emitted.
+  Skipped evaluators (state.json skipped_evaluators): one line each under EVERY verdict, after
+  the verdict's own advice: "<label> was skipped: no API key for <model>. Export <VAR> to
+  enable it." (+ note when set). analyze and the hosted bundle pass the same list, so with a
+  migration_policy configured local and hosted recommendations match. Without one, analyze
+  writes no decision, so there are no local recommendations to match; the bundle's
+  inconclusive_decision still carries the lines.
 - The four PROPORTION budgets - max_overall_regression_rate, min_equivalence_rate,
   max_tool_argument_drift, max_tool_divergence, each a count of records over a count of
   records - are
@@ -1188,6 +1231,35 @@ content leaves the machine.
   regression or improvement); run always completes.
 - Every example is validated against every prompt (template variables covered) BEFORE any
   model call is dispatched or money spent.
+- Missing judge/embedding keys: before any model call, compare and run check every
+  semantic.embedding_model / llm_judge[].judge_model in the suite's RESOLVED evaluator set
+  (cfg.evaluators_for(suite)); an empty env value counts as unset (unset CI secret = "").
+  Advisory -> skipped, no calls/retries, run continues:
+    "⚠ <label> skipped: no API key for <model> — export <VAR> to enable it." (+ note line)
+  Blocking -> "✗ missing API key for <model> (<label>); export <VAR>." and exit 1, before any
+  spend (skipping a gate would turn a broken config into a green check). Label: `semantic` or
+  `llm_judge.<criterion_name>`. Every evaluator would be skipped (advisory gaps leave no
+  evaluator family) -> the skip warnings, then "✗ every configured evaluator would be skipped:
+  none of their models has an API key, so nothing would score this run. Export a key above, or
+  add an evaluator that needs none." and exit 1, before any call. Effective blocking for a
+  keyless semantic: BLOCKING when a
+  blocking tool_arguments entry uses the explicit `semantic` strategy (strategies value or
+  default_strategy) -- else that gate would silently degrade to exact; when semantic's own flag
+  is false the line names the entry: "semantic is blocking because tool_arguments `<name>` uses
+  the semantic strategy — export <VAR> or change that strategy." (same wording in evaluate's
+  ConfigError detail and the doctor row; never "set blocking: false"); otherwise semantic's own
+  flag, with note "tool_arguments compares free-text arguments with difflib instead of
+  embeddings until then." (auto) or "...fields using the semantic strategy fall back to exact
+  matching until then." (explicit, advisory entry). evaluate (run_evaluate, shared by compare/
+  evaluate/all) applies the same rule: blocking gap -> ConfigError; advisory gaps dropped and
+  recorded in state.json skipped_evaluators (no evaluator_coverage entry -- never attempted);
+  every evaluator dropped -> ConfigError naming the vars (not NoEvaluatorsError). compare's
+  evaluate row shows "semantic (no key)" / "judge (no key)".
+  UPGRADE NOTE: semantic/llm_judge default to blocking: true (library default). Before this
+  check a keyless blocking entry still ran (errors, unmeasured axis, inconclusive, compare
+  exit 0, passed --policy-gate); now compare/run/evaluate/doctor exit 1 before any call, so
+  green CI can turn red. The bare text-embedding-3-small default is now checked too. Fix:
+  export the key (CI secret) or set blocking: false to skip it with a warning.
 - Cost estimate is worst-case (every completion at the registry default_max_tokens, 4096);
   >$10 -> confirm prompt (--yes / EVALSHIFT_NONINTERACTIVE skips). defaults.max_cost_usd is
   a soft ceiling reserved for future enforcement — not yet enforced at run time.
@@ -1409,7 +1481,9 @@ evalshift compare --suite-name <suite> --to gemini-3.1-pro-preview --gate critic
 #     from a newer CLI fails loudly on an older one -- reader >= writer; see CI pin drift); max-parallel: 1 by default — raise
 #     toward the hosted plan's concurrent-run limit (Pro: 5; Enterprise: by contract); PR comment only
 #     from the first matrix job (constant comment marker, multiple suites would overwrite);
-#     provider key env matches init's --provider; skips on fork PRs (no secret access) and
+#     provider key env matches init's --provider (anthropic/deepseek: plus the borrowed
+#     embedding key as an optional second secret; unset -> semantic skipped with a warning);
+#     skips on fork PRs (no secret access) and
 #     no-ops green with a notice while EVALSHIFT_TOKEN is unset.
 #   evalshift gate -> the ONE check to require in branch protection: fails if any suite
 #     failed, passes when evaluation was skipped. Never require the per-suite jobs (dynamic
@@ -1466,7 +1540,8 @@ makes repeats of unchanged examples free, tool-calling ones included; iterate wi
 All severities "none" -> usually genuinely no significant difference; check n (<5 insufficient,
 <20 uncertain) and remember BH correction raises the bar; zero-variance comparisons skip.
 Verdict "inconclusive" -> (1) all evaluators advisory (fresh init: flip blocking: true as the
-suite grows), (2) rate-budget breach unconfirmed by Wilson CI (grow the suite), (3) all n<5,
+suite grows; recommendations name each advisory judge and whether its smallest per-prompt n has
+reached 20, or which prompt is short), (2) rate-budget breach unconfirmed by Wilson CI (grow the suite), (3) all n<5,
 (4) every blocking row excluded as a shared ground-truth miss -> fix the harness, not the
 sample size; more pairs from the same setup are more excluded rows. Exception: a breached
 max_invariant_violations is never inconclusive -- a count, it fails however small the sample.

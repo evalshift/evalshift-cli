@@ -34,7 +34,7 @@ from evalshift_cli.cli.commands._suites import (
     SUITES_MARKER_END,
 )
 from evalshift_cli.cli.commands.doctor import CONFIG_FILENAME
-from evalshift_cli.cli.commands.init import _PROVIDER_MODELS, PROVIDERS
+from evalshift_cli.cli.commands.init import _PROVIDER_MODELS, PROVIDERS, render_minimal_config
 from evalshift_cli.cli.main import app
 from evalshift_cli.config.loader import load_config
 from evalshift_cli.models.registry import PROVIDER_ENV_VARS, resolve_model
@@ -61,8 +61,11 @@ POLICY_DOC_FILENAMES = ("docs/configuration.md", "llms-full.txt", "DOCS.md")
 
 @pytest.fixture
 def in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Run inside ``tmp_path`` for the duration of a test."""
+    """Run inside ``tmp_path`` with no provider keys set."""
     monkeypatch.chdir(tmp_path)
+    for keys in PROVIDER_ENV_VARS.values():
+        for key in keys:
+            monkeypatch.delenv(key, raising=False)
     return tmp_path
 
 
@@ -281,17 +284,6 @@ class TestInitProvider:
         body = (in_tmp / CONFIG_FILENAME).read_text(encoding="utf-8")
         assert "gemini-3.1" not in body
 
-    def test_anthropic_provider_comments_out_semantic(self, in_tmp: Path) -> None:
-        result = runner.invoke(app, ["init", "--provider", "anthropic"])
-        assert result.exit_code == 0, result.stdout
-        cfg = load_config(in_tmp / CONFIG_FILENAME)
-        assert cfg.defaults.source_model == "claude-sonnet-5"
-        assert cfg.evaluators.llm_judge[0].judge_model == "claude-opus-4-8"
-        # No Anthropic embedding endpoint — semantic ships commented out.
-        assert cfg.evaluators.semantic is None
-        body = (in_tmp / CONFIG_FILENAME).read_text(encoding="utf-8")
-        assert "# semantic:" in body
-
     def test_unknown_provider_rejected(self, in_tmp: Path) -> None:
         result = runner.invoke(app, ["init", "--provider", "grok"])
         assert result.exit_code != 0
@@ -306,19 +298,79 @@ class TestInitProvider:
             cfg = load_config(in_tmp / CONFIG_FILENAME)
             assert cfg.prompts[0].id == "replay"
 
-    def test_deepseek_provider_writes_deepseek_ids_and_comments_out_semantic(
-        self, in_tmp: Path
+    @pytest.mark.parametrize(
+        ("env_key", "expected"),
+        [
+            (None, "openai/text-embedding-3-small"),
+            ("OPENAI_API_KEY", "openai/text-embedding-3-small"),
+            ("GEMINI_API_KEY", "gemini/gemini-embedding-001"),
+            ("GOOGLE_API_KEY", "gemini/gemini-embedding-001"),
+        ],
+    )
+    @pytest.mark.parametrize("provider", ["anthropic", "deepseek"])
+    def test_providers_without_embeddings_borrow_one_and_keep_semantic_on(
+        self,
+        in_tmp: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        env_key: str | None,
+        expected: str,
     ) -> None:
+        if env_key is not None:
+            monkeypatch.setenv(env_key, "k")
+        result = runner.invoke(app, ["init", "--provider", provider])
+        assert result.exit_code == 0, result.stdout
+        cfg = load_config(in_tmp / CONFIG_FILENAME)
+        assert cfg.evaluators.semantic is not None
+        assert cfg.evaluators.semantic.embedding_model == expected
+        assert cfg.evaluators.semantic.blocking is False
+        body = (in_tmp / CONFIG_FILENAME).read_text(encoding="utf-8")
+        assert "# semantic:" not in body
+        label = {"anthropic": "Anthropic", "deepseek": "DeepSeek"}[provider]
+        assert f"{label} has no embeddings endpoint" in body
+
+    def test_anthropic_keeps_its_own_ids(self, in_tmp: Path) -> None:
+        result = runner.invoke(app, ["init", "--provider", "anthropic"])
+        assert result.exit_code == 0, result.stdout
+        cfg = load_config(in_tmp / CONFIG_FILENAME)
+        assert cfg.defaults.source_model == "claude-sonnet-5"
+        assert cfg.evaluators.llm_judge[0].judge_model == "claude-opus-4-8"
+
+    def test_deepseek_keeps_its_own_ids(self, in_tmp: Path) -> None:
         result = runner.invoke(app, ["init", "--provider", "deepseek"])
         assert result.exit_code == 0, result.stdout
         cfg = load_config(in_tmp / CONFIG_FILENAME)
         assert cfg.defaults.source_model == "deepseek-flash"
         assert cfg.evaluators.llm_judge[0].judge_model == "deepseek-v4-pro"
-        # DeepSeek has no embedding endpoint — semantic ships commented out.
-        assert cfg.evaluators.semantic is None
         body = (in_tmp / CONFIG_FILENAME).read_text(encoding="utf-8")
-        assert "# semantic:" in body
-        assert "Anthropic has no embedding" not in body
+        assert "Anthropic has no" not in body
+
+    def test_borrowed_embedding_without_its_key_is_named_in_next_steps(self, in_tmp: Path) -> None:
+        result = runner.invoke(app, ["init", "--provider", "anthropic"])
+        flat = " ".join(result.stdout.split())
+        assert (
+            "semantic uses openai/text-embedding-3-small — export OPENAI_API_KEY to "
+            "enable it; compare skips it until then."
+        ) in flat
+
+    def test_borrowed_embedding_with_its_key_needs_no_next_step(
+        self, in_tmp: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        result = runner.invoke(app, ["init", "--provider", "anthropic"])
+        assert "skips it until then" not in result.stdout
+
+    def test_own_embedding_needs_no_next_step(self, in_tmp: Path) -> None:
+        result = runner.invoke(app, ["init", "--provider", "gemini"])
+        assert "skips it until then" not in result.stdout
+
+    def test_render_is_pure_given_env(self) -> None:
+        text = render_minimal_config(
+            profile="model-upgrade", provider="anthropic", env={"GEMINI_API_KEY": "k"}
+        )
+        assert yaml.safe_load(text)["evaluators"]["semantic"]["embedding_model"] == (
+            "gemini/gemini-embedding-001"
+        )
 
     def test_every_init_provider_key_is_the_registry_key(self) -> None:
         # init and the run pre-check must agree on which env var authenticates
@@ -478,6 +530,16 @@ class TestInitCI:
         body, _ = self._workflow(in_tmp, "--provider", "deepseek")
         assert "DEEPSEEK_API_KEY" in body
         assert "GEMINI_API_KEY" not in body
+
+    def test_borrowed_embedding_key_is_wired_as_a_secret(self, in_tmp: Path) -> None:
+        body, _ = self._workflow(in_tmp, "--provider", "anthropic")
+        assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in body
+        assert "__EMBEDDING_API_KEY__" not in body
+
+    def test_own_embedding_adds_no_second_secret(self, in_tmp: Path) -> None:
+        body, _ = self._workflow(in_tmp, "--provider", "gemini")
+        assert "OPENAI_API_KEY" not in body
+        assert "__EMBEDDING_API_KEY__" not in body
 
     def test_main_baseline_runs_are_never_cancelled(self, in_tmp: Path) -> None:
         # Push runs on main produce the base-branch baselines PRs diff

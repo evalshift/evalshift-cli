@@ -18,8 +18,8 @@ from jsonschema import Draft202012Validator
 
 from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.evaluators.tool_models import ToolCall, ToolTrace
-from evalshift_cli.runner.checkpoint import append_call
-from evalshift_cli.runner.models import Call
+from evalshift_cli.runner.checkpoint import append_call, read_state, write_state
+from evalshift_cli.runner.models import Call, SkippedEvaluator
 from evalshift_cli.suite.models import Suite
 from tests.conftest import RunFixture
 
@@ -1016,3 +1016,26 @@ def test_bundle_latency_is_incomparable_when_a_side_replayed_rounds() -> None:
     assert by_id["mixed"]["delta_latency_ms"] == 0
     # The count itself stays local: the bundle row schema has no such field.
     assert "cached_rounds" not in by_id["mixed"]
+
+
+@pytest.mark.parametrize("with_policy", [False, True])
+def test_the_bundle_decision_names_skipped_evaluators(
+    run_fixture: RunFixture, with_policy: bool
+) -> None:
+    """The bundle recomputes the decision; it must say what ``analyze`` says."""
+    state = read_state(run_fixture.run_dir)
+    state.skipped_evaluators = [
+        SkippedEvaluator(
+            evaluator_name="semantic.cosine",
+            kind="semantic",
+            label="semantic",
+            model="openai/text-embedding-3-small",
+            env_vars=["OPENAI_API_KEY"],
+        )
+    ]
+    write_state(run_fixture.run_dir, state)
+    config = _with_migration_policy(run_fixture) if with_policy else run_fixture.config
+    recommendations = _decision(_load(run_fixture.build(config_path=config).path))[
+        "recommendations"
+    ]
+    assert any(r.startswith("semantic was skipped:") for r in recommendations)

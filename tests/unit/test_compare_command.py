@@ -513,3 +513,218 @@ class TestEndToEnd:
         result = runner.invoke(app, ["all", "--yes"])
         assert result.exit_code == 1
         assert "missing API key" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Evaluator key preflight
+# ---------------------------------------------------------------------------
+
+
+_JUDGE_YAML = (
+    "              max_chars: 200\n"
+    "          llm_judge:\n"
+    "            - criterion_name: equivalence\n"
+    "              criterion_prompt: which is better?\n"
+    "              judge_model: gpt-4o-mini\n"
+    "              blocking: {blocking}"
+)
+
+
+class TestEvaluatorKeyPreflight:
+    def _with_judge(self, tmp_path: Path, *, blocking: bool) -> None:
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "              max_chars: 200",
+                _JUDGE_YAML.format(blocking=str(blocking).lower()),
+            )
+            + "\n        migration_policy:\n"
+            + "          max_critical_regressions: 0\n",
+            encoding="utf-8",
+        )
+
+    def test_keyless_advisory_judge_warns_and_the_run_completes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        self._with_judge(tmp_path, blocking=False)
+        _patch_client(monkeypatch)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert "llm_judge.equivalence skipped: no API key for gpt-4o-mini" in flat
+
+    def test_skipped_judge_is_named_in_the_recommendations(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        self._with_judge(tmp_path, blocking=False)
+        _patch_client(monkeypatch)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert (
+            "llm_judge.equivalence was skipped: no API key for gpt-4o-mini. "
+            "Export OPENAI_API_KEY to enable it."
+        ) in flat
+
+    def test_keyless_blocking_judge_exits_before_any_model_call(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        self._with_judge(tmp_path, blocking=True)
+        _patch_client(monkeypatch)
+        calls: list[str] = []
+
+        async def spy_complete(self: ModelClient, **kwargs: Any) -> CompletionResult:
+            calls.append(str(kwargs["model"]))
+            raise AssertionError("no model call may happen before the key preflight")
+
+        monkeypatch.setattr(ModelClient, "complete", spy_complete)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"])
+
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert (
+            "missing API key for gpt-4o-mini (llm_judge.equivalence); export OPENAI_API_KEY."
+            in flat
+        )
+        assert calls == []
+
+    def test_every_evaluator_skipped_exits_before_any_model_call(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An advisory-only config with no keys would spend the run, then fail."""
+        _scaffold(tmp_path)
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "          structural:\n"
+                "            - type: length\n"
+                "              min_chars: 1\n"
+                "              max_chars: 200",
+                "          llm_judge:\n"
+                "            - criterion_name: equivalence\n"
+                "              criterion_prompt: which is better?\n"
+                "              judge_model: gpt-4o-mini\n"
+                "              blocking: false",
+            ),
+            encoding="utf-8",
+        )
+        _patch_client(monkeypatch)
+        calls: list[str] = []
+
+        async def spy_complete(self: ModelClient, **kwargs: Any) -> CompletionResult:
+            calls.append(str(kwargs["model"]))
+            raise AssertionError("no model call may happen before the key preflight")
+
+        monkeypatch.setattr(ModelClient, "complete", spy_complete)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"])
+
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert "every configured evaluator would be skipped" in flat
+        assert "OPENAI_API_KEY" in flat
+        assert calls == []
+        assert not (tmp_path / ".evalshift" / "runs").exists()
+
+    def test_tool_arguments_forced_gate_names_the_entry(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "              max_chars: 200",
+                "              max_chars: 200\n"
+                "          semantic:\n"
+                "            embedding_model: openai/text-embedding-3-small\n"
+                "            blocking: false\n"
+                "          tool_arguments:\n"
+                "            - name: args\n"
+                "              default_strategy: semantic\n"
+                "              blocking: true",
+            ),
+            encoding="utf-8",
+        )
+        _patch_client(monkeypatch)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"])
+
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert (
+            "semantic is blocking because tool_arguments `args` uses the semantic strategy — "
+            "export OPENAI_API_KEY or change that strategy."
+        ) in flat
+        assert "blocking: false" not in flat
+
+    def test_another_suites_keyless_blocking_judge_does_not_fail_the_doctor_stage(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The doctor stage defers to compare's suite-scoped key preflight.
+
+        Suite ``b`` brings its own keyless blocking judge; ``--suite-name a``
+        never calls it, so the run must not stop on ``b``'s missing key.
+        """
+        _scaffold(tmp_path)
+        golden = (tmp_path / "golden.jsonl").read_text(encoding="utf-8")
+        (tmp_path / "a.jsonl").write_text(golden, encoding="utf-8")
+        (tmp_path / "b.jsonl").write_text(golden, encoding="utf-8")
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8")
+            + "\n        suites:\n"
+            + "          a:\n"
+            + "            path: a.jsonl\n"
+            + "          b:\n"
+            + "            path: b.jsonl\n"
+            + "            evaluators:\n"
+            + "              llm_judge:\n"
+            + "                - criterion_name: equivalence\n"
+            + "                  criterion_prompt: which is better?\n"
+            + "                  judge_model: gpt-4o-mini\n"
+            + "                  blocking: true\n",
+            encoding="utf-8",
+        )
+        _patch_client(monkeypatch)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--suite-name", "a", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        assert "evaluator keys" not in result.output
+
+
+class TestFamilySummarySkipped:
+    def test_marks_a_skipped_semantic_and_an_all_skipped_judge(self) -> None:
+        evaluators = EvaluatorsConfig.model_validate(
+            {
+                "semantic": {"embedding_model": "openai/text-embedding-3-small"},
+                "llm_judge": [
+                    {"criterion_name": "e", "criterion_prompt": "p", "judge_model": "gpt-4o-mini"}
+                ],
+            }
+        )
+        from evalshift_cli.evaluators.keys import evaluator_key_gaps
+
+        gaps = evaluator_key_gaps(evaluators, {})
+        assert _evaluator_family_summary(evaluators, gaps) == "semantic (no key) · judge (no key)"
+        assert _evaluator_family_summary(evaluators) == "semantic · judge"

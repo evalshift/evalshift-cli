@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `evalshift init` writes the `semantic` evaluator active for every provider.
+  Anthropic and DeepSeek have no embeddings endpoint, so the scaffold borrows
+  OpenAI's or Gemini's — whichever key you already have — and `init --ci`
+  wires that key as a second secret.
+- `compare`, `run` and `evaluate` check every judge and embedding model's API
+  key before the first call. An advisory evaluator without one is skipped with
+  a line naming the env var to export; a blocking one stops the run, and so
+  does a config whose every evaluator would be skipped. A `semantic` that is a
+  gate only because a blocking `tool_arguments` entry uses its embedder is
+  reported as such, naming that entry. The skip
+  is recorded in `state.json` (`skipped_evaluators`) and repeated in the
+  verdict's recommendations, the HTML report and the bundle.
+- `doctor` gains an `evaluator keys` row.
+- When nothing gates the verdict, the recommendation now names the advisory
+  judge and says, from its own sample size, whether it is ready for
+  `blocking: true` (20 pairs per prompt) or how many examples it still needs.
+  A judge that measured nothing (every call errored) is said to have measured
+  nothing rather than told to collect more examples.
+
+### Changed
+
+- A `semantic`/`llm_judge` entry without `blocking: false` is a gate (the
+  library default). If its model has no API key, `compare`, `run`, `evaluate`
+  and `doctor` now exit 1 before any call — previously the run completed with
+  an unmeasured axis, landed on `inconclusive` and passed `--policy-gate`, so
+  CI that was green can turn red on upgrade. The bare `text-embedding-3-small`
+  default is checked for the first time. Export the key, or set
+  `blocking: false` to have it skipped with a warning.
+
+### Fixed
+
+- A judge or embedding model with no API key no longer fails silently on every
+  pair: it is skipped (advisory) or refused (blocking) before any call.
+- The bare `text-embedding-3-small` default now resolves to OpenAI, so its key
+  is checked.
+
 ## [1.3.0] - 2026-10-09
 
 ### Added

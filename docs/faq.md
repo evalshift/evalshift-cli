@@ -76,9 +76,11 @@ DeepSeek project. Three things differ from other providers:
   The recording holds no DeepSeek reasoning to pass back. DeepSeek requires
   the field on any request with tools, where an empty chain may degrade
   multi-turn answer quality, and ignores it otherwise.
-- **No embeddings.** DeepSeek has no embedding endpoint. The `semantic`
-  evaluator needs an OpenAI or Gemini embedding model and its key, which is
-  why the DeepSeek scaffold ships it commented out.
+- **No embeddings.** DeepSeek has no embedding endpoint, so the `semantic`
+  evaluator borrows an OpenAI or Gemini embedding model and needs that
+  provider's key. The DeepSeek scaffold picks whichever key you already
+  have (OpenAI first) and writes `semantic` active; without the key,
+  `compare` skips it with a line naming the env var to export.
 
 DeepSeek served by another host (self-hosted open weights, or a cloud region
 of your choice) goes through that host's LiteLLM prefix (`hosted_vllm/`,
@@ -175,7 +177,10 @@ Three common causes, all by design:
 
 1. **Every configured evaluator is advisory** (`blocking: false` — the
    fresh `evalshift init` state), so nothing gates quality. Promote
-   evaluators to blocking as your suite grows. The cost and latency
+   evaluators to blocking as your suite grows. The recommendations say
+   when: each advisory judge is named with its smallest per-prompt
+   sample — ready to gate at 20 pairs on every prompt, otherwise which
+   prompt is short and by how much. The cost and latency
    budgets still apply — they read the run's calls, so a breach there
    reports `fail`, not `inconclusive`.
 2. **A rate budget was breached but the 95% Wilson interval can't
@@ -224,6 +229,9 @@ semantic score measures drift from the *source* output, not correctness,
 so a right answer in different words reads as a regression, and on the
 small suites a fresh capture starts with that noise (and judge noise)
 would dominate the verdict. Use a judge criterion for correctness.
+The flag also decides what a missing API key does: an advisory `semantic`
+or judge whose model has no key is skipped with a warning naming the env
+var, while a blocking one stops `compare` before the first call.
 
 The library default is not flipped to match because that would silently
 turn a failing migration into a passing one for every existing config that

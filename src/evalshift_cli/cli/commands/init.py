@@ -16,7 +16,9 @@ data. The intended flow is:
 
 from __future__ import annotations
 
+import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Final
 
@@ -40,6 +42,7 @@ from evalshift_cli.cli.commands._scaffold import (
 )
 from evalshift_cli.cli.commands._suites import render_suites_region
 from evalshift_cli.cli.commands.doctor import CONFIG_FILENAME
+from evalshift_cli.models.registry import PROVIDER_ENV_VARS, missing_api_keys, resolve_model
 from evalshift_cli.utils.ci_pin import check_ci_pin
 
 PROVIDERS: Final = ("gemini", "openai", "anthropic", "deepseek")
@@ -79,21 +82,29 @@ _SEMANTIC_BLOCK: Final = """\
   # Embedding-based drift score between source and target outputs. Advisory
   # (blocking: false): it reports and ranks drift but never fails a run by
   # itself — cosine distance can't tell "reworded" from "wrong".
-  semantic:
+{borrowed_note}  semantic:
     embedding_model: {embedding_model}
     # Cosine similarity below which a target output is flagged as a
     # semantic regression. Defaults to 0.9; lower it to tolerate more drift.
     min_similarity: 0.9
     blocking: false"""
 
-_SEMANTIC_BLOCK_DISABLED: Final = """\
-  # Embedding-based drift score (advisory). This provider has no embedding
-  # endpoint — uncomment and set an OpenAI or Gemini embedding model (and
-  # its API key) to enable it.
-  # semantic:
-  #   embedding_model: openai/text-embedding-3-small
-  #   min_similarity: 0.9
-  #   blocking: false"""
+_BORROWED_EMBEDDING_NOTE: Final = """\
+  # {provider_label} has no embeddings endpoint, so this uses {embedding_label}'s and
+  # needs {key}. Without it, `evalshift compare` skips this evaluator and says so.
+"""
+
+# Tried in order when the provider has no embeddings endpoint of its own; the
+# first key already exported decides, so a user with OpenAI or Gemini set up
+# gets a working semantic evaluator with nothing to edit.
+_BORROWED_EMBEDDINGS: Final[tuple[tuple[str, str], ...]] = (
+    ("OPENAI_API_KEY", "openai/text-embedding-3-small"),
+    ("GEMINI_API_KEY", "gemini/gemini-embedding-001"),
+    ("GOOGLE_API_KEY", "gemini/gemini-embedding-001"),
+)
+_DEFAULT_BORROWED_EMBEDDING: Final = "openai/text-embedding-3-small"
+_PROVIDER_LABELS: Final[dict[str, str]] = {"anthropic": "Anthropic", "deepseek": "DeepSeek"}
+_EMBEDDING_LABELS: Final[dict[str, str]] = {"openai": "OpenAI", "google": "Gemini"}
 
 # Body of the minimal config, up to (but excluding) the suites region and the
 # migration_policy block. ``render_minimal_config`` appends those.
@@ -162,7 +173,36 @@ evaluators:
 """
 
 
-def render_minimal_config(*, profile: str, provider: str = "gemini") -> str:
+def scaffold_embedding_model(provider: str, env: Mapping[str, str]) -> str:
+    """Pick the embedding model ``init`` writes for ``provider``.
+
+    The provider's own when it has one; otherwise the first of OpenAI's or
+    Gemini's whose key is already set, else OpenAI's — written active either
+    way, so ``compare`` names the missing key instead of the YAML hiding it.
+
+    Args:
+        provider: One of :data:`PROVIDERS`.
+        env: Environment mapping, typically ``os.environ``.
+    """
+    own = _PROVIDER_MODELS[provider]["embedding_model"]
+    if own:
+        return own
+    for key, model in _BORROWED_EMBEDDINGS:
+        if env.get(key):
+            return model
+    return _DEFAULT_BORROWED_EMBEDDING
+
+
+def _borrowed_embedding_key(provider: str, embedding_model: str) -> str | None:
+    """Primary env var of a borrowed embedding provider, or ``None`` when it is the provider's own."""
+    if _PROVIDER_MODELS[provider]["embedding_model"]:
+        return None
+    return PROVIDER_ENV_VARS[resolve_model(embedding_model).provider][0]
+
+
+def render_minimal_config(
+    *, profile: str, provider: str = "gemini", env: Mapping[str, str] | None = None
+) -> str:
     """Render the minimal ``evalshift.yaml`` for a migration profile + provider.
 
     Args:
@@ -170,12 +210,22 @@ def render_minimal_config(*, profile: str, provider: str = "gemini") -> str:
             selects the ``migration_policy`` block.
         provider: One of :data:`PROVIDERS`; selects the model ids the
             scaffold writes (source, judge, embedding).
+        env: Environment used to pick a borrowed embedding model; defaults to os.environ.
     """
     models = _PROVIDER_MODELS[provider]
-    semantic_block = (
-        _SEMANTIC_BLOCK.format(embedding_model=models["embedding_model"])
-        if models["embedding_model"]
-        else _SEMANTIC_BLOCK_DISABLED
+    embedding_model = scaffold_embedding_model(provider, os.environ if env is None else env)
+    borrowed_key = _borrowed_embedding_key(provider, embedding_model)
+    borrowed_note = (
+        _BORROWED_EMBEDDING_NOTE.format(
+            provider_label=_PROVIDER_LABELS[provider],
+            embedding_label=_EMBEDDING_LABELS[resolve_model(embedding_model).provider],
+            key=borrowed_key,
+        )
+        if borrowed_key is not None
+        else ""
+    )
+    semantic_block = _SEMANTIC_BLOCK.format(
+        embedding_model=embedding_model, borrowed_note=borrowed_note
     )
     body = _MINIMAL_YAML_BODY.format(
         source_model=models["source_model"],
@@ -276,12 +326,16 @@ def init(
 
     target = directory.resolve()
     target.mkdir(parents=True, exist_ok=True)
+    embedding_model = scaffold_embedding_model(provider, os.environ)
+    embedding_key = _borrowed_embedding_key(provider, embedding_model)
 
     files: dict[str, str] = {
         CONFIG_FILENAME: render_minimal_config(profile=profile, provider=provider),
     }
     if ci:
-        files[CI_WORKFLOW_PATH] = render_ci_workflow(provider=provider, version=__version__)
+        files[CI_WORKFLOW_PATH] = render_ci_workflow(
+            provider=provider, version=__version__, embedding_api_key=embedding_key
+        )
 
     write_scaffold_files(target=target, files=files, force=force, console=console)
 
@@ -302,6 +356,11 @@ def init(
         "  3. [cyan]evalshift compare --suite-name <suite> --to <candidate>[/cyan]"
         "  - run the migration end to end.",
     )
+    if embedding_key is not None and missing_api_keys(embedding_model, os.environ):
+        console.print(
+            f"     [bold]semantic[/bold] uses [cyan]{embedding_model}[/cyan] — export "
+            f"[bold]{embedding_key}[/bold] to enable it; compare skips it until then.",
+        )
     if wire_agents:
         console.print()
         console.print(
@@ -312,7 +371,9 @@ def init(
         console.print()
         console.print(
             f"  CI: commit [cyan]{CI_WORKFLOW_PATH}[/cyan], add "
-            f"[bold]{PROVIDER_API_KEY_ENVS[provider]}[/bold] and "
+            f"[bold]{PROVIDER_API_KEY_ENVS[provider]}[/bold]"
+            + (f", [bold]{embedding_key}[/bold] (for semantic)" if embedding_key else "")
+            + " and "
             "[bold]EVALSHIFT_TOKEN[/bold] as repo secrets, and require the "
             "[bold]evalshift gate[/bold] check in branch protection — the "
             "full checklist is documented at the top of the workflow file.",

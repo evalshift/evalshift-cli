@@ -43,7 +43,7 @@ from evalshift_cli.insights.models import (
     insight_to_dict,
 )
 from evalshift_cli.models.client import ModelClient
-from evalshift_cli.models.registry import PROVIDER_ENV_VARS, resolve_model
+from evalshift_cli.models.registry import missing_api_keys
 from evalshift_cli.reports.economics import build_economics
 from evalshift_cli.runner.checkpoint import iter_calls, read_state
 from evalshift_cli.runner.models import Call, RunState, representative_calls
@@ -100,7 +100,7 @@ def ensure_insight(
         if cached is not None:
             return cached
 
-        missing_keys = _missing_api_keys(model, env if env is not None else os.environ)
+        missing_keys = missing_api_keys(model, env if env is not None else os.environ)
         if missing_keys:
             log.warning(
                 "skipping insights: no API key for %s; export %s",
@@ -290,6 +290,7 @@ def _decision(
         comparisons=comparisons,
         records=scores,
         calls=calls,
+        skipped_evaluators=state.skipped_evaluators,
     )
 
 
@@ -354,14 +355,6 @@ def _example_facts(
         )
         for (prompt_id, example_id), pair in sorted(texts.items())
     ]
-
-
-def _missing_api_keys(model: str, env: Mapping[str, str]) -> tuple[str, ...]:
-    """The provider key aliases for ``model``, when none of them is set."""
-    keys = PROVIDER_ENV_VARS.get(resolve_model(model).provider, ())
-    if not keys or any(env.get(key) for key in keys):
-        return ()
-    return keys
 
 
 __all__ = [

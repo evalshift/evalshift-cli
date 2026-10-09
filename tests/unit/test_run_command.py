@@ -305,3 +305,67 @@ class TestRunApiKeyPrecheck:
         assert result.exit_code == 1
         assert "missing API key" in result.stdout
         assert "DEEPSEEK_API_KEY" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Evaluator key preflight
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluatorKeyPreflight:
+    def test_keyless_blocking_judge_exits_before_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "          concurrency: 4",
+                "          concurrency: 4\n"
+                "        evaluators:\n"
+                "          llm_judge:\n"
+                "            - criterion_name: equivalence\n"
+                "              criterion_prompt: which is better?\n"
+                "              judge_model: gpt-4o-mini",
+            ),
+            encoding="utf-8",
+        )
+        _patch_client(monkeypatch)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["run", "--yes"])
+
+        assert result.exit_code == 1
+        assert "OPENAI_API_KEY" in result.stdout
+        assert not (tmp_path / ".evalshift" / "runs").exists()
+
+    def test_every_evaluator_skipped_exits_before_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "          concurrency: 4",
+                "          concurrency: 4\n"
+                "        evaluators:\n"
+                "          llm_judge:\n"
+                "            - criterion_name: equivalence\n"
+                "              criterion_prompt: which is better?\n"
+                "              judge_model: gpt-4o-mini\n"
+                "              blocking: false",
+            ),
+            encoding="utf-8",
+        )
+        _patch_client(monkeypatch)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["run", "--yes"])
+
+        assert result.exit_code == 1
+        flat = " ".join(result.stdout.split())
+        assert "every configured evaluator would be skipped" in flat
+        assert "OPENAI_API_KEY" in flat
+        assert not (tmp_path / ".evalshift" / "runs").exists()

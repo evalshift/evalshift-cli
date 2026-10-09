@@ -24,12 +24,13 @@ from evalshift_cli.cli.commands._suites import (
     resolve_suite_path,
 )
 from evalshift_cli.cli.commands.doctor import CONFIG_FILENAME
+from evalshift_cli.cli.commands.evaluate import preflight_evaluator_keys
 from evalshift_cli.config.loader import ConfigError, load_config
 from evalshift_cli.evaluators.tool_loader import ToolLoaderError
 from evalshift_cli.models.registry import (
-    PROVIDER_ENV_VARS,
     Provider,
     UnknownModelError,
+    missing_api_keys,
     resolve_model,
 )
 from evalshift_cli.parsers.base import PromptParseError
@@ -153,6 +154,8 @@ def run(
         _print_missing_api_keys(console, missing)
         raise typer.Exit(code=1)
 
+    preflight_evaluator_keys(console, cfg.evaluators_for(suite_name), os.environ)
+
     try:
         result = asyncio.run(
             run_orchestrator(
@@ -230,12 +233,9 @@ def _missing_api_keys(
         if m in seen:
             continue
         seen.add(m)
-        provider = resolve_model(m).provider
-        keys = PROVIDER_ENV_VARS.get(provider, ())
-        if not keys:
-            continue
-        if not any(env.get(k) for k in keys):
-            missing.append((m, provider, keys))
+        keys = missing_api_keys(m, env)
+        if keys:
+            missing.append((m, resolve_model(m).provider, keys))
     return missing
 
 
