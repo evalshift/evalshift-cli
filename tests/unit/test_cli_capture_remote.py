@@ -99,6 +99,34 @@ def test_fetch_since_and_suite_are_passed_through(
     assert seen["base"] == tmp_path
 
 
+def test_fetch_undecodable_config_exits_1_without_traceback(
+    tmp_path: Path, remote: FakeRemoteStore
+) -> None:
+    config = tmp_path / "evalshift[x].yaml"
+    config.write_bytes(b"captures:\n  store: s3://b/\xff\xfeSECRET\n")
+    result = _invoke(["fetch", "--config", str(config)], tmp_path)
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert f"could not read {config}" in result.output.replace("\n", "")
+    assert "UnicodeDecodeError" in result.output
+    assert "SECRET" not in result.output  # never the raw config text
+    assert remote.gets == []
+
+
+def test_fetch_unreadable_config_exits_1_without_traceback(
+    tmp_path: Path, remote: FakeRemoteStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _unreadable(path: Path) -> Any:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(capture_module, "load_config", _unreadable)
+    config = _write_config(tmp_path / "evalshift.yaml")
+    result = _invoke(["fetch", "--config", str(config)], tmp_path)
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "could not read" in result.output and "PermissionError" in result.output
+
+
 @pytest.mark.parametrize("since", ["yesterday", "99999999d"])
 def test_fetch_rejects_bad_since(tmp_path: Path, remote: FakeRemoteStore, since: str) -> None:
     config = _write_config(tmp_path / "evalshift.yaml")

@@ -238,8 +238,8 @@ def _mentions_captures(config_path: Path) -> bool:
 def _configured_store(config_path: Path, *, console: Console, strict: bool) -> RemoteStore | None:
     """The store ``captures.store`` names, or ``None`` when there is none to fetch from.
 
-    A missing config file means no store. An invalid one is a hard error when ``strict``
-    (``capture fetch`` has nothing else to do). Otherwise ``sync`` and ``list`` keep working on
+    A missing config file means no store. An invalid or unreadable one is a hard error (exit 1,
+    one line, no traceback) when ``strict`` (``capture fetch`` has nothing else to do). Otherwise ``sync`` and ``list`` keep working on
     the local mirror the way they did before ``captures.store`` existed: an invalid or
     unreadable file is skipped, with a warning only when it has a top-level ``captures`` key (a
     config that never asked for a store must not change their output). A missing client extra
@@ -257,7 +257,13 @@ def _configured_store(config_path: Path, *, console: Console, strict: bool) -> R
         return None
     except (OSError, UnicodeDecodeError) as exc:
         if strict:
-            raise
+            # The exception's type only: its text can carry raw bytes of the file.
+            console.print(
+                f"[red]✗[/red] could not read {escape(str(config_path))} "
+                f"({type(exc).__name__}); capture fetch needs a readable evalshift.yaml.",
+                soft_wrap=True,
+            )
+            raise typer.Exit(code=1) from exc
         _warn_store_skipped(config_path, type(exc).__name__, console=console)
         return None
     if cfg.captures.store is None:

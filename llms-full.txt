@@ -322,7 +322,8 @@ evalshift capture fetch [--suite S] [--since 30m|24h|7d|ISO] [-c CONFIG]
   hint to check free disk space and permissions on its directory. Missing extra -> exit 1 naming
   pip install "evalshift[s3|gcs|azure]" (az:// needs azure-storage-blob AND azure-identity,
   both in [azure]). No captures.store, or no evalshift.yaml -> exit 1; an invalid
-  evalshift.yaml -> its load error, exit 1. Has no --offline flag.
+  evalshift.yaml -> its load error, exit 1; an unreadable or non-UTF-8 one -> a one-line
+  "could not read <path>" error, exit 1. Has no --offline flag.
 evalshift capture promote CAPTURE_ID [--as CASE_ID] [--suite S] [--input-var NAME=input]
     [--tag T]... [--strict-args] [--names-only] [--tool-count] [--rounds first(default)|all]
     [--allow-errored] [-f/--force]
