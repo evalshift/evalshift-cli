@@ -79,11 +79,14 @@ Rule: a sink the user asked for is never silently replaced by local disk.
 
 ### The explicit-sink path
 
-`S3Store(...)`, `GCSStore(...)`, `AzureBlobStore(...)` import their client lazily. On
-`ImportError` they raise `MissingStoreDependencyError` (renamed from `MissingExtraError`, same
-base `ImportError`, same module `evalshift.stores.uri`) whose text names the pip package(s), not
-the extra. `open_store()` raises the same. No alias for the old name: 0.5.0 shipped today and the
-rename is listed under *Changed* in the changelog.
+`S3Store(...)`, `GCSStore(...)`, `AzureBlobStore(...)` still import their client lazily on the
+first put, but a store constructed **without** an injected `client` now checks that its library
+is importable (`importlib.util.find_spec`, no import, no network) and raises
+`MissingStoreDependencyError` at construction — in user code, at startup — rather than failing
+its first background upload. The error is renamed from `MissingExtraError` (same base
+`ImportError`, same module `evalshift.stores.uri`) and its text names the pip package(s), not the
+extra. `open_store()` and the new `require_store_modules(scheme)` raise the same. No alias for
+the old name: 0.5.0 shipped today and the rename is listed under *Changed* in the changelog.
 
 ### Messages
 
@@ -93,7 +96,7 @@ parser's quoted-URI message cannot appear as a chained cause.
 
 | Case | `SinkConfigurationError` text |
 |---|---|
-| library missing | `EVALSHIFT_SINK names an s3:// store, but boto3 is not installed. Run: pip install boto3 — or unset EVALSHIFT_SINK to capture to local disk.` |
+| library missing | `EVALSHIFT_SINK points at an object store (s3://), but boto3 is not installed. Run: pip install boto3, or unset EVALSHIFT_SINK to capture to local disk.` |
 | malformed URI | `EVALSHIFT_SINK is not a valid store URI. Accepted forms: s3://<bucket>/<prefix>, gs://<bucket>/<prefix>, az://<account>/<container>/<prefix>. Credentials never go in the URI.` |
 | store failed to open | `EVALSHIFT_SINK could not be opened (<ExceptionType>). Unset it to capture to local disk.` |
 
