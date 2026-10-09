@@ -19,8 +19,9 @@ from typing import Annotated, Any, Literal, Self
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from evalshift_cli.captures.store_uri import STORE_URI_FORMS, parse_store_uri
 from evalshift_cli.suite.tags import RESERVED_SLICE_NAME
 
 # Default judge model used across the config when none is specified.
@@ -815,6 +816,41 @@ class Retention(_StrictModel):
     run_ttl_days: int | None = Field(default=None, ge=1)
 
 
+class CapturesConfig(_StrictModel):
+    """Where the capture SDK's recordings live, beyond the local ``.evalshift/`` directory.
+
+    By default captures are read from ``<base>/captures/`` on this machine and nothing here
+    is needed. Production hosts whose disk does not outlive them (Fargate, Lambda, pods) can
+    ship captures to an object store instead (``EVALSHIFT_SINK`` on the SDK side); naming the
+    same store here makes ``capture sync`` and ``capture list`` mirror new captures into the
+    local directory first, with no flags.
+
+    Attributes:
+        store: ``s3://<bucket>/<prefix>``, ``gs://<bucket>/<prefix>`` or
+            ``az://<account>/<container>/<prefix>``. Credentials come from the provider's
+            default chain, never from this file; a URI carrying ``@`` or ``?`` is rejected.
+            ``None`` (the default) means local disk only.
+    """
+
+    store: str | None = None
+
+    @field_validator("store")
+    @classmethod
+    def _validate_store(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            parse_store_uri(value)
+        except ValueError as exc:
+            # The parser's ``@`` / ``?`` messages deliberately omit both the URI (a secret
+            # would sit there) and the accepted forms; a config error must still name them.
+            message = str(exc)
+            if "accepted forms" not in message:
+                message = f"{message}; accepted forms: {STORE_URI_FORMS}"
+            raise ValueError(message) from None
+        return value.strip()
+
+
 class EvalShiftConfig(_StrictModel):
     """Top-level configuration loaded from ``evalshift.yaml``."""
 
@@ -828,6 +864,7 @@ class EvalShiftConfig(_StrictModel):
     # Empty by default so every pre-existing config stays valid.
     suites: dict[str, SuiteSource] = Field(default_factory=dict)
     retention: Retention = Field(default_factory=Retention)
+    captures: CapturesConfig = Field(default_factory=CapturesConfig)
 
     def evaluators_for(self, suite_name: str | None) -> EvaluatorsConfig:
         """Resolve the evaluator set a given named suite is scored with.
