@@ -92,7 +92,9 @@ def _is_messages_list(raw: Any) -> bool:
     ):
         return False
     return any(
-        isinstance(item.get("role"), str) or item.get("type") in _KNOWN_ITEMS for item in raw
+        isinstance(item.get("role"), str)
+        or (isinstance(item.get("type"), str) and item.get("type") in _KNOWN_ITEMS)
+        for item in raw
     )
 
 
@@ -125,6 +127,13 @@ class _Builder:
         self.messages.extend(results)
         if role == "assistant":
             calls = [*self._tool_calls(position, item.get("tool_calls")), *calls]
+        elif calls:
+            # tool_calls are assistant-only: a tool_use on any other turn has nowhere to replay.
+            self.unreplayable.extend(
+                f"recorded message {position} ({recorded_role}) carries a `tool_use` block"
+                for _call in calls
+            )
+            calls = []
         if results and not texts and not calls:
             return  # a user turn made only of tool results
         content = "\n".join(texts)
@@ -162,7 +171,9 @@ class _Builder:
                 self.unreplayable.append(f"{where} carries a {type(block).__name__} element")
                 continue
             kind = block.get("type")
-            if kind in _TEXT_BLOCKS:
+            if not isinstance(kind, str):  # unhashable kinds would break the set tests below
+                self.unreplayable.append(f"{where} carries a `{kind}` block")
+            elif kind in _TEXT_BLOCKS:
                 text = block.get("text")
                 if isinstance(text, str):
                     texts.append(text)

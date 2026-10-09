@@ -339,6 +339,57 @@ def test_a_tool_use_with_no_name_is_unreplayable_not_a_crash() -> None:
     assert result.messages == [{"role": "assistant", "content": ""}]
 
 
+def test_an_openai_tool_call_with_no_name_is_unreplayable_not_a_crash() -> None:
+    raw = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"arguments": "{}"}}],
+        }
+    ]
+    result = _norm(raw)
+    assert result.unreplayable == ["recorded message 1 carries a tool call with no name"]
+    assert result.messages == [{"role": "assistant", "content": ""}]
+
+
+def test_a_responses_function_call_with_no_name_is_unreplayable_not_a_crash() -> None:
+    raw = [
+        {"role": "user", "content": "go"},
+        {"type": "function_call", "call_id": "fc_1", "arguments": "{}"},
+    ]
+    result = _norm(raw)
+    assert result.unreplayable == ["recorded message 2 carries a tool call with no name"]
+    assert result.messages == [{"role": "user", "content": "go"}]
+
+
+def test_a_tool_use_block_off_an_assistant_turn_is_unreplayable() -> None:
+    # tool_calls are assistant-only; attaching them to a user turn would not survive a re-pass.
+    raw = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_use", "id": "t", "name": "s", "input": {}},
+                {"type": "text", "text": "hi"},
+            ],
+        }
+    ]
+    result = _norm(raw)
+    assert result.unreplayable == ["recorded message 1 (user) carries a `tool_use` block"]
+    assert result.messages == [{"role": "user", "content": "hi"}]
+
+
+def test_a_block_type_that_is_not_a_string_is_unreplayable_not_a_crash() -> None:
+    raw = [{"role": "user", "content": [{"type": ["text"]}, {"type": "text", "text": "ok"}]}]
+    result = _norm(raw)
+    assert result.unreplayable == ["recorded message 1 (user) carries a `['text']` block"]
+    assert result.messages == [{"role": "user", "content": "ok"}]
+
+
+def test_an_item_type_that_is_not_a_string_is_unreplayable_not_a_crash() -> None:
+    result = _norm([{"role": "user", "type": ["x"], "content": "hi"}])
+    assert result.unreplayable == ["recorded item 1 carries a `['x']` item"]
+    assert result.messages == []
+
+
 def test_an_unknown_responses_item_is_unreplayable() -> None:
     raw = [{"role": "user", "content": "search the web"}, {"type": "web_search_call", "id": "ws_1"}]
     assert _norm(raw).unreplayable == ["recorded item 2 carries a `web_search_call` item"]
