@@ -24,11 +24,12 @@ from __future__ import annotations
 import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
 from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
+from evalshift_cli.captures.native_messages import normalize_messages
 from evalshift_cli.captures.reader import CaptureRecord, suites_root, toolset_path
 from evalshift_cli.suite.models import (
     ChatMessage,
@@ -56,6 +57,9 @@ from evalshift_cli.utils.cost import estimate_call_cost
 # prompt / conversation history.
 _CONTEXT_LOSS_RATIO = 4
 _CONTEXT_LOSS_MIN_GAP_TOKENS = 300
+
+#: Why :func:`build_example_from_capture` refused a capture -- see :class:`BuiltExample`.
+BlockedReason = Literal["errored", "no_toolset", "multi_toolset", "unreplayable_content"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,8 +132,11 @@ class BuiltExample:
             one distinct ``toolset_ref`` (the SDK stamps one per call, so a
             runtime toolset switch is legitimate — but ``SuiteExample``
             carries exactly one toolset for its whole trace, so such a
-            capture cannot yet be promoted as a single case). Neither of the
-            latter two is rescued by ``--allow-errored``: re-capturing fixes
+            capture cannot yet be promoted as a single case).
+            ``"unreplayable_content"`` covers a capture whose recorded messages carry
+            content a text replay can't carry (an image, a document, a server-tool
+            result, an unknown block type) — a replay without it is not ground truth.
+            None of the latter three is rescued by ``--allow-errored``: re-capturing fixes
             the first but reproduces the second identically. ``None`` when
             ``blocked`` is ``None``.
         promotion_source: Which yardstick the tool-call ground truth came
@@ -150,7 +157,7 @@ class BuiltExample:
     example: SuiteExample
     warnings: list[str] = field(default_factory=list)
     blocked: str | None = None
-    blocked_reason: Literal["errored", "no_toolset", "multi_toolset"] | None = None
+    blocked_reason: BlockedReason | None = None
     promotion_source: Literal["requested", "executed"] = "executed"
     cost_usd: float = 0.0
     cost_source: Literal["recorded", "estimated"] | None = None
@@ -166,10 +173,14 @@ class RecoveredInput:
             when the capture's first ``model_call.input`` was a full messages
             list. ``None`` when the recorded input was a bare dict/string (no
             history to recover).
+        unreplayable: One line per recorded element a text replay can't carry
+            (see :func:`~evalshift_cli.captures.native_messages.normalize_messages`).
+            Non-empty blocks the capture.
     """
 
     inputs: dict[str, Any]
     history: list[ChatMessage] | None = None
+    unreplayable: list[str] = field(default_factory=list)
 
 
 def build_example_from_capture(
@@ -298,7 +309,7 @@ def build_example_from_capture(
 
     errors = _error_events(events)
     blocked: str | None = None
-    blocked_reason: Literal["errored", "no_toolset", "multi_toolset"] | None = None
+    blocked_reason: BlockedReason | None = None
     if toolset_ref is None:
         # Unconditional -- unlike an errored turn, --allow-errored cannot
         # rescue this: there is no recorded toolset to promote at all, only
@@ -338,6 +349,17 @@ def build_example_from_capture(
             "each toolset's rounds separately."
         )
         blocked_reason = "multi_toolset"
+    elif recovered.unreplayable:
+        # Unconditional, like the toolset refusals: --allow-errored cannot put back the
+        # image (or document, or server-tool result) a text replay leaves out.
+        more = len(recovered.unreplayable) - 1
+        extra = f" (+{more} more)" if more else ""
+        blocked = (
+            f"capture {envelope.capture_id!r} carries content a text replay can't carry — "
+            f"{recovered.unreplayable[0]}{extra}. A replay without it is not ground truth; "
+            "re-capture without it or hand-write the case."
+        )
+        blocked_reason = "unreplayable_content"
     elif errors:
         detail = errors[0].message.strip().replace("\n", " ")[:160]
         note = (
@@ -900,14 +922,6 @@ def _coerce_history_role(role: Any) -> Literal["system", "user", "assistant", "t
     return None
 
 
-def _looks_like_messages_list(value: Any) -> bool:
-    return (
-        isinstance(value, list)
-        and bool(value)
-        and all(isinstance(m, dict) and "role" in m and "content" in m for m in value)
-    )
-
-
 def _recover_inputs(
     events: list[Any],
     *,
@@ -920,11 +934,12 @@ def _recover_inputs(
     fall back to the first ``model_call`` input:
 
     * A dict is used directly as ``inputs`` (no history).
-    * A messages list (``[{"role": ..., "content": ...}, ...]``) is split:
-      the last ``user`` message becomes the current-turn ``inputs``, and
-      everything before it becomes ``history``. ``model`` roles are coerced
-      to ``assistant``; unsupported roles (e.g. ``tool``) are dropped with an
-      aggregated warning.
+    * A messages list in any wrapped provider's shape is first translated by
+      :func:`~evalshift_cli.captures.native_messages.normalize_messages`, then
+      split: the last ``user`` message becomes the current-turn ``inputs``, and
+      everything before it becomes ``history``. Unrecognised roles are dropped
+      with an aggregated warning; content a text replay can't carry lands in
+      ``unreplayable``.
     * A non-empty string is wrapped as ``{input_var: string}`` (no history).
     * Anything else yields empty ``inputs`` with a warning.
     """
@@ -937,8 +952,14 @@ def _recover_inputs(
 
     value = first_model_call.input
 
-    if _looks_like_messages_list(value):
-        return _recover_inputs_from_messages(value, input_var=input_var, warnings=warnings)
+    if isinstance(value, list):
+        normalized = normalize_messages(value)
+        if normalized is not None:
+            warnings.extend(normalized.warnings)
+            recovered = _recover_inputs_from_messages(
+                normalized.messages, input_var=input_var, warnings=warnings
+            )
+            return replace(recovered, unreplayable=list(normalized.unreplayable))
 
     if isinstance(value, dict):
         return RecoveredInput(inputs=dict(value))
@@ -957,11 +978,17 @@ def _history_message(
     msg: dict[str, Any],
     role: Literal["system", "user", "assistant", "tool"],
 ) -> ChatMessage:
-    """Build one history entry from a recorded message dict.
+    """Build one history entry from a normalized message dict.
 
+    ``msg`` has been through :func:`~evalshift_cli.captures.native_messages.normalize_messages`,
+    so its ``content`` is a string and its ``tool_calls`` are ``{id, name, arguments}``.
     Recorded ``tool_calls`` are carried through on ``assistant`` turns and
     ``tool_call_id`` on ``tool`` turns, so a replay sees the same agent loop
     production saw.
+
+    Raises:
+        TypeError: when ``content`` is not a string. Never ``str()`` it: that is how
+            a Python repr of a block list once reached promoted suites.
     """
     raw_calls = msg.get("tool_calls") if role == "assistant" else None
     tool_calls: list[HistoryToolCall] | None = None
@@ -977,10 +1004,20 @@ def _history_message(
     tool_call_id = str(msg["tool_call_id"]) if role == "tool" and msg.get("tool_call_id") else None
     return ChatMessage(
         role=role,
-        content=str(msg.get("content", "")),
+        content=_text_content(msg),
         tool_calls=tool_calls,
         tool_call_id=tool_call_id,
     )
+
+
+def _text_content(msg: dict[str, Any]) -> str:
+    """A normalized message's ``content`` -- a string, or a ``TypeError`` naming what it was."""
+    content = msg.get("content", "")
+    if not isinstance(content, str):
+        raise TypeError(
+            f"message content must be a string once normalized, got {type(content).__name__}"
+        )
+    return content
 
 
 def _assistant_with_call_ids(
@@ -1086,7 +1123,7 @@ def _recover_inputs_from_messages(
         )
 
     return RecoveredInput(
-        inputs={input_var: str(current.get("content", ""))},
+        inputs={input_var: _text_content(current)},
         history=history,
     )
 
@@ -1496,6 +1533,7 @@ def rebuild_golden_jsonl(suite_dir: Path) -> Path:
 
 __all__ = [
     "GOLDEN_FILENAME",
+    "BlockedReason",
     "BuiltExample",
     "PromoteOptions",
     "RecoveredInput",

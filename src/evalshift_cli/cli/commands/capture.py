@@ -1015,6 +1015,7 @@ def capture_sync(
     skipped_errored = 0
     skipped_no_toolset = 0
     skipped_multi_toolset = 0
+    skipped_unreplayable = 0
     suites_seen: set[str] = set()
     # (suite, content key) -> the name of the case that owns that content,
     # promoted either by an earlier run (seeded from disk below) or by this one
@@ -1069,6 +1070,8 @@ def capture_sync(
                     skipped_no_toolset += 1
                 elif built.blocked_reason == "multi_toolset":
                     skipped_multi_toolset += 1
+                elif built.blocked_reason == "unreplayable_content":
+                    skipped_unreplayable += 1
                 else:
                     skipped_errored += 1
                 continue
@@ -1148,6 +1151,11 @@ def capture_sync(
         summary += (
             f", skipped {skipped_multi_toolset} capture(s) that switched toolsets mid-run "
             "(not yet promotable as a single case; --allow-errored does not apply)"
+        )
+    if skipped_unreplayable:
+        summary += (
+            f", skipped {skipped_unreplayable} capture(s) with non-text content a text replay "
+            "can't carry (--allow-errored does not apply)"
         )
     console.print(summary + ".")
 

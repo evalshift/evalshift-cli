@@ -2132,3 +2132,41 @@ def test_sync_round_trips_hand_written_trace_invariants_through_the_config(
     settled = config.read_text(encoding="utf-8")
     assert _invoke(["sync", "--config", str(config)], tmp_path).exit_code == 0
     assert config.read_text(encoding="utf-8") == settled
+
+
+_IMAGE_TURN: list[dict[str, Any]] = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "x"}},
+            {"type": "text", "text": "What is in this screenshot?"},
+        ],
+    }
+]
+
+
+def test_promote_unreplayable_refusal_does_not_suggest_allow_errored(tmp_path: Path) -> None:
+    _write_capture(
+        tmp_path, capture_id="cap_img", suite="alpha", events=_messages_events(_IMAGE_TURN)
+    )
+    result = _invoke(["promote", "cap_img"], tmp_path)
+    out = " ".join(result.stdout.split())
+    assert result.exit_code == 1
+    assert "carries a `image` block" in out
+    assert "--allow-errored" not in out
+    assert not (tmp_path / "suites" / "alpha" / "cap_img.json").exists()
+
+
+def test_sync_counts_unreplayable_captures_under_their_own_reason(tmp_path: Path) -> None:
+    _write_capture(
+        tmp_path, capture_id="cap_img", suite="alpha", events=_messages_events(_IMAGE_TURN)
+    )
+    _write_capture(tmp_path, capture_id="cap_ok", suite="alpha")
+    result = _invoke(["sync", "--print", "--config", str(tmp_path / "evalshift.yaml")], tmp_path)
+    out = " ".join(result.stdout.split())
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "skipped 1 capture(s) with non-text content a text replay can't carry "
+        "(--allow-errored does not apply)"
+    ) in out
+    assert "errored capture(s)" not in out

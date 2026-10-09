@@ -20,6 +20,7 @@ from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
 from evalshift_cli.captures.promote import (
     BuiltExample,
     PromoteOptions,
+    _history_message,
     _tool_rounds,
     build_conversation_examples,
     build_example_from_capture,
@@ -30,6 +31,7 @@ from evalshift_cli.captures.promote import (
 )
 from evalshift_cli.captures.reader import CaptureRecord
 from evalshift_cli.suite.loader import load_jsonl
+from evalshift_cli.suite.models import HistoryToolCall
 
 FIXTURES = Path(__file__).parent / "fixtures" / "captures"
 MULTI_ROUND_CAPTURE = FIXTURES / "multi_round_tools.json"
@@ -2672,3 +2674,147 @@ class TestCostAtPromotion:
 
         assert built.cost_usd == pytest.approx(_litellm_cost("gpt-4o-mini", 1200, 300))
         assert built.cost_source == "estimated"
+
+
+# ---------------------------------------------------------------------------
+# provider-native message shapes
+# ---------------------------------------------------------------------------
+
+_CLAUDE_FOLLOW_UP: list[dict[str, Any]] = [
+    {"role": "system", "content": "sys"},
+    {"role": "user", "content": "What is evalshift?"},
+    {
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "search", "signature": "sig_abc"},
+            {"type": "text", "text": "Let me look."},
+            {"type": "tool_use", "id": "toolu_1", "name": "search", "input": {"q": "evalshift"}},
+        ],
+    },
+    {
+        "role": "user",
+        "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "results"}],
+    },
+    {"role": "assistant", "content": [{"type": "text", "text": "A regression tool."}]},
+    {"role": "user", "content": "And the price?"},
+]
+
+_IMAGE_TURN: list[dict[str, Any]] = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "x"}},
+            {"type": "text", "text": "What is in this screenshot?"},
+        ],
+    }
+]
+
+
+def test_claude_blocks_become_tool_calls_and_tool_messages_in_history() -> None:
+    events = [_messages_call(0, messages=_CLAUDE_FOLLOW_UP), _final("done", 1)]
+    built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+    assert built.blocked is None
+    assert built.example.inputs == {"input": "And the price?"}
+    history = built.example.history
+    assert history is not None
+    assert [m.role for m in history] == ["system", "user", "assistant", "tool", "assistant"]
+    assert history[2].content == "Let me look."
+    assert history[2].tool_calls == [
+        HistoryToolCall(id="toolu_1", name="search", arguments={"q": "evalshift"})
+    ]
+    assert history[3].tool_call_id == "toolu_1"
+    assert history[3].content == "results"
+    assert not any("'type'" in m.content or "sig_abc" in m.content for m in history)
+
+
+def test_openai_chat_history_with_null_content_no_longer_fails() -> None:
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "q1"},
+        {
+            "role": "assistant",
+            "content": None,
+            "refusal": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": '{"q": "x"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "res"},
+        {"role": "assistant", "content": "a1", "refusal": None, "tool_calls": None},
+        {"role": "user", "content": "q2"},
+    ]
+    events = [_messages_call(0, messages=messages), _final("done", 1)]
+    built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+    assert built.example.inputs == {"input": "q2"}
+    history = built.example.history
+    assert history is not None
+    assert history[2].tool_calls == [
+        HistoryToolCall(id="call_1", name="search", arguments={"q": "x"})
+    ]
+    assert history[3].tool_call_id == "call_1"
+
+
+def test_an_assistant_message_without_a_content_key_still_recovers_inputs() -> None:
+    messages = [
+        {"role": "user", "content": "q1"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "s", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "res"},
+        {"role": "user", "content": "q2"},
+    ]
+    events = [_messages_call(0, messages=messages), _final("done", 1)]
+    built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+    assert built.example.inputs == {"input": "q2"}
+    assert built.example.history is not None
+    assert [m.role for m in built.example.history] == ["user", "assistant", "tool"]
+
+
+def test_langchain_roles_recover_inputs() -> None:
+    messages = [{"role": "system", "content": "sys"}, {"role": "human", "content": "hi"}]
+    events = [_messages_call(0, messages=messages), _final("done", 1)]
+    built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+    assert built.example.inputs == {"input": "hi"}
+    assert built.example.history is not None
+    assert [m.role for m in built.example.history] == ["system"]
+
+
+def test_non_text_content_blocks_the_capture() -> None:
+    events = [_messages_call(0, messages=_IMAGE_TURN), _final("done", 1)]
+    built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+    assert built.blocked_reason == "unreplayable_content"
+    assert built.blocked == (
+        "capture 'cap_abc' carries content a text replay can't carry — recorded message 1 "
+        "(user) carries a `image` block. A replay without it is not ground truth; re-capture "
+        "without it or hand-write the case."
+    )
+
+
+def test_unreplayable_content_counts_the_rest() -> None:
+    turn = [
+        {"role": "user", "content": [{"type": "image"}, {"type": "document"}, {"type": "file"}]},
+    ]
+    events = [_messages_call(0, messages=turn), _final("done", 1)]
+    built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+    assert built.blocked is not None
+    assert "carries a `image` block (+2 more)." in built.blocked
+
+
+def test_unreplayable_content_wins_over_errored_even_with_allow_errored() -> None:
+    events = [_messages_call(0, messages=_IMAGE_TURN), _error("boom", 1)]
+    built = build_example_from_capture(_envelope(events=events), PromoteOptions(allow_errored=True))
+    assert built.blocked_reason == "unreplayable_content"
+
+
+def test_history_message_refuses_non_string_content() -> None:
+    with pytest.raises(TypeError, match="must be a string"):
+        _history_message(
+            {"role": "assistant", "content": [{"type": "text", "text": "x"}]}, "assistant"
+        )
