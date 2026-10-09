@@ -11,7 +11,7 @@ Two layers of testing:
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from types import ModuleType
@@ -19,7 +19,9 @@ from types import ModuleType
 import pytest
 from typer.testing import CliRunner
 
+from evalshift_cli.captures.remote import ObjectInfo, RemoteStoreUnavailable
 from evalshift_cli.captures.toolset import fingerprint_tools
+from evalshift_cli.cli.commands import doctor as doctor_module
 from evalshift_cli.cli.commands.doctor import (
     CONFIG_FILENAME,
     JUDGE_FAMILY_CHECK,
@@ -782,3 +784,73 @@ class TestJudgeFamilyCheck:
 
     def test_silent_when_no_config_exists(self, tmp_path: Path) -> None:
         assert _judge_rows(run_checks(cwd=tmp_path, env=_empty_env())) == []
+
+
+class TestCapturesStoreCheck:
+    def _config(self, tmp_path: Path, store: str | None) -> None:
+        text = "prompts:\n  - id: p\n    detection: manual\n    content: hi\n"
+        if store is not None:
+            text += f"captures:\n  store: {store}\n"
+        (tmp_path / CONFIG_FILENAME).write_text(text, encoding="utf-8")
+
+    def test_no_row_without_store(self, tmp_path: Path) -> None:
+        self._config(tmp_path, None)
+        names = [r.name for r in run_checks(cwd=tmp_path, env=_empty_env())]
+        assert "captures.store" not in names
+
+    def test_reachable_store_is_ok(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from tests.unit.fake_remote_store import populated_store
+
+        self._config(tmp_path, "s3://acme-evals/p")
+        monkeypatch.setattr(doctor_module, "open_store", lambda parsed: populated_store("cap_1"))
+        row = _by_name(run_checks(cwd=tmp_path, env=_empty_env()), "captures.store")
+        assert row.status == "ok"
+        assert "s3://acme-evals/p" in row.detail
+
+    def test_missing_extra_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._config(tmp_path, "gs://b/p")
+
+        def _raise(parsed: object) -> object:
+            raise RemoteStoreUnavailable(
+                "gs:// needs google-cloud-storage", hint='pip install "evalshift[gcs]"'
+            )
+
+        monkeypatch.setattr(doctor_module, "open_store", _raise)
+        row = _by_name(run_checks(cwd=tmp_path, env=_empty_env()), "captures.store")
+        assert row.status == "fail"
+        assert 'pip install "evalshift[gcs]"' in row.detail
+
+    def test_unreachable_store_warns(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from tests.unit.fake_remote_store import FakeRemoteStore
+
+        class Unreachable(FakeRemoteStore):
+            def list(self, prefix: str) -> Iterator[ObjectInfo]:
+                raise ConnectionError("no route to host")
+
+        self._config(tmp_path, "s3://acme-evals/p")
+        monkeypatch.setattr(doctor_module, "open_store", lambda parsed: Unreachable())
+        row = _by_name(run_checks(cwd=tmp_path, env=_empty_env()), "captures.store")
+        assert row.status == "warn"
+        assert "ConnectionError" in row.detail
+
+    def test_invalid_config_adds_no_store_row(self, tmp_path: Path) -> None:
+        (tmp_path / CONFIG_FILENAME).write_text("prompts: []\n", encoding="utf-8")
+        names = [r.name for r in run_checks(cwd=tmp_path, env=_empty_env())]
+        assert "captures.store" not in names  # the evalshift.yaml row already says it is invalid
+
+    def test_missing_extra_hint_survives_rendering(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``[gcs]`` is Rich markup syntax; rendered unescaped it would vanish from the hint.
+        self._config(tmp_path, "gs://b/p")
+
+        def _raise(parsed: object) -> object:
+            raise RemoteStoreUnavailable(
+                "gs:// needs google-cloud-storage", hint='pip install "evalshift[gcs]"'
+            )
+
+        monkeypatch.setattr(doctor_module, "open_store", _raise)
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["doctor"], env={"COLUMNS": "200"})
+        assert result.exit_code == 1
+        assert 'pip install "evalshift[gcs]"' in result.stdout
