@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `evalshift init` writes the `semantic` evaluator active for every provider.
+  Anthropic and DeepSeek have no embeddings endpoint, so the scaffold borrows
+  OpenAI's or Gemini's — whichever key you already have — and `init --ci`
+  wires that key as a second secret.
+- `compare`, `run` and `evaluate` check every judge and embedding model's API
+  key before the first call. An advisory evaluator without one is skipped with
+  a line naming the env var to export; a blocking one stops the run. The skip
+  is recorded in `state.json` (`skipped_evaluators`) and repeated in the
+  verdict's recommendations, the HTML report and the bundle.
+- `doctor` gains an `evaluator keys` row.
+- When nothing gates the verdict, the recommendation now names the advisory
+  judge and says, from its own sample size, whether it is ready for
+  `blocking: true` (20 pairs per prompt) or how many examples it still needs.
+
+### Fixed
+
+- A judge or embedding model with no API key no longer fails silently on every
+  pair: it is skipped (advisory) or refused (blocking) before any call.
+- The bare `text-embedding-3-small` default now resolves to OpenAI, so its key
+  is checked.
+
 ## [1.3.0] - 2026-10-09
 
 ### Added

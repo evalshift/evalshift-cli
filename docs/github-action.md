@@ -42,8 +42,13 @@ checklist) with three jobs:
   writer wins that status).
 
 The workflow keys off `${{ secrets.<PROVIDER>_API_KEY }}` for the provider
-chosen at `init` time; add further keys under the eval job's `env:` if your
-judge or embedding models live in another family. Suites must be committed
+chosen at `init` time. An Anthropic or DeepSeek project borrows its
+embedding model from OpenAI or Gemini, so `init --ci` also wires that
+provider's key (`OPENAI_API_KEY` or `GEMINI_API_KEY`) as a second, optional
+secret: left unset it arrives empty, and the run skips the advisory
+`semantic` evaluator with a warning instead of failing. Add further keys
+under the eval job's `env:` if you point a judge or embedding model at
+another family. Suites must be committed
 for CI to see them — keep runtime data ignored and un-ignore just the suites:
 
 ```gitignore
@@ -72,6 +77,8 @@ your project.
   owner-only), so create the project once in the web app and set
   `create-project: false`.
 - Provider API keys used by the source, target, judge, or embedding models.
+  A missing key for a *blocking* judge or embedding model fails the run before
+  any call; an advisory one is skipped with a warning.
 
 Do not hard-code tokens in workflow YAML. Keep them in GitHub encrypted secrets
 — repository or, better for production repos, environment secrets. Never expose

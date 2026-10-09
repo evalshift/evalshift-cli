@@ -141,9 +141,13 @@ CI_WORKFLOW_TEMPLATE: Final = """\
 #                              run:create + run:read + policy:read. Not a
 #                              personal token.
 #        __PROVIDER_API_KEY__      key for the provider your evalshift.yaml models
-#                              use. Add further keys here (and under `env:`
-#                              below) if your judge/embedding models live in
-#                              another family.
+#                              use. If `init` borrowed another provider's
+#                              embedding model for `semantic`, that key is
+#                              already wired under `env:` below as an optional
+#                              secret: add it to enable semantic; left unset,
+#                              runs skip semantic with a warning. Add further
+#                              keys (here and under `env:`) if you point a
+#                              judge/embedding model at another family.
 #      Until EVALSHIFT_TOKEN is set, runs no-op green with a notice — this
 #      workflow never fails just because setup isn't finished.
 #

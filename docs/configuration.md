@@ -269,7 +269,9 @@ Two behaviours to know:
   fresh-`init` state), the verdict is `inconclusive` — unless
   `max_cost_increase` or `max_latency_increase` is breached, which
   still `fail`s: those are computed from the run's calls, not from
-  evaluator records.
+  evaluator records. The recommendations then say whether each advisory
+  judge has enough pairs to promote (see
+  [`evaluators.llm_judge`](#evaluatorsllm_judge)).
 * **The four rate budgets are Wilson-CI-aware.**
   `max_overall_regression_rate`, `min_equivalence_rate`,
   `max_tool_argument_drift` and `max_tool_divergence` are each a
@@ -487,7 +489,7 @@ A single object (not a list).
 
 | Field             | Type   | Default                  | Description |
 | ----------------- | ------ | ------------------------ | ----------- |
-| `embedding_model` | string | `text-embedding-3-small` | LiteLLM-compatible embedding model id. Use a Gemini one (e.g. `gemini/gemini-embedding-001`) if you don't have an OpenAI key. |
+| `embedding_model` | string | `text-embedding-3-small` | LiteLLM-compatible embedding model id. The bare default resolves to OpenAI (`OPENAI_API_KEY`). Use a Gemini one (e.g. `gemini/gemini-embedding-001`) if you don't have an OpenAI key. |
 | `min_similarity`  | float  | `0.9`                    | Cosine similarity (0–1) below which the target is flagged as a semantic regression. Minor rewording/formatting typically scores ~0.98, so the default 0.9 avoids false flags; set to `1.0` to flag any deviation from byte-identical. Also governs whether semantic drift counts toward the [`migration_policy`](#migration_policy) regression/equivalence gates. |
 
 The semantic evaluator scores the **target's similarity to the source**:
@@ -495,6 +497,32 @@ target_score = cosine(source, target), source_score = 1.0. A
 negative `delta` means the target drifted from the source's meaning.
 `blocking` defaults to `true` in the library but `init` writes `false` —
 see [`blocking`](#blocking-every-evaluator) for why.
+
+`init` writes this block active for every provider. Gemini and OpenAI
+projects use their own embedding model. Anthropic and DeepSeek have no
+embeddings endpoint, so their scaffold borrows one, checking the keys you
+already have: `openai/text-embedding-3-small` when `OPENAI_API_KEY` is set,
+else `gemini/gemini-embedding-001` when `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+is, else `openai/text-embedding-3-small` anyway. A comment above the block
+names the key it needs, and `init --ci` wires that key into the workflow as
+a second, optional secret.
+
+**No API key for `embedding_model`.** `compare` and `run` check it before
+the first model call. An advisory block (`blocking: false`, as scaffolded)
+is skipped — no embedding calls — with
+`⚠ semantic skipped: no API key for openai/text-embedding-3-small — export OPENAI_API_KEY to enable it.`;
+the skip is recorded in `state.json` (`skipped_evaluators`) and repeated in
+the verdict's recommendations. A blocking one stops the run with exit 1
+instead. `evaluate` applies the same rule.
+
+**Interaction with `tool_arguments`.** [`tool_arguments`](#evaluatorstool_arguments)
+borrows this block's embedder, so skipping it changes how arguments score:
+
+| `tool_arguments` uses | Without the embedder | A keyless `semantic` is treated as |
+| --- | --- | --- |
+| the `semantic` strategy (in `strategies` or as `default_strategy`) on a **blocking** entry | that gate would fall back to `exact` | **blocking** — the run stops |
+| the `semantic` strategy on an advisory entry | `exact` | this block's own `blocking`; the warning says so |
+| `auto` (the default) | free text graded by `difflib` ratio | this block's own `blocking`; the warning says so |
 
 ### `evaluators.tool_selection`
 
@@ -547,7 +575,10 @@ deprecated, and a config still carrying one fails validation.
 `strategies` keys are **field names matched across every tool**, so pick names
 that mean the same thing throughout your toolset. The `semantic` strategy needs
 a configured [`evaluators.semantic`](#evaluatorssemantic) to borrow an embedding
-model (and its cache) from; without one it degrades to `exact`.
+model (and its cache) from; without one it degrades to `exact`. A `semantic`
+block whose model has no API key is skipped when advisory — unless a blocking
+entry here uses the `semantic` strategy, in which case the missing key stops
+the run — see [`evaluators.semantic`](#evaluatorssemantic).
 
 #### The `auto` strategy ladder
 
@@ -802,6 +833,17 @@ bias) and produces strict-JSON `{"winner": "A"|"B"|"tie", "reason":
 `(1.0, 0.0)`. Malformed responses degrade to `(0.5, 0.5)` with the
 error preserved. `blocking` defaults to `true` in the library but `init`
 writes `false` — see [`blocking`](#blocking-every-evaluator) for why.
+
+**When to promote it.** While nothing gates the verdict (the fresh-`init`
+state), the recommendations name each advisory judge and read its readiness
+from its own smallest per-prompt `n`: at 20 pairs on every prompt it says
+the judge is ready for `blocking: true`; below, it names the thinnest prompt
+and its count. Nothing is printed once any evaluator gates.
+
+**No API key for `judge_model`.** Checked before the first model call, as
+for [`semantic`](#evaluatorssemantic): an advisory judge is skipped with a
+`⚠ llm_judge.<criterion_name> skipped: …` line naming the env var to export,
+and a blocking one stops `compare` / `run` with exit 1.
 
 ## Slices
 
