@@ -21,6 +21,8 @@ def capture_payload(
     *,
     model_input: Any = "where is order 12345?",
     created_at: str = "2026-06-16T12:00:00+00:00",
+    conversation_id: str | None = None,
+    turn_index: int | None = None,
 ) -> bytes:
     """A minimal capture the CLI reader accepts: one model call, one final output."""
     envelope = {
@@ -30,6 +32,8 @@ def capture_payload(
         "input_hash": f"hash-{capture_id}",
         "code_version": "v1",
         "created_at": created_at,
+        "conversation_id": conversation_id,
+        "turn_index": turn_index,
         "trace": {
             "run_id": capture_id,
             "prompt_id": suite,

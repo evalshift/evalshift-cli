@@ -50,6 +50,7 @@ from evalshift_cli.captures.reader import (
     load_toolset,
     promoted_capture_ids,
     promoted_toolset_refs,
+    suites_root,
     toolsets_root,
 )
 from evalshift_cli.captures.remote import (
@@ -59,6 +60,12 @@ from evalshift_cli.captures.remote import (
     fetch_captures,
     open_store,
     parse_since,
+)
+from evalshift_cli.captures.repair import (
+    RepairSelection,
+    repaired_case,
+    select_repairs,
+    stringified_warnings,
 )
 from evalshift_cli.captures.store_uri import parse_store_uri
 from evalshift_cli.cli.commands._suites import (
@@ -219,6 +226,49 @@ def _promoted_content_owners(
     return owners
 
 
+def _repair_selection(*, base: Path | None, suite: str | None, console: Console) -> RepairSelection:
+    """The promoted cases ``capture sync`` treats as repair candidates (``captures/repair.py``).
+
+    Never raises: a suite holding an unreadable case file is warned about and skipped, the
+    same degradation :func:`_promoted_content_owners` applies.
+    """
+    root = suites_root(base)
+    if suite is not None:
+        suite_dirs = [promoted_suite_dir(suite, base=base)]
+    elif root.is_dir():
+        suite_dirs = sorted(p for p in root.iterdir() if p.is_dir())
+    else:
+        suite_dirs = []
+    cases: list[PromotedCase] = []
+    for suite_dir in suite_dirs:
+        if not suite_dir.is_dir():
+            continue
+        try:
+            cases.extend(iter_promoted_cases(suite_dir))
+        except ValueError as exc:  # pydantic ValidationError subclasses ValueError
+            console.print(
+                f"[yellow]⚠[/yellow] could not read promoted cases in "
+                f"[cyan]{escape(str(suite_dir))}[/cyan] to check for repairs: "
+                f"{type(exc).__name__}",
+            )
+    return select_repairs(cases)
+
+
+def _warn_unrepairable(
+    selection: RepairSelection, records: list[CaptureRecord], *, console: Console
+) -> None:
+    """Name the repair candidates whose capture is neither local nor fetched from the store."""
+    available = {r.envelope.capture_id for r in records}
+    missing = [c.case.name for c in selection.candidates if c.case.from_capture not in available]
+    if not missing:
+        return
+    shown = ", ".join(missing[:3]) + (", …" if len(missing) > 3 else "")
+    console.print(
+        f"[yellow]⚠[/yellow] can't repair {len(missing)} case(s) — their capture is no longer "
+        f"local or in the store ({escape(shown)}): delete the case file or re-capture.",
+    )
+
+
 #: A top-level ``captures:`` key: at column 0, so neither a comment nor a nested key matches.
 _TOP_LEVEL_CAPTURES_KEY = re.compile(rb"^captures\s*:", re.MULTILINE)
 
@@ -301,11 +351,18 @@ def _fetch_into_base(
     suite: str | None,
     since: datetime | None,
     console: Console,
+    force_ids: frozenset[str] = frozenset(),
 ) -> FetchSummary:
-    """Mirror ``store`` into ``base`` and print the one-line summary; exit 1 on failure."""
+    """Mirror ``store`` into ``base`` and print the one-line summary; exit 1 on failure.
+
+    ``force_ids`` are fetched even when promoted or older than ``since`` -- the captures
+    ``capture sync --repair`` needs to rebuild promoted cases.
+    """
     skip_ids = _promoted_capture_ids_or_warn(base=base, console=console)
     try:
-        summary = fetch_captures(store, base=base, suite=suite, since=since, skip_ids=skip_ids)
+        summary = fetch_captures(
+            store, base=base, suite=suite, since=since, skip_ids=skip_ids, force_ids=force_ids
+        )
     except RemoteStoreError as exc:
         console.print(exc.format_rich())
         raise typer.Exit(code=1) from exc
@@ -323,6 +380,7 @@ def _maybe_fetch(
     suite: str | None,
     base: Path | None,
     console: Console,
+    force_ids: frozenset[str] = frozenset(),
 ) -> None:
     """The automatic fetch step ``sync`` and ``list`` run before reading the local mirror."""
     since_dt = _resolve_since(since)
@@ -335,7 +393,9 @@ def _maybe_fetch(
             )
             raise typer.Exit(code=1)
         return
-    _fetch_into_base(store, base=base, suite=suite, since=since_dt, console=console)
+    _fetch_into_base(
+        store, base=base, suite=suite, since=since_dt, console=console, force_ids=force_ids
+    )
 
 
 @capture_app.command(name="list")
@@ -975,6 +1035,18 @@ def capture_sync(
             ),
         ),
     ] = False,
+    repair: Annotated[
+        bool,
+        typer.Option(
+            "--repair",
+            help=(
+                "Rebuild the inputs and history of promoted cases an earlier sync built from "
+                "stringified message blocks (or left with empty inputs), re-fetching their "
+                "captures from captures.store even though they are promoted. Every other "
+                "field of those cases is kept; other promoted cases are untouched."
+            ),
+        ),
+    ] = False,
     since: _SinceOption = None,
     offline: _OfflineOption = False,
     base: _BaseOption = None,
@@ -982,6 +1054,7 @@ def capture_sync(
     """Promote every capture into a suite and wire the suites: block into evalshift.yaml."""
     console = Console()
     _check_rounds(rounds)
+    selection = _repair_selection(base=base, suite=suite, console=console)
     _maybe_fetch(
         config_path=config_path,
         offline=offline,
@@ -989,8 +1062,16 @@ def capture_sync(
         suite=suite,
         base=base,
         console=console,
+        force_ids=selection.refetch_ids if repair else frozenset(),
     )
+    if not repair:
+        for line in stringified_warnings(selection):
+            console.print(f"[yellow]⚠[/yellow] {escape(line)}")
+    elif not selection.candidates:
+        console.print("[dim]no promoted cases need repair.[/dim]")
     records = iter_captures(suite=suite, base=base, on_error=_warn_unreadable(console))
+    if repair:
+        _warn_unrepairable(selection, records, console=console)
     if not records:
         where = f" for suite {suite!r}" if suite else ""
         console.print(f"[dim]no captures found{where} under .evalshift/captures/.[/dim]")
@@ -1016,6 +1097,9 @@ def capture_sync(
     skipped_no_toolset = 0
     skipped_multi_toolset = 0
     skipped_unreplayable = 0
+    repaired = 0
+    left_for_repair = 0
+    backed_by = selection.cases_by_capture()
     suites_seen: set[str] = set()
     # (suite, content key) -> the name of the case that owns that content,
     # promoted either by an earlier run (seeded from disk below) or by this one
@@ -1056,6 +1140,36 @@ def capture_sync(
             records_by_suite[suite_name], opts, base=base
         ):
             envelope = record.envelope
+            backed = backed_by.get(envelope.capture_id)
+            if backed is not None:
+                # A capture behind a repair candidate is only ever written by --repair, and
+                # then only the case's inputs and history -- never as a new case (a custom
+                # `--as` name would otherwise get a second copy next to the broken one).
+                if built.blocked is None:
+                    # Its rebuilt content still belongs to the candidate: the disk seed above
+                    # only holds the stringified content, so without this a later capture
+                    # replaying the same turn would be promoted as a new case.
+                    seen_examples.setdefault(
+                        (suite_name, example_content_key(built.example)), envelope.capture_id
+                    )
+                if not repair:
+                    left_for_repair += len(backed)
+                    continue
+                for warning in built.warnings:
+                    console.print(f"[yellow]⚠[/yellow] {envelope.capture_id}: {warning}")
+                if built.blocked is not None:
+                    for case in backed:
+                        console.print(
+                            f"[yellow]⚠[/yellow] can't repair [cyan]{escape(case.name)}[/cyan]: "
+                            f"{escape(built.blocked)}",
+                        )
+                    continue
+                for case in backed:
+                    fixed = repaired_case(case, built.example, promoted_at=_now_iso())
+                    if fixed is not None:
+                        write_promoted_case(fixed, base=base, force=True)
+                        repaired += 1
+                continue
             if built.blocked is not None:
                 console.print(
                     f"[yellow]⚠[/yellow] skipped [cyan]{envelope.capture_id}[/cyan]: "
@@ -1157,6 +1271,10 @@ def capture_sync(
             f", skipped {skipped_unreplayable} capture(s) with non-text content a text replay "
             "can't carry (--allow-errored does not apply)"
         )
+    if repair:
+        summary += f", repaired {repaired} case(s)"
+    if left_for_repair:
+        summary += f", left {left_for_repair} case(s) for --repair"
     console.print(summary + ".")
 
     if not suite_paths:
