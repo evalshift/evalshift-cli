@@ -602,6 +602,43 @@ class TestEvaluatorKeyPreflight:
         )
         assert calls == []
 
+    def test_another_suites_keyless_blocking_judge_does_not_fail_the_doctor_stage(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The doctor stage defers to compare's suite-scoped key preflight.
+
+        Suite ``b`` brings its own keyless blocking judge; ``--suite-name a``
+        never calls it, so the run must not stop on ``b``'s missing key.
+        """
+        _scaffold(tmp_path)
+        golden = (tmp_path / "golden.jsonl").read_text(encoding="utf-8")
+        (tmp_path / "a.jsonl").write_text(golden, encoding="utf-8")
+        (tmp_path / "b.jsonl").write_text(golden, encoding="utf-8")
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8")
+            + "\n        suites:\n"
+            + "          a:\n"
+            + "            path: a.jsonl\n"
+            + "          b:\n"
+            + "            path: b.jsonl\n"
+            + "            evaluators:\n"
+            + "              llm_judge:\n"
+            + "                - criterion_name: equivalence\n"
+            + "                  criterion_prompt: which is better?\n"
+            + "                  judge_model: gpt-4o-mini\n"
+            + "                  blocking: true\n",
+            encoding="utf-8",
+        )
+        _patch_client(monkeypatch)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--suite-name", "a", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        assert "evaluator keys" not in result.output
+
 
 class TestFamilySummarySkipped:
     def test_marks_a_skipped_semantic_and_an_all_skipped_judge(self) -> None:

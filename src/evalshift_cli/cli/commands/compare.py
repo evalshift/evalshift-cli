@@ -49,6 +49,7 @@ from evalshift_cli.cli.commands.analyze import (
 )
 from evalshift_cli.cli.commands.doctor import (
     CONFIG_FILENAME,
+    EVALUATOR_KEYS_CHECK,
     render_results,
     run_checks,
 )
@@ -533,7 +534,12 @@ def compare_command(
     # render them as already-completed rows once Live opens, which keeps
     # the entire pipeline inside a single Live region (no double-render).
     check_results = run_checks(Path.cwd(), os.environ)
-    failed_checks = [r for r in check_results if r.status == "fail"]
+    # doctor's evaluator-key rows cover every named suite; this run's own
+    # suite-scoped preflight_evaluator_keys has already run and is the
+    # authority here, so another suite's keyless judge must not stop it.
+    failed_checks = [
+        r for r in check_results if r.status == "fail" and r.name != EVALUATOR_KEYS_CHECK
+    ]
     if failed_checks:
         first = failed_checks[0]
         extra = f" (+{len(failed_checks) - 1} more)" if len(failed_checks) > 1 else ""
