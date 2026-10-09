@@ -30,6 +30,7 @@ routing works without further plumbing.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Final, Literal
 
@@ -247,6 +248,29 @@ def resolve_model(id_or_alias: str) -> ModelMetadata:
     )
 
 
+def missing_api_keys(model: str, env: Mapping[str, str]) -> tuple[str, ...]:
+    """Return the env vars that would authenticate ``model`` when none is set.
+
+    The single answer to "can this model be called?" — the arm preflight in
+    ``run``/``compare``, the insights stage and the evaluator key checks all
+    ask it, so an alias accepted in one place is accepted everywhere.
+
+    Args:
+        model: Any model id or alias :func:`resolve_model` accepts.
+        env: Environment mapping, typically ``os.environ``. An empty-string
+            value counts as unset: an unset CI secret arrives as ``""``.
+
+    Returns:
+        The provider's env-var aliases, primary first, when none of them holds
+        a non-empty value. ``()`` when one does, or when the provider is
+        ``"other"`` and the key it would need is unknown.
+    """
+    keys = PROVIDER_ENV_VARS.get(resolve_model(model).provider, ())
+    if not keys or any(env.get(key) for key in keys):
+        return ()
+    return keys
+
+
 def _infer_provider_and_canonical(id_or_alias: str) -> tuple[str, Provider]:
     """Best-effort guess of provider + LiteLLM-style canonical id.
 
@@ -258,6 +282,8 @@ def _infer_provider_and_canonical(id_or_alias: str) -> tuple[str, Provider]:
     * If it starts with ``gpt-``, ``o1-``, or ``o3-`` → openai, prefix
       ``openai/``.
     * If it starts with ``deepseek-`` → deepseek, prefix ``deepseek/``.
+    * If it starts with ``text-embedding-`` → openai, prefix ``openai/``
+      (OpenAI's embedding ids; the config default is the bare form).
     * Otherwise → provider ``"other"``, id passed through unchanged.
     """
     if "/" in id_or_alias:
@@ -280,6 +306,8 @@ def _infer_provider_and_canonical(id_or_alias: str) -> tuple[str, Provider]:
         return f"openai/{id_or_alias}", "openai"
     if id_or_alias.startswith("deepseek-"):
         return f"deepseek/{id_or_alias}", "deepseek"
+    if id_or_alias.startswith("text-embedding-"):
+        return f"openai/{id_or_alias}", "openai"
     return id_or_alias, "other"
 
 
@@ -290,5 +318,6 @@ __all__ = [
     "UnknownModelError",
     "get_model",
     "list_supported",
+    "missing_api_keys",
     "resolve_model",
 ]

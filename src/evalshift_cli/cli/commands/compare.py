@@ -63,8 +63,8 @@ from evalshift_cli.evaluators.tool_loader import ToolLoaderError
 from evalshift_cli.hosted.push import PushError, push_local_run
 from evalshift_cli.models.client import deferred_console_warnings
 from evalshift_cli.models.registry import (
-    PROVIDER_ENV_VARS,
     Provider,
+    missing_api_keys,
     resolve_model,
 )
 from evalshift_cli.parsers.base import PromptParseError
@@ -259,12 +259,9 @@ def _missing_keys(
         if m in seen:
             continue
         seen.add(m)
-        provider = resolve_model(m).provider
-        keys = PROVIDER_ENV_VARS.get(provider, ())
-        if not keys:
-            continue
-        if not any(env.get(k) for k in keys):
-            missing.append((m, provider, keys))
+        keys = missing_api_keys(m, env)
+        if keys:
+            missing.append((m, resolve_model(m).provider, keys))
     return missing
 
 
