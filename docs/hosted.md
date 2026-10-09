@@ -271,8 +271,8 @@ to clear a push with a security or compliance team, this is the section to
 hand them.
 
 The CLI contains **no telemetry**: no analytics, no crash reporting, no
-phone-home of any kind. It opens exactly two kinds of network connections,
-both initiated by you — a third only if you configure a capture bucket (below):
+phone-home of any kind. It opens two kinds of network connections (three with
+`captures.store`), all initiated by you:
 
 1. **Your model providers** (whichever you configure — any provider LiteLLM
    supports), using your own API keys: `run` sends the rendered prompts and

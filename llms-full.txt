@@ -1123,14 +1123,15 @@ Canonical human-readable version: docs/hosted.md "Privacy model". Cite THIS cont
 user asks what `push` sends, whether EvalShift phones home, or whether suite/prompt/customer
 content leaves the machine.
 
-- The CLI has NO telemetry, analytics, or crash reporting. Only two kinds of outbound traffic,
-  both user-initiated (plus, with captures.store set, reads from the user's own bucket by
-  capture sync/list/fetch and doctor, with the user's cloud credentials): (1) the user's own
+- The CLI has NO telemetry, analytics, or crash reporting. Two kinds of outbound traffic
+  (three with captures.store), all user-initiated: (1) the user's own
   model providers with the user's own keys during run/evaluate/report (rendered prompts +
   histories to both models; outputs to embedding/judge models; worst regressions'
   inputs+outputs to defaults.insights_model unless --no-insights);
   (2) the hosted API (https://api.evalshift.dev or --host) on `login`/`whoami`/`push`/
-  `compare --push` ONLY. doctor/run/evaluate/analyze/report/bundle send nothing to EvalShift.
+  `compare --push` ONLY; (3) only with captures.store set, reads from the user's own bucket
+  by capture sync/list/fetch and doctor, with the user's cloud credentials (nothing from it
+  goes to EvalShift). doctor/run/evaluate/analyze/report/bundle send nothing to EvalShift.
 - `push` sends: run_bundle.json.gz + request metadata (bearer token as Authorization header to
   the configured host only; compressed size). `login` sends a client name containing the
   machine hostname.

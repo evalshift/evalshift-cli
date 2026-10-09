@@ -34,10 +34,10 @@ repos (`evalshift-sdk`, `evalshift-action`); never edit them from here.
 - **CLI** — this repo. PyPI `evalshift`. Full reference: [DOCS.md](DOCS.md).
 - **SDK** — PyPI `evalshift-sdk`, import name `evalshift`, stdlib-only, Python
   3.10+. Records production agent runs to `.evalshift/captures/`; the CLI
-  promotes them with `evalshift capture sync`. Disk is the only interface — the
-  two packages never call each other. The CLI imports as `evalshift_cli` and
-  depends on the SDK, so both install into one environment. See
-  [docs/sdk.md](docs/sdk.md).
+  promotes them with `evalshift capture sync`. The layout is the interface (on
+  disk or mirrored from a bucket) — the two packages never call each other. The
+  CLI imports as `evalshift_cli` and depends on the SDK, so both install into
+  one environment. See [docs/sdk.md](docs/sdk.md).
 - **GitHub Action** — `evalshift/evalshift-action@v0`. Runs the pipeline on
   pull requests, pushes the run, keeps one PR comment updated, sets the
   `evalshift/regression` commit status. See [docs/github-action.md](docs/github-action.md).
