@@ -44,9 +44,18 @@ from evalshift_cli.captures.store_uri import StoreURI
 #: Largest object a fetch will download. Captures are kilobytes; this is a safety stop.
 MAX_OBJECT_BYTES = 32 * 1024 * 1024
 
-_CAPTURE_NAME = re.compile(r"^[A-Za-z0-9_-]+\.json$")
-_TOOLSET_NAME = re.compile(r"^[0-9a-f]{64}\.json$")
-_DURATION = re.compile(r"^(\d+)([mhd])$")
+# Always used with ``fullmatch``: ``$`` also matches before a trailing newline.
+_CAPTURE_NAME = re.compile(r"[A-Za-z0-9_-]+\.json")
+_TOOLSET_NAME = re.compile(r"[0-9a-f]{64}\.json")
+_DURATION = re.compile(r"(\d+)([mhd])")
+
+#: How to fix credentials, per store scheme, for a list or download failure.
+_CREDENTIALS_HINT: dict[str, str] = {
+    "s3": "check AWS credentials (aws sso login / AWS_PROFILE / the CI OIDC role) and network",
+    "gs": "check Google credentials (gcloud auth application-default login / Workload Identity) "
+    "and network",
+    "az": "check Azure credentials (az login / managed identity) and network",
+}
 
 #: Every module a scheme's pip extra provides; ``open_store`` checks all of them.
 _REQUIRED_MODULES: dict[str, tuple[str, ...]] = {
@@ -219,7 +228,7 @@ def parse_since(text: str, *, now: datetime | None = None) -> datetime:
     """
     reference = now if now is not None else datetime.now(UTC)
     cleaned = text.strip()
-    match = _DURATION.match(cleaned)
+    match = _DURATION.fullmatch(cleaned)
     if match:
         amount, unit = int(match.group(1)), match.group(2)
         delta = {
@@ -266,8 +275,10 @@ def fetch_captures(
 
     toolset_jobs: list[tuple[str, Path]] = []
     for info in _list(store, "toolsets/"):
+        if info.key.endswith("/"):
+            continue  # a folder marker (S3 console "Create folder", ADLS directory), not an object
         name = info.key.removeprefix("toolsets/")
-        if "/" in name or not _TOOLSET_NAME.match(name):
+        if "/" in name or not _TOOLSET_NAME.fullmatch(name):
             summary.skipped_malformed += 1
             continue
         dest = toolsets_dir / name
@@ -284,13 +295,15 @@ def fetch_captures(
     capture_jobs: list[tuple[str, Path]] = []
     prefix = f"captures/{suite}/" if suite else "captures/"
     for info in _list(store, prefix):
+        if info.key.endswith("/"):
+            continue  # a folder marker, as above
         rel = info.key.removeprefix("captures/")
         suite_seg, sep, name = rel.partition("/")
         if (
             not sep
             or "/" in name
             or not _is_safe_suite_segment(suite_seg)
-            or not _CAPTURE_NAME.match(name)
+            or not _CAPTURE_NAME.fullmatch(name)
         ):
             summary.skipped_malformed += 1
             continue
@@ -328,6 +341,21 @@ def _absolute(path: Path) -> Path:
     return Path(os.path.abspath(path))
 
 
+def _fetch_failure_hint(store: RemoteStore) -> str:
+    """The hint for a failed list or download: the scheme's credential chain, then --offline.
+
+    ``capture fetch`` has no ``--offline``, so the advice names the commands that do.
+    """
+    scheme, separator, _ = store.uri.partition("://")
+    credentials = _CREDENTIALS_HINT.get(
+        scheme if separator else "", "check credentials and network"
+    )
+    return (
+        f"{credentials}, or run `capture sync` / `capture list` with --offline "
+        "to use the captures already on disk"
+    )
+
+
 def _list(store: RemoteStore, prefix: str) -> list[ObjectInfo]:
     try:
         return list(store.list(prefix))
@@ -336,8 +364,7 @@ def _list(store: RemoteStore, prefix: str) -> list[ObjectInfo]:
     except Exception as exc:
         raise RemoteStoreError(
             f"could not list {prefix!r} in {store.uri}: {type(exc).__name__}: {exc}",
-            hint="check credentials and network, or use --offline to work with the captures "
-            "already on disk",
+            hint=_fetch_failure_hint(store),
         ) from exc
 
 
@@ -355,8 +382,7 @@ def _download_all(
     except Exception as exc:
         raise RemoteStoreError(
             f"could not download from {store.uri}: {type(exc).__name__}: {exc}",
-            hint="check credentials and network, or use --offline to work with the captures "
-            "already on disk",
+            hint=_fetch_failure_hint(store),
         ) from exc
     written = sum(1 for ok in results if ok)
     return written, len(results) - written
@@ -369,11 +395,23 @@ def _download(store: RemoteStore, key: str, dest: Path) -> bool:
     except Exception as exc:
         raise RemoteStoreError(
             f"could not download {key} from {store.uri}: {type(exc).__name__}: {exc}",
-            hint="check credentials and network, or use --offline to work with the captures "
-            "already on disk",
+            hint=_fetch_failure_hint(store),
         ) from exc
     if len(data) > MAX_OBJECT_BYTES:
         return False
+    try:
+        _write_atomically(dest, data)
+    except OSError as exc:
+        # A local failure: the store answered, so credentials and network are not the problem.
+        raise RemoteStoreError(
+            f"could not write {dest}: {type(exc).__name__}: {exc}",
+            hint=f"check free disk space and permissions on {dest.parent}",
+        ) from exc
+    return True
+
+
+def _write_atomically(dest: Path, data: bytes) -> None:
+    """Write ``data`` to ``dest`` via a temp file beside it and :func:`os.replace`."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".", suffix=".tmp")
     try:
@@ -383,7 +421,6 @@ def _download(store: RemoteStore, key: str, dest: Path) -> bool:
     finally:
         with suppress(OSError):
             os.remove(tmp_name)
-    return True
 
 
 __all__ = [

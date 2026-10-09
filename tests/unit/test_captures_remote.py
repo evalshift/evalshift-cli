@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from evalshift_cli.captures import remote
 from evalshift_cli.captures.remote import (
     MAX_OBJECT_BYTES,
     FetchSummary,
+    ObjectInfo,
     RemoteStore,
     RemoteStoreError,
     _is_safe_suite_segment,
@@ -234,6 +236,85 @@ def test_fetch_write_failure_leaves_no_temp_files(
         fetch_captures(store, base=tmp_path, workers=1)
     assert "simulated rename failure" in info.value.summary
     assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+
+
+def test_fetch_counts_keys_with_a_trailing_newline_as_malformed(tmp_path: Path) -> None:
+    store = FakeRemoteStore(
+        {
+            "captures/alpha/cap_1.json\n": capture_payload("cap_1"),
+            f"toolsets/{TOOLSET_HEX}.json\n": TOOLSET_PAYLOAD,
+        }
+    )
+    summary = fetch_captures(store, base=tmp_path)
+    assert summary.skipped_malformed == 2
+    assert summary.captures == summary.toolsets == 0
+    assert list(tmp_path.rglob("*")) == []
+    assert store.gets == []
+
+
+def test_fetch_skips_folder_marker_keys_silently(tmp_path: Path) -> None:
+    # S3 console "Create folder" and ADLS directory entries list as zero-byte "<dir>/" keys.
+    store = populated_store("cap_1")
+    store.objects.update(
+        {"captures/": b"", "captures/alpha/": b"", "toolsets/": b"", "captures/beta/": b""}
+    )
+    summary = fetch_captures(store, base=tmp_path)
+    assert summary.skipped_malformed == 0
+    assert summary.captures == 1 and summary.toolsets == 1
+    assert _local_captures(tmp_path) == {"alpha/cap_1.json"}
+    assert not any(key.endswith("/") for key in store.gets)
+
+
+class _ListFailingStore(FakeRemoteStore):
+    def list(self, prefix: str) -> Iterator[ObjectInfo]:
+        raise ConnectionError("simulated listing failure")
+
+
+@pytest.mark.parametrize(
+    ("uri", "credentials"),
+    [
+        ("s3://b/p", "check AWS credentials (aws sso login / AWS_PROFILE / the CI OIDC role)"),
+        (
+            "gs://b/p",
+            "check Google credentials (gcloud auth application-default login / Workload Identity)",
+        ),
+        ("az://a/c/p", "check Azure credentials (az login / managed identity)"),
+        ("mem://x", "check credentials"),
+    ],
+)
+@pytest.mark.parametrize("failure", ["list", "get"])
+def test_fetch_failure_hint_names_the_scheme_credentials(
+    tmp_path: Path, uri: str, credentials: str, failure: str
+) -> None:
+    if failure == "list":
+        store: FakeRemoteStore = _ListFailingStore()
+    else:
+        store = populated_store("cap_1")
+        store.fail_keys.add("captures/alpha/cap_1.json")
+    store.uri = uri
+    with pytest.raises(RemoteStoreError) as info:
+        fetch_captures(store, base=tmp_path, workers=1)
+    assert info.value.hint == (
+        f"{credentials} and network, or run `capture sync` / `capture list` with --offline "
+        "to use the captures already on disk"
+    )
+
+
+def test_fetch_local_write_failure_names_the_path_not_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(remote.tempfile, "mkstemp", failing_mkstemp)
+    store = populated_store("cap_1")
+    with pytest.raises(RemoteStoreError) as info:
+        fetch_captures(store, base=tmp_path, workers=1)
+    toolsets_dir = tmp_path / "toolsets"
+    assert str(toolsets_dir / f"{TOOLSET_HEX}.json") in info.value.summary
+    assert "No space left on device" in info.value.summary
+    assert info.value.hint == f"check free disk space and permissions on {toolsets_dir}"
+    assert "credentials" not in str(info.value)
 
 
 def test_summary_describe() -> None:

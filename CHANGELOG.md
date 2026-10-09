@@ -21,7 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--offline` skips it. Keys from a bucket are validated against the SDK's
   layout and anything else is ignored as malformed — including a suite
   directory containing `:`, `/`, `\`, NUL or `..`, or starting or ending with
-  `.` or a space — and no destination can land outside `.evalshift/`. Extras:
+  `.` or a space, and a key with a trailing newline — and no destination can
+  land outside `.evalshift/`; folder-marker keys ending in `/` (the S3
+  console's "Create folder", ADLS directories) are skipped without being
+  counted. A list or download failure exits 1 with a hint naming the
+  provider's credential chain (`aws sso login` / `AWS_PROFILE` / the CI OIDC
+  role, `gcloud auth application-default login`, `az login`); a local write
+  failure names the file and asks you to check disk space and permissions on
+  its directory instead. Extras:
   `evalshift[s3]`, `[gcs]`, `[azure]` (azure-storage-blob and azure-identity);
   a missing one exits 1 naming the `pip install` to run. Credentials come from
   each provider's default chain and are rejected in the URI: a value with `@`
