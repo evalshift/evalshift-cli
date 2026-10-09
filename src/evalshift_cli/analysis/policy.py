@@ -1672,7 +1672,9 @@ def _promotion_advice(advisory_comparisons: Sequence[ComparisonResult]) -> list[
     Reads the overall (``all``) slice: one comparison per prompt, and the
     smallest ``n`` decides, because a gate is only as reliable as its
     thinnest prompt. ``semantic`` is never suggested: it measures drift, not
-    correctness.
+    correctness. A prompt on which the judge measured nothing (``n == 0`` —
+    every call errored, say) gets no "collect more": more examples would
+    measure nothing the same way, so the line says so instead.
     """
     by_judge: dict[str, list[ComparisonResult]] = {}
     for c in advisory_comparisons:
@@ -1684,8 +1686,16 @@ def _promotion_advice(advisory_comparisons: Sequence[ComparisonResult]) -> list[
     out: list[str] = []
     for name in sorted(by_judge):
         rows = by_judge[name]
-        smallest = min(rows, key=lambda c: (c.n, c.prompt_id))
         criterion = name.removeprefix(f"{LLM_JUDGE_KIND}.")
+        unmeasured = sorted(c.prompt_id for c in rows if c.n == 0)
+        if unmeasured:
+            on = "this run" if len(unmeasured) == len(rows) else ", ".join(unmeasured)
+            out.append(
+                f"The {criterion} judge measured nothing on {on}, so more examples will not "
+                "help: find out why its calls produced no verdict before relying on it."
+            )
+            continue
+        smallest = min(rows, key=lambda c: (c.n, c.prompt_id))
         if smallest.n >= MIN_N_RELIABLE:
             out.append(
                 f"The {criterion} judge scored at least {smallest.n} pairs on every prompt "

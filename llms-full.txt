@@ -958,6 +958,10 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
     else -> "The <criterion> judge is advisory, so it does not gate this run. It becomes
       reliable at 20 pairs per prompt; <prompt_id> has <n_min>. Collect more examples, then
       set blocking: true on it." (single-prompt run: "this run has <n_min>")
+    any prompt with n == 0 (judge measured nothing, e.g. every call errored) -> instead
+      "The <criterion> judge measured nothing on <prompt_ids|this run>, so more examples will
+      not help: find out why its calls produced no verdict before relying on it." ("this run"
+      when no prompt was measured)
   Replaces the generic "Set blocking: true on at least one trusted evaluator..." line; the
   generic line stays when no advisory judge scored (semantic is never suggested -- drift, not
   correctness). Once anything gates, none of it is emitted.

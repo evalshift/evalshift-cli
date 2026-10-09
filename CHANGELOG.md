@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When nothing gates the verdict, the recommendation now names the advisory
   judge and says, from its own sample size, whether it is ready for
   `blocking: true` (20 pairs per prompt) or how many examples it still needs.
+  A judge that measured nothing (every call errored) is said to have measured
+  nothing rather than told to collect more examples.
 
 ### Fixed
 

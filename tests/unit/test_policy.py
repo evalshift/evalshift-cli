@@ -3084,6 +3084,32 @@ class TestPromotionAdvice:
         decision = _advise([_judge("p", 8)], _advisory_judge_records())
         assert "this run has 8" in decision.recommendations[0]
 
+    def test_judge_that_measured_nothing_is_not_told_to_collect_more(self) -> None:
+        # Every judge call errored: analysis synthesizes an n=0 comparison.
+        # More examples would error the same way.
+        dead = _comparison(
+            severity="none",
+            evaluator_name="llm_judge.equivalence",
+            kind="llm_judge",
+            prompt_id="summarize",
+            n=0,
+            notes=[f"{UNMEASURED_NOTE_PREFIX} this evaluator scored no comparable pair"],
+        )
+        decision = _advise([dead], _advisory_judge_records())
+        assert decision.recommendations == [
+            "The equivalence judge measured nothing on this run, so more examples will not "
+            "help: find out why its calls produced no verdict before relying on it.",
+        ]
+
+    def test_judge_unmeasured_on_one_prompt_names_that_prompt(self) -> None:
+        decision = _advise(
+            [_judge("summarize", 0), _judge("classify", 31)], _advisory_judge_records()
+        )
+        assert decision.recommendations == [
+            "The equivalence judge measured nothing on summarize, so more examples will not "
+            "help: find out why its calls produced no verdict before relying on it.",
+        ]
+
     def test_no_advice_once_something_gates(self) -> None:
         decision = _advise(
             [_judge("p", 8), _comparison(severity="none", delta_avg_score=0.0)],
