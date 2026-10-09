@@ -10,10 +10,11 @@ content-addressed (same name, same bytes), so no ETag or mtime is ever compared.
 Keys read from a bucket are untrusted. Only basenames shaped like the SDK's are accepted
 (:data:`_CAPTURE_NAME`, :data:`_TOOLSET_NAME`), a suite segment must be one the SDK's
 ``_safe_segment`` could have produced (:func:`_is_safe_suite_segment` -- so ``Support Agent``
-or ``ünïcode`` pass, while ``..``, ``.hidden`` or a backslash do not), and anything else is
-counted as malformed and never written, so no key can place a file outside ``<base>``. Local
-writes are atomic (temp file beside the target, then :func:`os.replace`) so an interrupted
-fetch leaves nothing half-written.
+or ``ünïcode`` pass, while ``..``, ``.hidden``, a backslash or a ``:`` do not), and anything
+else is counted as malformed and never written. As a second line of defence every destination
+must also normalize inside its root (:func:`_absolute`), so no key can place a file outside
+``<base>``. Local writes are atomic (temp file beside the target, then :func:`os.replace`) so
+an interrupted fetch leaves nothing half-written.
 
 The write side's protocol lives in the SDK (``evalshift.stores``); this module carries the
 read side. They share the key layout and URI grammar, not code.
@@ -54,10 +55,15 @@ def _is_safe_suite_segment(segment: str) -> bool:
     ``..`` or an edge dot/space. Anything else came from somewhere other than the SDK and could
     steer a write (``..``, ``.``, an empty segment, a Windows ``\\``), so it is refused. NUL is
     refused too: no filesystem accepts it.
+
+    ``:`` is the one deliberate narrowing against ``_safe_segment``, which keeps it: on Windows
+    ``D:`` joins as a drive-relative path and ``a:b`` names a drive or an NTFS alternate data
+    stream, either of which lands outside ``<base>``. A suite named with a colon is mirrored
+    nowhere and counted as malformed.
     """
     return (
         bool(segment)
-        and not any(ch in segment for ch in ("/", "\\", "\x00"))
+        and not any(ch in segment for ch in ("/", "\\", ":", "\x00"))
         and ".." not in segment
         and segment[0] not in ". "
         and segment[-1] not in ". "
@@ -206,6 +212,8 @@ def fetch_captures(
     """
     summary = FetchSummary(store_uri=store.uri)
     skip = set(skip_ids)
+    toolsets_dir = _absolute(toolsets_root(base))
+    captures_dir = _absolute(captures_root(base))
 
     toolset_jobs: list[tuple[str, Path]] = []
     for info in _list(store, "toolsets/"):
@@ -213,7 +221,10 @@ def fetch_captures(
         if "/" in name or not _TOOLSET_NAME.match(name):
             summary.skipped_malformed += 1
             continue
-        dest = toolsets_root(base) / name
+        dest = toolsets_dir / name
+        if not _absolute(dest.parent).is_relative_to(toolsets_dir):
+            summary.skipped_malformed += 1
+            continue
         if dest.exists():
             continue  # content-addressed: present means correct; not worth a counter
         if info.size is not None and info.size > MAX_OBJECT_BYTES:
@@ -234,7 +245,10 @@ def fetch_captures(
         ):
             summary.skipped_malformed += 1
             continue
-        dest = captures_root(base) / suite_seg / name
+        dest = captures_dir / suite_seg / name
+        if not _absolute(dest.parent).is_relative_to(captures_dir):
+            summary.skipped_malformed += 1
+            continue
         if dest.exists():
             summary.skipped_existing += 1
             continue
@@ -254,6 +268,15 @@ def fetch_captures(
     summary.captures, large = _download_all(store, capture_jobs, workers)
     summary.skipped_large += large
     return summary
+
+
+def _absolute(path: Path) -> Path:
+    """``path`` made absolute and normalized lexically (``..`` collapsed, drive applied).
+
+    Belt and braces behind the key checks: a destination whose parent normalizes outside its
+    root is refused. Lexical, so it works before the directory exists and costs no I/O.
+    """
+    return Path(os.path.abspath(path))
 
 
 def _list(store: RemoteStore, prefix: str) -> list[ObjectInfo]:

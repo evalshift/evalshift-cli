@@ -114,6 +114,8 @@ def test_fetch_rejects_malformed_and_traversal_keys(tmp_path: Path) -> None:
         "captures/./cap_z.json",
         "captures//cap_z.json",  # empty suite: would land directly in captures/
         "captures/a\\b/cap_z.json",  # a path separator on Windows
+        "captures/D:/cap_z.json",  # a drive-relative path on Windows
+        "captures/a:b/cap_z.json",  # a drive or NTFS alternate data stream on Windows
         "captures/a..b/cap_z.json",
         "captures/alpha./cap_z.json",
         "captures/ alpha/cap_z.json",
@@ -127,6 +129,21 @@ def test_fetch_rejects_suite_segments_the_sdk_never_writes(tmp_path: Path, key: 
     assert summary.captures == 0
     assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
     assert not (tmp_path.parent / "cap_z.json").exists()
+    assert store.gets == []
+
+
+def test_fetch_containment_check_rejects_escaping_destinations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With the suite predicate disabled, the containment check alone must stop a key whose
+    # destination resolves outside ``<base>/captures``.
+    monkeypatch.setattr(remote, "_is_safe_suite_segment", lambda segment: True)
+    base = tmp_path / "base"
+    store = FakeRemoteStore({"captures/../cap_z.json": capture_payload("cap_z")})
+    summary = fetch_captures(store, base=base)
+    assert summary.skipped_malformed == 1
+    assert summary.captures == 0
+    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
     assert store.gets == []
 
 
@@ -160,6 +177,8 @@ def test_fetch_accepts_every_suite_name_the_sdk_writes(tmp_path: Path) -> None:
         ("a/b", False),
         ("a\\b", False),
         ("a\x00b", False),
+        ("D:", False),
+        ("a:b", False),
         ("..", False),
         ("a..b", False),
         (".hidden", False),
