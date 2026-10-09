@@ -173,11 +173,50 @@ def test_sync_with_unreadable_config_warns_and_continues_locally(
     tmp_path: Path, remote: FakeRemoteStore
 ) -> None:
     config = tmp_path / "evalshift.yaml"
-    config.write_text("prompts: []\n", encoding="utf-8")  # invalid: prompts needs one entry
+    # Invalid (prompts needs one entry), but it asks for a store, so skipping it is news.
+    config.write_text("prompts: []\ncaptures:\n  store: s3://b/p\n", encoding="utf-8")
     result = _invoke(["sync", "--config", str(config)], tmp_path)
     assert result.exit_code == 0, result.stdout
     assert "skipping captures.store" in result.stdout
     assert remote.gets == []
+
+
+@pytest.mark.parametrize("command", ["sync", "list"])
+def test_invalid_config_without_captures_stays_silent(
+    tmp_path: Path, remote: FakeRemoteStore, command: str
+) -> None:
+    config = tmp_path / "evalshift.yaml"
+    config.write_text("prompts: []\n", encoding="utf-8")  # invalid, never mentions a store
+    result = _invoke([command, "--config", str(config)], tmp_path)
+    assert result.exit_code == 0, result.output
+    assert "skipping captures.store" not in result.output
+    assert "could not read" not in result.output
+    assert remote.gets == []
+
+
+def test_list_with_undecodable_config_stays_local_without_traceback(
+    tmp_path: Path, remote: FakeRemoteStore
+) -> None:
+    config = tmp_path / "evalshift.yaml"
+    config.write_bytes(b"prompts:\n  - \xff\xfe\x80 not utf-8\n")
+    result = _invoke(["list", "--config", str(config)], tmp_path)
+    assert result.exit_code == 0, result.output
+    assert result.exception is None
+    assert "no captures found" in result.stdout
+    assert "could not read" not in result.output
+    assert remote.gets == []
+
+
+def test_bracketed_store_uri_prints_literally(tmp_path: Path, remote: FakeRemoteStore) -> None:
+    remote.uri = "s3://acme/team[/x]"
+    config = _write_config(tmp_path / "evalshift.yaml")
+    fetched = _invoke(["fetch", "--config", str(config)], tmp_path)
+    assert fetched.exit_code == 0, fetched.output
+    assert "from s3://acme/team[/x]" in fetched.stdout
+    remote.uri = "s3://acme/[bold]team"
+    synced = _invoke(["sync", "--config", str(config)], tmp_path)
+    assert synced.exit_code == 0, synced.output
+    assert "from s3://acme/[bold]team" in synced.stdout
 
 
 # --- list ----------------------------------------------------------------------------------
@@ -209,9 +248,10 @@ def test_list_json_output_is_not_polluted_by_fetch_line(
 
     config = _write_config(tmp_path / "evalshift.yaml")
     result = _invoke(["list", "--json", "--config", str(config)], tmp_path)
-    assert result.exit_code == 0, result.stdout
-    rows = json.loads(result.stdout[result.stdout.index("[") :])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)  # the whole of stdout is the JSON payload
     assert {r["capture_id"] for r in rows} == {"cap_1", "cap_2"}
+    assert "fetched 2 capture(s)" in result.stderr
 
 
 # --- missing client extra -------------------------------------------------------------------

@@ -218,13 +218,23 @@ def _promoted_content_owners(
     return owners
 
 
+def _mentions_captures(config_path: Path) -> bool:
+    """Whether the raw config file text names ``captures`` at all (``False`` if unreadable)."""
+    try:
+        return b"captures" in config_path.read_bytes()
+    except OSError:
+        return False
+
+
 def _configured_store(config_path: Path, *, console: Console, strict: bool) -> RemoteStore | None:
     """The store ``captures.store`` names, or ``None`` when there is none to fetch from.
 
-    A missing config file means no store. An unreadable one is a hard error when ``strict``
-    (``capture fetch`` has nothing else to do) and a warning otherwise, so ``sync`` and ``list``
-    keep working on the local mirror the way they did before ``captures.store`` existed. A
-    missing client extra is always a hard error: the user asked for a store it cannot reach.
+    A missing config file means no store. An invalid one is a hard error when ``strict``
+    (``capture fetch`` has nothing else to do). Otherwise ``sync`` and ``list`` keep working on
+    the local mirror the way they did before ``captures.store`` existed: an invalid or
+    unreadable file is skipped, with a warning only when its text mentions ``captures`` (a
+    config that never asked for a store must not change their output). A missing client extra
+    is always a hard error: the user asked for a store it cannot reach.
     """
     if not config_path.exists():
         return None
@@ -234,11 +244,12 @@ def _configured_store(config_path: Path, *, console: Console, strict: bool) -> R
         if strict:
             console.print(exc.format_rich())
             raise typer.Exit(code=1) from exc
-        console.print(
-            f"[yellow]⚠[/yellow] could not read {escape(str(config_path))} "
-            f"({escape(exc.summary)}); "
-            "skipping captures.store and using the captures already on disk.",
-        )
+        _warn_store_skipped(config_path, exc.summary, console=console)
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        if strict:
+            raise
+        _warn_store_skipped(config_path, type(exc).__name__, console=console)
         return None
     if cfg.captures.store is None:
         return None
@@ -247,6 +258,16 @@ def _configured_store(config_path: Path, *, console: Console, strict: bool) -> R
     except RemoteStoreError as exc:
         console.print(exc.format_rich())
         raise typer.Exit(code=1) from exc
+
+
+def _warn_store_skipped(config_path: Path, reason: str, *, console: Console) -> None:
+    """Warn that captures.store is being skipped, if the file looks like it configures one."""
+    if not _mentions_captures(config_path):
+        return
+    console.print(
+        f"[yellow]⚠[/yellow] could not read {escape(str(config_path))} ({escape(reason)}); "
+        "skipping captures.store and using the captures already on disk.",
+    )
 
 
 def _resolve_since(since: str | None) -> datetime | None:
@@ -275,7 +296,7 @@ def _fetch_into_base(
         raise typer.Exit(code=1) from exc
     # soft_wrap: one line per fetch, so a long store URI or skip list never splits a count
     # from its label in a CI log someone greps.
-    console.print(f"[green]✓[/green] {summary.describe()}", soft_wrap=True)
+    console.print(f"[green]✓[/green] {escape(summary.describe())}", soft_wrap=True)
     return summary
 
 
@@ -317,7 +338,8 @@ def capture_list(
     base: _BaseOption = None,
 ) -> None:
     """List captures recorded by the SDK."""
-    console = Console()
+    # With --json, stdout carries only the JSON: the fetch line and every warning go to stderr.
+    console = Console(stderr=as_json)
     _maybe_fetch(
         config_path=config_path,
         offline=offline,
