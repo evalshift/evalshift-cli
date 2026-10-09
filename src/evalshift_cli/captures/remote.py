@@ -162,7 +162,9 @@ def open_store(parsed: StoreURI) -> RemoteStore:
         The scheme's adapter; its client is built on the first ``list`` or ``get``.
 
     Raises:
-        RemoteStoreUnavailable: when a client module the scheme needs is not installed. The summary names the package that provides the first missing module; the hint names the pip command that installs everything the scheme needs.
+        RemoteStoreUnavailable: when a client module the scheme needs is not installed. The
+            summary names the package that provides the first missing module; the hint names
+            the pip command that installs everything the scheme needs.
     """
     for module in _REQUIRED_MODULES[parsed.scheme]:
         if not _installed(module):

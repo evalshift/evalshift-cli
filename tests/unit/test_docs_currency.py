@@ -266,7 +266,12 @@ RETIRED_INSTALL_TERMS: tuple[str, ...] = (
     "whose extra is missing",
 )
 
-_INSTALL_COPY_FILES: tuple[str, ...] = (*PROSE_FILES, "docs/sdk.md")
+_INSTALL_COPY_FILES: tuple[str, ...] = (
+    *PROSE_FILES,
+    "docs/sdk.md",
+    "docs/getting-started.md",
+    "docs/agents.md",
+)
 
 
 @pytest.mark.parametrize("term", RETIRED_INSTALL_TERMS)
