@@ -81,9 +81,10 @@ class NormalizedMessages:
 def normalize_messages(raw: list[Any]) -> NormalizedMessages | None: ...
 ```
 
-Returns `None` when `raw` is not a messages list — any element that is not a dict, or a dict with
-neither a `role` nor a recognised Responses item `type`. The caller then falls back to today's
-"could not recover structured inputs" warning. Pure: no I/O, no globals.
+Returns `None` when `raw` is not a messages list: it is empty, an element is not a dict or has
+neither a string `role` nor a string `type`, or no element has a `role` or one of the Responses
+item types `message` / `function_call` / `function_call_output` / `reasoning`. The caller then
+falls back to today's "could not recover structured inputs" warning. Pure: no I/O, no globals.
 
 **Canonical message** (what comes out, and what passes through untouched):
 `{"role": str, "content": str}`, plus on assistant messages optionally
@@ -99,10 +100,12 @@ role(s)" warning. Positions in messages are 1-based indexes into the *recorded* 
 | `user`, `human` | `user` |
 | `assistant`, `ai`, `model` | `assistant` |
 | `system`, `developer` | `system` |
-| `tool`, `function` | `tool` |
+| `tool` | `tool` |
 
 (`developer` is the system role OpenAI's reasoning models use; today it is dropped as
-unrecognised.)
+unrecognised. The legacy OpenAI `function` role is deliberately **not** aliased: the legacy
+`function_call` it answers is not carried, so as a `tool` message it could only replay unpaired,
+which providers reject. It stays dropped with the existing "unrecognised role" warning.)
 
 ### Content
 
@@ -115,7 +118,7 @@ one-element list), or a list. List elements are processed in order:
 | `type` ∈ `text`, `input_text`, `output_text` | its `text` |
 | `type == "refusal"` | its `refusal` |
 | `type` ∈ `thinking`, `redacted_thinking` | dropped, no warning |
-| `type == "tool_use"` (assistant) | a tool call `{id, name, arguments: input or {}}` |
+| `type == "tool_use"` (assistant) | a tool call `{id, name, arguments: input or {}}`; one with no `name` is **unreplayable** (`"recorded message N carries a tool call with no name"`) rather than a `HistoryToolCall` that fails validation |
 | `type == "tool_result"` (user) | a separate `tool` message — see below |
 | anything else (`image`, `document`, `image_url`, `input_image`, `input_file`, `input_audio`, `file`, `server_tool_use`, `web_search_tool_result`, unknown) | **unreplayable**: `"recorded message N (<role>) carries a `<type>` block"` |
 
@@ -138,7 +141,8 @@ drops it the same way).
 |---|---|
 | canonical `{id, name, arguments: dict}` | unchanged |
 | OpenAI Chat `{id, type: "function", function: {name, arguments}}` | `{id, name: function.name, arguments}`; a string `arguments` is `json.loads`-ed; a dict is kept |
-| `arguments` string that is not valid JSON, or decodes to a non-object | `arguments: {}` + warning: ``recorded message N: tool call `search` (call_1) had arguments that are not a JSON object; replayed with {}`` |
+| `arguments` string that is not valid JSON, or decodes to a non-object | `arguments: {}` + warning: ``recorded message N: tool call `search` (call_1) had arguments that are not a JSON object; replayed with {}`` (an empty string is `{}` without a warning) |
+| no `name` (on the entry or under `function`) | **unreplayable**, as for `tool_use` |
 
 Tool calls from `tool_use` blocks are appended after any already on the message.
 
@@ -199,10 +203,11 @@ def is_repair_candidate(example: SuiteExample) -> bool: ...
 
 - `stringified_content` returns where the bug's signature is — `"history message 3"` or
   `"inputs['input']"` — or `None`. The signature: a history `content` or a string value in
-  `inputs` that, after `lstrip()`, starts with `[`, evaluates with `ast.literal_eval` (safe; any
-  exception means "no"), and yields a non-empty list whose every element is a dict with a string
-  `"type"`. That is exactly what `str()` of a block list produces; a user message that merely
-  contains JSON text does not match unless it is itself a list of typed blocks.
+  `inputs` that, after `lstrip()`, starts with `[{'` (how Python's repr opens a list of dicts
+  with string keys; JSON opens with `[{"`, so a JSON tool result is never mistaken for one),
+  evaluates with `ast.literal_eval` (safe; any exception means "no"), and yields a non-empty list
+  whose every element is a dict with a string `"type"`. That is exactly what `str()` of a block
+  list produces.
 - `is_repair_candidate` is `stringified_content(...) is not None` **or** `inputs == {}` (what the
   OpenAI `exclude_none`, Responses, and LangChain failures wrote). Empty inputs are *not* part of
   the warning signature: a genuinely input-less case would nag on every sync, and `validate`
@@ -218,7 +223,8 @@ def is_repair_candidate(example: SuiteExample) -> bool: ...
   earlier capture sync stringified (e.g. cap_…); run evalshift capture sync --repair.`
 
 **A plain sync leaves candidates alone.** A capture whose id is the `from_capture` of a repair
-candidate is not promoted by a plain `sync` (it is counted with the already-promoted). Without
+candidate is not promoted by a `sync` without `--repair` — `--force` included — and the summary
+counts it as `left N case(s) for --repair`. Without
 this, a case promoted under a custom name (`capture promote --as`) would get a second, correct
 copy next to the broken one, because its rebuilt content no longer matches the stored content
 that dedup compares against.
@@ -235,23 +241,27 @@ A normal sync plus three things, in this order:
    `force_ids` collection: ids in it bypass the promoted-id skip **and** `--since`; size cap,
    already-local, and malformed-key rules still apply. `_maybe_fetch` / `_fetch_into_base` pass the
    refetch set through. Toolset sidecars are fetched as today (they are never skipped as promoted).
-3. **Rewrite.** In the promotion loop, a capture that is the `from_capture` of a candidate is
-   written under **that case's existing name** (custom names are kept) with `force=True`,
-   bypassing the dedup owner check (the owner is the case itself) — but only when the rebuilt
-   example differs from the stored one. Every other promoted case keeps today's no-overwrite rule;
-   siblings fetched only for context are not rewritten.
+3. **Rewrite.** In the promotion loop — ahead of the blocked and dedup checks — a capture that
+   is the `from_capture` of a candidate is not promoted as a new case. Instead each candidate case
+   it backs gets **only its `inputs` and `history` replaced** with the rebuilt example's, and is
+   written back under its own name with `force=True` — but only when those two fields changed.
+   Everything else on the case is kept: its name and example id (custom `--as` names included),
+   tags, `expected_*`, match strategies, generation config, and any hand edits to them. The bug
+   only ever corrupted `inputs` and `history`. Every other promoted case keeps today's
+   no-overwrite rule; siblings fetched only for context are not rewritten.
 
 Reporting, added to the summary: `repaired N case(s)`. Then, as warnings:
 
 - candidates whose capture is neither local nor in the store: `can't repair N case(s) — their
   capture is no longer local or in the store (cap_…): delete the case file or re-capture`;
-- candidates whose rebuild is blocked (e.g. the turn carries an image): the blocked message, and
-  the case is left as it is;
+- candidates whose rebuild is blocked (e.g. the turn carries an image): `can't repair <case>:
+  <the blocked message>`, and the case is left as it is;
 - candidates that rebuilt identically (a genuinely input-less case): nothing.
 
-With no candidates: `no promoted cases need repair`, then a normal sync. `--repair --force` is
-`--force` plus the refetch set. `--repair --offline` repairs from local captures only. The
-`--help` text says a repaired case's hand edits are overwritten. Trace invariants live in
+With no candidates: `no promoted cases need repair`, then a normal sync. `--repair --force` also
+overwrites every other promoted case, as `--force` does; candidates still only get their `inputs`
+and `history` rebuilt. `--repair --offline` repairs from local captures only. The
+`--help` text says a repaired case's `inputs` and `history` are rebuilt from its capture. Trace invariants live in
 `evalshift.yaml`'s managed region and are carried forward as on any sync.
 
 ## Docs
@@ -297,8 +307,9 @@ With no candidates: `no promoted cases need repair`, then a normal sync. `--repa
   `capture promote` on it refuses without suggesting `--allow-errored`.
 - **Repair end to end** (`tests/unit/fake_remote_store.py`):
   - fresh clone — only broken case files locally, raw captures only in the store: `--repair`
-    fetches exactly the refetch set, rewrites the broken cases, leaves an unflagged hand-edited
-    case byte-identical, and fetches but does not rewrite a conversation sibling;
+    fetches exactly the refetch set, rewrites the broken cases' `inputs` / `history` while keeping
+    their tags and `expected_tools`, leaves an unflagged hand-edited case byte-identical, and
+    fetches but does not rewrite a conversation sibling;
   - a custom-named (`--as`) broken case is rewritten under its own name, with no second case;
   - a candidate missing from the store produces the can't-repair warning;
   - `--since` does not hide a candidate; `--offline` repairs from local captures only;
