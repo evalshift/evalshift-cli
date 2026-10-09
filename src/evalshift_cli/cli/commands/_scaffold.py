@@ -247,6 +247,7 @@ jobs:
       HAS_EVALSHIFT_TOKEN: ${{ secrets.EVALSHIFT_TOKEN != '' }}
       EVALSHIFT_NONINTERACTIVE: "1"
       __PROVIDER_API_KEY__: ${{ secrets.__PROVIDER_API_KEY__ }}
+      __EMBEDDING_API_KEY__: ${{ secrets.__EMBEDDING_API_KEY__ }}
     steps:
       - uses: actions/checkout@v7
 
@@ -310,7 +311,12 @@ jobs:
 """
 
 
-def render_ci_workflow(*, provider: str, version: str) -> str:
+# Present only when ``init`` borrowed another provider's embedding model; an
+# unset secret arrives as "" and the CLI then skips semantic with a warning.
+_EMBEDDING_KEY_LINE: Final = "      __EMBEDDING_API_KEY__: ${{ secrets.__EMBEDDING_API_KEY__ }}\n"
+
+
+def render_ci_workflow(*, provider: str, version: str, embedding_api_key: str | None = None) -> str:
     """Render the ``--ci`` GitHub Actions workflow for a provider.
 
     Args:
@@ -318,10 +324,17 @@ def render_ci_workflow(*, provider: str, version: str) -> str:
             API key the workflow wires through as a secret.
         version: CLI version to pin via the action's ``evalshift-version``
             input, normally :data:`evalshift_cli.__version__`.
+        embedding_api_key: The env var of a borrowed embedding provider, wired
+            through as a second secret; ``None`` when the provider embeds itself.
     """
-    return CI_WORKFLOW_TEMPLATE.replace(
-        "__PROVIDER_API_KEY__", PROVIDER_API_KEY_ENVS[provider]
-    ).replace("__EVALSHIFT_VERSION__", version)
+    template = (
+        CI_WORKFLOW_TEMPLATE.replace(_EMBEDDING_KEY_LINE, "")
+        if embedding_api_key is None
+        else CI_WORKFLOW_TEMPLATE.replace("__EMBEDDING_API_KEY__", embedding_api_key)
+    )
+    return template.replace("__PROVIDER_API_KEY__", PROVIDER_API_KEY_ENVS[provider]).replace(
+        "__EVALSHIFT_VERSION__", version
+    )
 
 
 def write_scaffold_files(
