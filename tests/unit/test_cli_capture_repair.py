@@ -55,6 +55,18 @@ BROKEN_HISTORY: list[dict[str, Any]] = [
     {"role": "user", "content": str(CLAUDE_INPUT[3]["content"])},
     {"role": "assistant", "content": str(CLAUDE_INPUT[4]["content"])},
 ]
+#: What ``CLAUDE_INPUT`` promotes to today: the history a repair rebuilds ``BROKEN_HISTORY`` into.
+REBUILT_HISTORY: list[dict[str, Any]] = [
+    {"role": "system", "content": "sys"},
+    {"role": "user", "content": "What is evalshift?"},
+    {
+        "role": "assistant",
+        "content": "Let me look.",
+        "tool_calls": [{"id": "toolu_1", "name": "search", "arguments": {"q": "evalshift"}}],
+    },
+    {"role": "tool", "content": "results", "tool_call_id": "toolu_1"},
+    {"role": "assistant", "content": "A regression tool."},
+]
 
 
 @pytest.fixture
@@ -105,12 +117,14 @@ def _put(
     )
 
 
-def _write_local_capture(base: Path, capture_id: str) -> None:
+def _write_local_capture(base: Path, capture_id: str, *, toolset: bool = True) -> None:
     captures = base / "captures" / "alpha"
     captures.mkdir(parents=True, exist_ok=True)
     (captures / f"{capture_id}.json").write_bytes(
         capture_payload(capture_id, "alpha", model_input=CLAUDE_INPUT)
     )
+    if not toolset:
+        return
     toolsets = base / "toolsets"
     toolsets.mkdir(parents=True, exist_ok=True)
     (toolsets / f"{TOOLSET_HEX}.json").write_bytes(TOOLSET_PAYLOAD)
@@ -342,18 +356,85 @@ def test_repair_reports_when_there_is_nothing_to_do(tmp_path: Path, store: FakeR
     assert "no promoted cases need repair." in _out(result)
 
 
+@pytest.mark.parametrize("duplicate", ["cap_a", "cap_c"])
 @pytest.mark.parametrize("flags", [("--offline",), ("--offline", "--repair")])
-def test_a_duplicate_of_a_candidate_is_still_skipped(
-    tmp_path: Path, store: FakeRemoteStore, flags: tuple[str, ...]
+def test_a_duplicate_of_a_candidate_is_skipped_wherever_it_sorts(
+    tmp_path: Path, store: FakeRemoteStore, flags: tuple[str, ...], duplicate: str
 ) -> None:
-    """CLI 1.3.0 skipped cap_2 as a duplicate of cap_1; rebuilt, it still is one."""
-    _write_case(tmp_path, "cap_1")
-    _write_local_capture(tmp_path, "cap_1")
-    _write_local_capture(tmp_path, "cap_2")
+    """CLI 1.3.0 skipped the duplicate of cap_b; rebuilt, it still is one -- even built first."""
+    _write_case(tmp_path, "cap_b")
+    _write_local_capture(tmp_path, "cap_b")
+    _write_local_capture(tmp_path, duplicate)  # cap_a is built and dedup-checked before cap_b
     result = _sync(tmp_path, *flags)
     assert result.exit_code == 0, result.output
     assert "skipped 1 duplicate capture(s)" in _out(result)
-    assert not (tmp_path / "suites" / "alpha" / "cap_2.json").exists()
+    assert not (tmp_path / "suites" / "alpha" / f"{duplicate}.json").exists()
+
+
+def test_a_no_op_rebuild_is_not_left_for_repair_and_force_overwrites_it(
+    tmp_path: Path, store: FakeRemoteStore
+) -> None:
+    _put(store, "cap_1", model_input={})  # promotes with empty inputs: genuinely input-less
+    assert _sync(tmp_path).exit_code == 0
+    case = tmp_path / "suites" / "alpha" / "cap_1.json"
+    first = _stored(case)
+    plain = _sync(tmp_path, "--offline")
+    assert plain.exit_code == 0, plain.output
+    assert "case(s) for --repair" not in _out(plain)
+    assert "skipped 1 already-promoted" in _out(plain)
+    forced = _sync(tmp_path, "--offline", "--force")
+    assert forced.exit_code == 0, forced.output
+    assert "case(s) for --repair" not in _out(forced)
+    assert "promoted 1 capture(s)" in _out(forced)
+    assert _stored(case).promoted_at != first.promoted_at
+
+
+def test_a_blocked_rebuild_of_a_stringified_case_is_left_for_repair(
+    tmp_path: Path, store: FakeRemoteStore
+) -> None:
+    case = _write_case(tmp_path, "cap_1")
+    before = case.read_bytes()
+    _write_local_capture(tmp_path, "cap_1", toolset=False)
+    result = _sync(tmp_path, "--offline")
+    assert result.exit_code == 0, result.output
+    out = _out(result)
+    assert "left 1 case(s) for --repair" in out
+    assert "skipped cap_1" not in out
+    assert case.read_bytes() == before
+
+
+@pytest.mark.parametrize("flags", [("--offline",), ("--offline", "--repair")])
+def test_a_blocked_rebuild_of_an_input_less_case_is_an_ordinary_skip(
+    tmp_path: Path, store: FakeRemoteStore, flags: tuple[str, ...]
+) -> None:
+    case = _write_case(tmp_path, "cap_1", inputs={}, history=[])
+    before = case.read_bytes()
+    _write_local_capture(tmp_path, "cap_1", toolset=False)
+    result = _sync(tmp_path, *flags)
+    assert result.exit_code == 0, result.output
+    out = _out(result)
+    assert "skipped 1 capture(s) with no usable recorded toolset" in out
+    assert "case(s) for --repair" not in out
+    assert "can't repair" not in out
+    assert case.read_bytes() == before
+
+
+def test_repair_names_a_duplicate_it_leaves_behind(tmp_path: Path, store: FakeRemoteStore) -> None:
+    """A fresh-clone plain sync promoted cap_2 before --repair turned cap_1 into its twin."""
+    broken = _write_case(tmp_path, "cap_1")
+    twin = _write_case(tmp_path, "cap_2", history=REBUILT_HISTORY)
+    _put(store, "cap_1")
+    _put(store, "cap_2")
+    result = _sync(tmp_path, "--repair")
+    assert result.exit_code == 0, result.output
+    out = _out(result)
+    assert "repaired 1 case(s)" in out
+    assert (
+        "alpha: repaired case cap_1 duplicates cap_2 — delete one (duplicate examples inflate n)"
+    ) in out
+    assert out.count("duplicates cap_2") == 1
+    assert broken.is_file()
+    assert twin.is_file()
 
 
 def test_repair_rewrites_nothing_when_the_rebuild_is_identical(
@@ -381,3 +462,31 @@ def test_repair_is_scoped_to_the_suite_option(tmp_path: Path, store: FakeRemoteS
     assert "no promoted cases need repair." in _out(result)
     assert "captures/alpha/cap_1.json" not in store.gets
     assert case.read_bytes() == before
+
+
+def test_repair_shows_the_rebuild_warnings(tmp_path: Path, store: FakeRemoteStore) -> None:
+    _write_case(tmp_path, "cap_1")
+    legacy = {"role": "function", "content": "legacy"}  # never aliased: dropped with a warning
+    _put(store, "cap_1", model_input=[CLAUDE_INPUT[0], legacy, *CLAUDE_INPUT[1:]])
+    result = _sync(tmp_path, "--repair")
+    assert result.exit_code == 0, result.output
+    out = _out(result)
+    assert "cap_1: dropped 1 history message(s) with unrecognised role(s)" in out
+    assert "repaired 1 case(s)" in out
+
+
+def test_repair_warns_once_for_a_pair_it_repaired_both_of(
+    tmp_path: Path, store: FakeRemoteStore
+) -> None:
+    first = _write_case(tmp_path, "cap_1")  # promoted together under --keep-duplicates
+    second = _write_case(tmp_path, "cap_2")
+    _put(store, "cap_1")
+    _put(store, "cap_2")
+    result = _sync(tmp_path, "--repair")
+    assert result.exit_code == 0, result.output
+    out = _out(result)
+    assert "repaired 2 case(s)" in out
+    assert out.count("— delete one (duplicate examples inflate n)") == 1
+    assert "alpha: repaired case cap_1 duplicates cap_2" in out
+    assert first.is_file()
+    assert second.is_file()

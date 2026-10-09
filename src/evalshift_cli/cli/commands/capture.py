@@ -65,6 +65,7 @@ from evalshift_cli.captures.repair import (
     RepairSelection,
     repaired_case,
     select_repairs,
+    stringified_content,
     stringified_warnings,
 )
 from evalshift_cli.captures.store_uri import parse_store_uri
@@ -252,6 +253,35 @@ def _repair_selection(*, base: Path | None, suite: str | None, console: Console)
                 f"{type(exc).__name__}",
             )
     return select_repairs(cases)
+
+
+def _warn_repaired_duplicates(
+    suite: str, repaired: list[str], *, base: Path | None, console: Console
+) -> None:
+    """Name each pair a case ``--repair`` just rewrote forms with a case of the same content.
+
+    A plain sync from a fresh clone cannot see a candidate's rebuilt content, so it may already
+    have promoted a capture that duplicates it. Which copy to keep is the user's call: this
+    only warns, and never deletes or modifies anything.
+    """
+    try:
+        cases = iter_promoted_cases(promoted_suite_dir(suite, base=base))
+    except ValueError:  # the golden.jsonl rebuild that follows fails on it anyway
+        return
+    keyed = [(case.name, example_content_key(case.example)) for case in cases]
+    warned: set[frozenset[str]] = set()
+    for name, key in keyed:
+        if name not in repaired:
+            continue
+        for other, other_key in keyed:
+            pair = frozenset((name, other))
+            if other == name or other_key != key or pair in warned:
+                continue
+            warned.add(pair)
+            console.print(
+                f"[yellow]⚠[/yellow] {escape(suite)}: repaired case {escape(name)} duplicates "
+                f"{escape(other)} — delete one (duplicate examples inflate n)",
+            )
 
 
 def _warn_unrepairable(
@@ -1128,6 +1158,7 @@ def capture_sync(
             [r.envelope for r in records_by_suite[suite_name]],
         ):
             console.print(f"[yellow]⚠[/yellow] {suite_name}: {warning}")
+        built_pairs = build_conversation_examples(records_by_suite[suite_name], opts, base=base)
         # Re-exercising an agent on the same data records duplicate captures.
         # Promoting both would duplicate the example, double n, and inflate
         # every downstream p-value/effect size. Dedup keys on the *built
@@ -1136,40 +1167,53 @@ def capture_sync(
         # seeded from the cases already on disk so it spans sync runs.
         if not keep_duplicates:
             seen_examples.update(_promoted_content_owners(suite_name, base=base, console=console))
-        for record, built in build_conversation_examples(
-            records_by_suite[suite_name], opts, base=base
-        ):
+            # A repair candidate's rebuilt content belongs to the candidate, whichever capture
+            # is built first: the disk seed above only holds its stringified content, so
+            # without this claim a capture replaying the same turn would promote as a new case.
+            for record, built in built_pairs:
+                backed = backed_by.get(record.envelope.capture_id)
+                if backed is not None and built.blocked is None:
+                    seen_examples.setdefault(
+                        (suite_name, example_content_key(built.example)), backed[0].name
+                    )
+        repaired_here: list[str] = []
+        for record, built in built_pairs:
             envelope = record.envelope
             backed = backed_by.get(envelope.capture_id)
             if backed is not None:
                 # A capture behind a repair candidate is only ever written by --repair, and
                 # then only the case's inputs and history -- never as a new case (a custom
                 # `--as` name would otherwise get a second copy next to the broken one).
+                # A rebuild that changes nothing is no repair (a genuinely input-less case),
+                # nor is a blocked one of a case that was never stringified: both take the
+                # normal path below, `--force` and the blocked counters included.
                 if built.blocked is None:
-                    # Its rebuilt content still belongs to the candidate: the disk seed above
-                    # only holds the stringified content, so without this a later capture
-                    # replaying the same turn would be promoted as a new case.
-                    seen_examples.setdefault(
-                        (suite_name, example_content_key(built.example)), envelope.capture_id
-                    )
-                if not repair:
-                    left_for_repair += len(backed)
+                    promoted_at = _now_iso()
+                    to_repair = [
+                        fixed
+                        for case in backed
+                        if (fixed := repaired_case(case, built.example, promoted_at=promoted_at))
+                        is not None
+                    ]
+                else:
+                    to_repair = [c for c in backed if stringified_content(c.example) is not None]
+                if to_repair:
+                    if not repair:
+                        left_for_repair += len(to_repair)
+                        continue
+                    for warning in built.warnings:
+                        console.print(f"[yellow]⚠[/yellow] {envelope.capture_id}: {warning}")
+                    if built.blocked is not None:
+                        for case in to_repair:
+                            console.print(
+                                f"[yellow]⚠[/yellow] can't repair "
+                                f"[cyan]{escape(case.name)}[/cyan]: {escape(built.blocked)}",
+                            )
+                    else:
+                        for case in to_repair:
+                            write_promoted_case(case, base=base, force=True)
+                            repaired_here.append(case.name)
                     continue
-                for warning in built.warnings:
-                    console.print(f"[yellow]⚠[/yellow] {envelope.capture_id}: {warning}")
-                if built.blocked is not None:
-                    for case in backed:
-                        console.print(
-                            f"[yellow]⚠[/yellow] can't repair [cyan]{escape(case.name)}[/cyan]: "
-                            f"{escape(built.blocked)}",
-                        )
-                    continue
-                for case in backed:
-                    fixed = repaired_case(case, built.example, promoted_at=_now_iso())
-                    if fixed is not None:
-                        write_promoted_case(fixed, base=base, force=True)
-                        repaired += 1
-                continue
             if built.blocked is not None:
                 console.print(
                     f"[yellow]⚠[/yellow] skipped [cyan]{envelope.capture_id}[/cyan]: "
@@ -1221,6 +1265,9 @@ def capture_sync(
                     wired_generation += 1
             except FileExistsError:
                 skipped_existing += 1
+        if repaired_here:
+            repaired += len(repaired_here)
+            _warn_repaired_duplicates(suite_name, repaired_here, base=base, console=console)
 
     suite_paths: dict[str, Path] = {}
     suite_evaluators: dict[str, SuiteEvaluatorsOverride | None] = {}
