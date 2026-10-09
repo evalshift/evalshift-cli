@@ -25,6 +25,12 @@ Re-running `login` while the stored token for that host still works reuses it
 instead of minting a new one, and prints `already logged in as <email>`. To
 switch accounts, run `evalshift logout` first, then `evalshift login`.
 
+If your account has been suspended, `login` with its stored token prints the
+server's message — `Your account has been suspended. Contact support@evalshift.dev.` —
+and exits 1 instead of starting a new browser sign-in. A suspended account cannot
+approve a CLI login either, so a fresh `login` on a machine with no stored token
+waits until `--timeout` runs out. See [Troubleshooting](#troubleshooting).
+
 You can still paste an existing hosted API token manually:
 
 ```bash

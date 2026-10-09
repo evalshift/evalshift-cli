@@ -1495,5 +1495,10 @@ Hosted 401 -> check evalshift whoami; precedence flags > env > credentials file;
 start with es_; a key past its rotation grace window authenticates as nobody.
 Hosted 403 `Permission denied: <key>` -> the token authenticated but its scopes (or its
 principal's role) don't cover that permission. Widen the scope or mint a key that holds it.
+Hosted 403 "Your account has been suspended" (code account_suspended) -> the user behind a
+personal token was suspended; whoami/push print that message and exit 1. login with a stored
+token does too, instead of starting a browser sign-in; a fresh login waits until --timeout (a
+suspended user cannot approve it). Re-login cannot fix it: contact support@evalshift.dev.
+Service account keys are unaffected.
 Owner-only keys a service account can never hold: project:create (auto-create -> use
 --no-create-project on a pre-created project).

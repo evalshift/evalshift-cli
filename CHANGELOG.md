@@ -7,12 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+### Fixed
 
-- A suspended account now gets the server's own message — "Your account has been
-  suspended. Contact support@evalshift.dev." `evalshift login` no longer mistakes it for an
-  expired token and starts a browser sign-in, and push auto-create no longer adds a
-  permission hint to it.
+- A suspended account is named as such. When the server refuses a token with
+  `account_suspended`, the CLI prints its message — "Your account has been suspended.
+  Contact support@evalshift.dev." `evalshift login` with a stored token for that account
+  exits 1 with it instead of calling the token no longer valid and starting a browser
+  sign-in, and push auto-create shows it without the token-access hint. Service account
+  keys are not affected by a user's suspension.
 
 ## [1.3.0] - 2026-10-09
 
