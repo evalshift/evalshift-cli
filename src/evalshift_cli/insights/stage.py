@@ -290,6 +290,7 @@ def _decision(
         comparisons=comparisons,
         records=scores,
         calls=calls,
+        skipped_evaluators=state.skipped_evaluators,
     )
 
 

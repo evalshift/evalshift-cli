@@ -14,7 +14,13 @@ from evalshift_cli.cli.commands.evaluate import SCORES_FILENAME
 from evalshift_cli.cli.main import app
 from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.runner.checkpoint import read_state, write_state
-from evalshift_cli.runner.models import EvaluatorCoverage, RunModels, RunState, UnmeasuredPair
+from evalshift_cli.runner.models import (
+    EvaluatorCoverage,
+    RunModels,
+    RunState,
+    SkippedEvaluator,
+    UnmeasuredPair,
+)
 
 runner = CliRunner()
 
@@ -211,6 +217,42 @@ class TestAnalyzeHappy:
         assert "Migration verdict: inconclusive" in flat
         assert "advisory" in flat
         assert "Set blocking: true" in flat
+
+    def test_skipped_evaluator_reaches_the_decision_and_the_terminal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        cwd, run_id = _scaffold(tmp_path)
+        config_path = cwd / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8")
+            + "\n        migration_policy:\n"
+            + "          max_overall_regression_rate: 1.0\n",
+            encoding="utf-8",
+        )
+        run_dir = cwd / ".evalshift" / "runs" / run_id
+        state = read_state(run_dir)
+        state.skipped_evaluators = [
+            SkippedEvaluator(
+                evaluator_name="semantic.cosine",
+                kind="semantic",
+                label="semantic",
+                model="openai/text-embedding-3-small",
+                env_vars=["OPENAI_API_KEY"],
+            )
+        ]
+        write_state(run_dir, state)
+        monkeypatch.chdir(cwd)
+
+        result = runner.invoke(app, ["analyze", run_id])
+
+        assert result.exit_code == 0, result.stdout
+        line = (
+            "semantic was skipped: no API key for openai/text-embedding-3-small. "
+            "Export OPENAI_API_KEY to enable it."
+        )
+        decision = json.loads((run_dir / "migration_decision.json").read_text(encoding="utf-8"))
+        assert line in decision["recommendations"]
+        assert line in " ".join(result.stdout.split())
 
     def test_sub_granular_budget_warning_reaches_the_terminal(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

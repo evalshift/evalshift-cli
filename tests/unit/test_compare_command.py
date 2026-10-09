@@ -558,7 +558,6 @@ class TestEvaluatorKeyPreflight:
         flat = " ".join(result.output.split())
         assert "llm_judge.equivalence skipped: no API key for gpt-4o-mini" in flat
 
-    @pytest.mark.xfail(reason="recommendation lines land in Task 5", strict=True)
     def test_skipped_judge_is_named_in_the_recommendations(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
