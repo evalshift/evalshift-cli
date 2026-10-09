@@ -220,7 +220,8 @@ evalshift login [--token es_...] [--host URL] [--no-browser] [--timeout SECS=900
   Device-code browser flow, or --token (verified via GET /me). Credentials stored at
   ~/.evalshift/credentials (owner-only perms). Without --token, a still-valid stored token for
   the host is reused (no new token minted; "already logged in as <email>"); a 401/403 falls
-  through to the browser flow. To switch accounts: `evalshift logout`, then `login`.
+  through to the browser flow, except a suspended account (403 account_suspended), which exits 1
+  with the server's message. To switch accounts: `evalshift logout`, then `login`.
   Issues a PERSONAL token: tied to your membership, dies with it. Correct for a workstation,
   wrong for CI. For CI mint a SERVICE ACCOUNT KEY in the hosted web app (Settings -> API
   tokens -> Service accounts): org-owned machine identity, never owner-equivalent (role is

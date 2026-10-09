@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A suspended account now gets the server's own message — "Your account has been
+  suspended. Contact support@evalshift.dev." `evalshift login` no longer mistakes it for an
+  expired token and starts a browser sign-in, and push auto-create no longer adds a
+  permission hint to it.
+
 ## [1.3.0] - 2026-10-09
 
 ### Added
