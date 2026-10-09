@@ -229,17 +229,13 @@ def parse_since(text: str, *, now: datetime | None = None) -> datetime:
     reference = now if now is not None else datetime.now(UTC)
     cleaned = text.strip()
     match = _DURATION.fullmatch(cleaned)
-    if match:
-        amount, unit = int(match.group(1)), match.group(2)
-        delta = {
-            "m": timedelta(minutes=amount),
-            "h": timedelta(hours=amount),
-            "d": timedelta(days=amount),
-        }
-        return reference - delta[unit]
     try:
+        if match:
+            amount, unit = int(match.group(1)), match.group(2)
+            delta = {"m": timedelta(minutes=1), "h": timedelta(hours=1), "d": timedelta(days=1)}
+            return reference - delta[unit] * amount
         parsed = datetime.fromisoformat(cleaned)
-    except ValueError as exc:
+    except (ValueError, OverflowError) as exc:  # OverflowError: a duration reaching before year 1
         raise ValueError(
             f"--since expects a duration like 30m, 24h, 7d or an ISO date/datetime, got {text!r}"
         ) from exc

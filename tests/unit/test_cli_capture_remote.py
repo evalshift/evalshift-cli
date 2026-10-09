@@ -99,9 +99,10 @@ def test_fetch_since_and_suite_are_passed_through(
     assert seen["base"] == tmp_path
 
 
-def test_fetch_rejects_bad_since(tmp_path: Path, remote: FakeRemoteStore) -> None:
+@pytest.mark.parametrize("since", ["yesterday", "99999999d"])
+def test_fetch_rejects_bad_since(tmp_path: Path, remote: FakeRemoteStore, since: str) -> None:
     config = _write_config(tmp_path / "evalshift.yaml")
-    result = _invoke(["fetch", "--since", "yesterday", "--config", str(config)], tmp_path)
+    result = _invoke(["fetch", "--since", since, "--config", str(config)], tmp_path)
     assert result.exit_code == 2
     assert "--since expects" in result.output
 

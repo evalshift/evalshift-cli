@@ -354,3 +354,9 @@ def test_parse_since_iso_date_and_datetime() -> None:
 def test_parse_since_rejects_garbage(text: str) -> None:
     with pytest.raises(ValueError, match="--since expects"):
         parse_since(text)
+
+
+@pytest.mark.parametrize("text", ["99999999d", "9999999999999h", "99999999999999999999m"])
+def test_parse_since_rejects_out_of_range_durations(text: str) -> None:
+    with pytest.raises(ValueError, match="--since expects"):
+        parse_since(text)
