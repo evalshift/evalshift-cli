@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from typing import Any
 
 import pytest
@@ -95,6 +96,17 @@ def test_signature_ignores_lookalikes(text: str) -> None:
     assert stringified_content(ex) is None
 
 
+def test_signature_ignores_an_invalid_escape_silently() -> None:
+    # str() of a block list always doubles a backslash, so a lone ``\d`` -- an invalid escape
+    # that literal_eval only warns about -- can't be one; it must not leak a SyntaxWarning.
+    text = "[{'type': 'regex', 'pattern': '\\d+'}]"
+    ex = _example(history=[{"role": "user", "content": text}])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert stringified_content(ex) is None
+    assert caught == []
+
+
 def test_repair_candidates_are_stringified_or_input_less() -> None:
     assert is_repair_candidate(_example(history=[{"role": "assistant", "content": REPR_BLOCKS}]))
     assert is_repair_candidate(_example(inputs={}))
@@ -172,6 +184,29 @@ def test_repaired_case_replaces_only_inputs_and_history() -> None:
     assert fixed.example.expected_tools == stored.example.expected_tools
     assert fixed.promoted_at == "2026-10-10T00:00:00+00:00"
     assert fixed.from_capture == "cap_1"
+
+
+def test_repaired_case_rebuilds_history_when_inputs_already_match() -> None:
+    stored = _case(
+        "c",
+        example=_example(
+            id_="c",
+            inputs={"input": "And the price?"},
+            history=[
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": REPR_BLOCKS},
+            ],
+        ),
+    )
+    rebuilt = _example(
+        id_="c",
+        inputs={"input": "And the price?"},
+        history=[{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}],
+    )
+    fixed = repaired_case(stored, rebuilt, promoted_at="t")
+    assert fixed is not None
+    assert fixed.example.history == rebuilt.history
+    assert fixed.example.inputs == {"input": "And the price?"}
 
 
 def test_repaired_case_is_none_when_nothing_changed() -> None:

@@ -10,6 +10,7 @@ captures could promote with empty ``inputs``. This module finds those cases and 
 from __future__ import annotations
 
 import ast
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -55,7 +56,12 @@ def _is_stringified_blocks(text: str) -> bool:
     if not stripped.startswith(_REPR_OPENING):
         return False
     try:
-        value = ast.literal_eval(stripped)
+        # An invalid escape (a lone ``\d``) only warns -- DeprecationWarning on 3.11,
+        # SyntaxWarning from 3.12 -- and str() of a block list never writes one, so treat it as
+        # an error: the parser re-raises it as SyntaxError, which means "not stringified".
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            value = ast.literal_eval(stripped)
     except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
         return False
     return (
