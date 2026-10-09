@@ -93,7 +93,7 @@ EvalShift is four pieces. Each is released and documented independently; each ow
 | **GitHub Action** | `evalshift/evalshift-action@v0` | Runs the pipeline on PRs, pushes the run, maintains one PR comment, sets the `evalshift/regression` status. | [docs/github-action.md](docs/github-action.md), [action repo](https://github.com/evalshift/evalshift-action) | <https://www.evalshift.dev/ci-llms-full.txt> |
 | **Hosted server** | service — API `https://api.evalshift.dev`, web app `https://evalshift.dev` | Stores pushed run bundles, diffs runs across branches, serves the web app, drives PR comments and gating. | [docs/hosted.md](docs/hosted.md) | covered by the CLI reference (`push`/`bundle` contract) |
 
-Data flow is one-directional: **SDK captures → CLI runs and bundles → server stores and diffs → web app displays.** The SDK and CLI never call each other — the interface is files under `.evalshift/captures/`. The CLI (import `evalshift_cli`) depends on the SDK (import `evalshift`), so one environment holds both.
+Data flow is one-directional: **SDK captures → CLI runs and bundles → server stores and diffs → web app displays.** The SDK and CLI never call each other — the interface is the capture layout under `.evalshift/captures/`, on disk or mirrored from a bucket you own (`captures.store`). The CLI (import `evalshift_cli`) depends on the SDK (import `evalshift`), so one environment holds both.
 
 The CLI reference is generated from [llms-full.txt](llms-full.txt) at this repo's root — edit that file when CLI behaviour changes. The SDK and Action references are owned by their own repos; the copies served from `evalshift.dev` are synced from there.
 
