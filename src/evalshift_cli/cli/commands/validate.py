@@ -27,6 +27,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from evalshift_cli import __version__
+from evalshift_cli.captures.repair import stringified_content
 from evalshift_cli.cli.commands._suites import SUITE_FILENAME
 from evalshift_cli.cli.commands.doctor import CONFIG_FILENAME
 from evalshift_cli.config.loader import ConfigError, load_config
@@ -136,6 +137,14 @@ def validate(
     finding = check_ci_pin(project_root, __version__)
     if finding is not None:
         console.print(f"[yellow]⚠[/yellow] {escape(finding.message)}")
+    # Advisory: cases an earlier `capture sync` built from stringified message blocks.
+    flagged = [ex.id for ex in loaded_suite.examples if stringified_content(ex) is not None]
+    if flagged:
+        console.print(
+            f"[yellow]⚠[/yellow] {len(flagged)} example(s) carry message blocks an earlier "
+            f"capture sync stringified (e.g. {escape(flagged[0])}); run evalshift capture "
+            "sync --repair.",
+        )
     # Advisory, same wording as the `doctor` row: a judge from the same
     # family as an arm biases every llm_judge verdict toward that arm.
     for overlap in _judge_family_overlaps(cfg):

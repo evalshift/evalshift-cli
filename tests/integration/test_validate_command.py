@@ -191,3 +191,50 @@ class TestValidateJudgeFamily:
         result = runner.invoke(app, ["validate"])
         assert result.exit_code == 0, result.stdout
         assert "self-preference" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Stringified history (advisory — never changes the exit code)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateStringifiedHistory:
+    def _project(self, tmp_path: Path, *, history_content: str) -> Path:
+        import json
+        import shutil
+
+        shutil.copytree(FIXTURES_DIR / "validate_ok", tmp_path, dirs_exist_ok=True)
+        row = {
+            "id": "ex_conv",
+            "inputs": {"name": "Kim", "tone": "formal"},
+            "tools": [],
+            "history": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": history_content},
+            ],
+        }
+        with (tmp_path / "golden.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+        return tmp_path
+
+    def test_warns_after_the_success_line_on_stringified_blocks(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        stringified = str([{"type": "text", "text": "hello"}])
+        monkeypatch.chdir(self._project(tmp_path, history_content=stringified))
+        result = runner.invoke(app, ["validate"])
+        out = " ".join(result.stdout.split())
+        assert result.exit_code == 0, result.stdout
+        assert (
+            "1 example(s) carry message blocks an earlier capture sync stringified "
+            "(e.g. ex_conv); run evalshift capture sync --repair."
+        ) in out
+        assert out.index("compatible") < out.index("stringified")
+
+    def test_silent_for_ordinary_history(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(self._project(tmp_path, history_content="hello"))
+        result = runner.invoke(app, ["validate"])
+        assert result.exit_code == 0, result.stdout
+        assert "stringified" not in result.stdout
