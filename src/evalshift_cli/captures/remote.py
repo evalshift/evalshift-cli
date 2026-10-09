@@ -1,0 +1,326 @@
+"""Mirror captures from a user-owned object store into the local capture directory.
+
+The SDK's ``ObjectStoreSink`` writes the *local layout* under a bucket prefix --
+``captures/<suite>/cap_<hex>.json`` and ``toolsets/<hex>.json`` -- so the CLI never reads a
+bucket directly. It fetches what is missing into ``<base>/captures`` and ``<base>/toolsets``
+and every other command runs on the local mirror unchanged. Two properties make that cheap:
+captures are immutable (a file that exists locally is current) and toolsets are
+content-addressed (same name, same bytes), so no ETag or mtime is ever compared.
+
+Keys read from a bucket are untrusted. Only basenames shaped like the SDK's are accepted
+(:data:`_CAPTURE_NAME`, :data:`_TOOLSET_NAME`), a suite segment must be one the SDK's
+``_safe_segment`` could have produced (:func:`_is_safe_suite_segment` -- so ``Support Agent``
+or ``ünïcode`` pass, while ``..``, ``.hidden`` or a backslash do not), and anything else is
+counted as malformed and never written, so no key can place a file outside ``<base>``. Local
+writes are atomic (temp file beside the target, then :func:`os.replace`) so an interrupted
+fetch leaves nothing half-written.
+
+The write side's protocol lives in the SDK (``evalshift.stores``); this module carries the
+read side. They share the key layout and URI grammar, not code.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import tempfile
+from collections.abc import Collection, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+from rich.console import Group, RenderableType
+from rich.panel import Panel
+from rich.text import Text
+
+from evalshift_cli.captures.reader import captures_root, toolsets_root
+
+#: Largest object a fetch will download. Captures are kilobytes; this is a safety stop.
+MAX_OBJECT_BYTES = 32 * 1024 * 1024
+
+_CAPTURE_NAME = re.compile(r"^[A-Za-z0-9_-]+\.json$")
+_TOOLSET_NAME = re.compile(r"^[0-9a-f]{64}\.json$")
+_DURATION = re.compile(r"^(\d+)([mhd])$")
+
+
+def _is_safe_suite_segment(segment: str) -> bool:
+    """Whether ``segment`` is a suite directory name the SDK could have written.
+
+    The SDK's ``_safe_segment`` turns separators into ``_``, collapses every ``..`` and strips
+    leading and trailing dots and spaces, so it never emits an empty name, a path separator,
+    ``..`` or an edge dot/space. Anything else came from somewhere other than the SDK and could
+    steer a write (``..``, ``.``, an empty segment, a Windows ``\\``), so it is refused. NUL is
+    refused too: no filesystem accepts it.
+    """
+    return (
+        bool(segment)
+        and not any(ch in segment for ch in ("/", "\\", "\x00"))
+        and ".." not in segment
+        and segment[0] not in ". "
+        and segment[-1] not in ". "
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectInfo:
+    """One listed object.
+
+    Attributes:
+        key: Key relative to the store's prefix, e.g. ``captures/<suite>/cap_<hex>.json``.
+        last_modified: The provider's timestamp, timezone-aware, or ``None`` if unknown.
+        size: Size in bytes from the listing, or ``None`` if the provider did not say.
+    """
+
+    key: str
+    last_modified: datetime | None
+    size: int | None
+
+
+@runtime_checkable
+class RemoteStore(Protocol):
+    """The read side of an object store: list keys under a prefix and fetch one object."""
+
+    uri: str
+
+    def list(self, prefix: str) -> Iterator[ObjectInfo]: ...
+
+    def get(self, key: str) -> bytes: ...
+
+
+class RemoteStoreError(Exception):
+    """A remote store could not be opened, listed or read.
+
+    Attributes:
+        summary: One sentence saying what failed.
+        hint: What to do about it, when there is something to do.
+    """
+
+    def __init__(self, summary: str, *, hint: str | None = None) -> None:
+        self.summary = summary
+        self.hint = hint
+        super().__init__(summary if hint is None else f"{summary} ({hint})")
+
+    def format_rich(self) -> RenderableType:
+        """Render this error inside a Rich :class:`Panel`."""
+        body: list[RenderableType] = [Text(self.summary, style="bold red")]
+        if self.hint:
+            body.append(Text(self.hint, style="dim"))
+        return Panel(
+            Group(*body),
+            title="[red]Remote capture store[/red]",
+            title_align="left",
+            border_style="red",
+        )
+
+
+class RemoteStoreUnavailable(RemoteStoreError):  # noqa: N818 — the planned public name.
+    """The client library for the store's scheme is not installed."""
+
+
+@dataclass
+class FetchSummary:
+    """What one fetch did, for the one-line console summary."""
+
+    store_uri: str
+    captures: int = 0
+    toolsets: int = 0
+    skipped_existing: int = 0
+    skipped_promoted: int = 0
+    skipped_old: int = 0
+    skipped_large: int = 0
+    skipped_malformed: int = 0
+
+    def describe(self) -> str:
+        """``fetched N capture(s) and M toolset(s) from <uri> (skipped ...)``."""
+        text = (
+            f"fetched {self.captures} capture(s) and {self.toolsets} toolset(s) "
+            f"from {self.store_uri}"
+        )
+        skipped = [
+            f"{n} {label}"
+            for n, label in (
+                (self.skipped_existing, "already local"),
+                (self.skipped_promoted, "promoted"),
+                (self.skipped_old, "older than --since"),
+                (self.skipped_large, "over the size cap"),
+                (self.skipped_malformed, "malformed"),
+            )
+            if n
+        ]
+        return f"{text} (skipped {', '.join(skipped)})" if skipped else text
+
+
+def parse_since(text: str, *, now: datetime | None = None) -> datetime:
+    """Turn a ``--since`` value into an aware UTC instant.
+
+    Accepts a duration (``30m``, ``24h``, ``7d``) relative to ``now`` (UTC now by default) or
+    an ISO date / datetime; a naive datetime is taken as UTC.
+
+    Raises:
+        ValueError: when ``text`` is neither form.
+    """
+    reference = now if now is not None else datetime.now(UTC)
+    cleaned = text.strip()
+    match = _DURATION.match(cleaned)
+    if match:
+        amount, unit = int(match.group(1)), match.group(2)
+        delta = {
+            "m": timedelta(minutes=amount),
+            "h": timedelta(hours=amount),
+            "d": timedelta(days=amount),
+        }
+        return reference - delta[unit]
+    try:
+        parsed = datetime.fromisoformat(cleaned)
+    except ValueError as exc:
+        raise ValueError(
+            f"--since expects a duration like 30m, 24h, 7d or an ISO date/datetime, got {text!r}"
+        ) from exc
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def fetch_captures(
+    store: RemoteStore,
+    *,
+    base: Path | None = None,
+    suite: str | None = None,
+    since: datetime | None = None,
+    skip_ids: Collection[str] = frozenset(),
+    workers: int = 8,
+) -> FetchSummary:
+    """Mirror missing toolsets and captures from ``store`` into ``<base>``.
+
+    Toolsets are fetched first so a capture never lands locally before a sidecar that exists
+    remotely. A capture is skipped when its file already exists, when its id is in
+    ``skip_ids`` (the promoted ids -- so a capture ``capture clean`` removed is not pulled
+    back), when ``since`` is set and the object is older, or when it is over
+    :data:`MAX_OBJECT_BYTES`. Keys that do not match the SDK's layout are counted as
+    malformed and ignored.
+
+    Raises:
+        RemoteStoreError: when listing or any download fails. Files already written stay, so a
+            re-run resumes; nothing half-written is left behind.
+    """
+    summary = FetchSummary(store_uri=store.uri)
+    skip = set(skip_ids)
+
+    toolset_jobs: list[tuple[str, Path]] = []
+    for info in _list(store, "toolsets/"):
+        name = info.key.removeprefix("toolsets/")
+        if "/" in name or not _TOOLSET_NAME.match(name):
+            summary.skipped_malformed += 1
+            continue
+        dest = toolsets_root(base) / name
+        if dest.exists():
+            continue  # content-addressed: present means correct; not worth a counter
+        if info.size is not None and info.size > MAX_OBJECT_BYTES:
+            summary.skipped_large += 1
+            continue
+        toolset_jobs.append((info.key, dest))
+
+    capture_jobs: list[tuple[str, Path]] = []
+    prefix = f"captures/{suite}/" if suite else "captures/"
+    for info in _list(store, prefix):
+        rel = info.key.removeprefix("captures/")
+        suite_seg, sep, name = rel.partition("/")
+        if (
+            not sep
+            or "/" in name
+            or not _is_safe_suite_segment(suite_seg)
+            or not _CAPTURE_NAME.match(name)
+        ):
+            summary.skipped_malformed += 1
+            continue
+        dest = captures_root(base) / suite_seg / name
+        if dest.exists():
+            summary.skipped_existing += 1
+            continue
+        if name[: -len(".json")] in skip:
+            summary.skipped_promoted += 1
+            continue
+        if since is not None and info.last_modified is not None and info.last_modified < since:
+            summary.skipped_old += 1
+            continue
+        if info.size is not None and info.size > MAX_OBJECT_BYTES:
+            summary.skipped_large += 1
+            continue
+        capture_jobs.append((info.key, dest))
+
+    summary.toolsets, large = _download_all(store, toolset_jobs, workers)
+    summary.skipped_large += large
+    summary.captures, large = _download_all(store, capture_jobs, workers)
+    summary.skipped_large += large
+    return summary
+
+
+def _list(store: RemoteStore, prefix: str) -> list[ObjectInfo]:
+    try:
+        return list(store.list(prefix))
+    except RemoteStoreError:
+        raise
+    except Exception as exc:
+        raise RemoteStoreError(
+            f"could not list {prefix!r} in {store.uri}: {type(exc).__name__}: {exc}",
+            hint="check credentials and network, or use --offline to work with the captures "
+            "already on disk",
+        ) from exc
+
+
+def _download_all(
+    store: RemoteStore, jobs: list[tuple[str, Path]], workers: int
+) -> tuple[int, int]:
+    """Download every job; return ``(written, skipped_as_too_large)``."""
+    if not jobs:
+        return 0, 0
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, len(jobs)))) as pool:
+            results = list(pool.map(lambda job: _download(store, job[0], job[1]), jobs))
+    except RemoteStoreError:
+        raise
+    except Exception as exc:
+        raise RemoteStoreError(
+            f"could not download from {store.uri}: {type(exc).__name__}: {exc}",
+            hint="check credentials and network, or use --offline to work with the captures "
+            "already on disk",
+        ) from exc
+    written = sum(1 for ok in results if ok)
+    return written, len(results) - written
+
+
+def _download(store: RemoteStore, key: str, dest: Path) -> bool:
+    """Fetch ``key`` into ``dest`` atomically. ``False`` when the object is over the cap."""
+    try:
+        data = store.get(key)
+    except Exception as exc:
+        raise RemoteStoreError(
+            f"could not download {key} from {store.uri}: {type(exc).__name__}: {exc}",
+            hint="check credentials and network, or use --offline to work with the captures "
+            "already on disk",
+        ) from exc
+    if len(data) > MAX_OBJECT_BYTES:
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.replace(tmp_name, dest)
+    finally:
+        with suppress(OSError):
+            os.remove(tmp_name)
+    return True
+
+
+__all__ = [
+    "MAX_OBJECT_BYTES",
+    "FetchSummary",
+    "ObjectInfo",
+    "RemoteStore",
+    "RemoteStoreError",
+    "RemoteStoreUnavailable",
+    "fetch_captures",
+    "parse_since",
+]
