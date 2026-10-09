@@ -24,6 +24,7 @@ from evalshift_cli.cli.commands._suites import (
     resolve_suite_path,
 )
 from evalshift_cli.cli.commands.doctor import CONFIG_FILENAME
+from evalshift_cli.cli.commands.evaluate import preflight_evaluator_keys
 from evalshift_cli.config.loader import ConfigError, load_config
 from evalshift_cli.evaluators.tool_loader import ToolLoaderError
 from evalshift_cli.models.registry import (
@@ -152,6 +153,8 @@ def run(
     if missing:
         _print_missing_api_keys(console, missing)
         raise typer.Exit(code=1)
+
+    preflight_evaluator_keys(console, cfg.evaluators_for(suite_name), os.environ)
 
     try:
         result = asyncio.run(

@@ -513,3 +513,109 @@ class TestEndToEnd:
         result = runner.invoke(app, ["all", "--yes"])
         assert result.exit_code == 1
         assert "missing API key" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Evaluator key preflight
+# ---------------------------------------------------------------------------
+
+
+_JUDGE_YAML = (
+    "              max_chars: 200\n"
+    "          llm_judge:\n"
+    "            - criterion_name: equivalence\n"
+    "              criterion_prompt: which is better?\n"
+    "              judge_model: gpt-4o-mini\n"
+    "              blocking: {blocking}"
+)
+
+
+class TestEvaluatorKeyPreflight:
+    def _with_judge(self, tmp_path: Path, *, blocking: bool) -> None:
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "              max_chars: 200",
+                _JUDGE_YAML.format(blocking=str(blocking).lower()),
+            )
+            + "\n        migration_policy:\n"
+            + "          max_critical_regressions: 0\n",
+            encoding="utf-8",
+        )
+
+    def test_keyless_advisory_judge_warns_and_the_run_completes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        self._with_judge(tmp_path, blocking=False)
+        _patch_client(monkeypatch)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert "llm_judge.equivalence skipped: no API key for gpt-4o-mini" in flat
+
+    @pytest.mark.xfail(reason="recommendation lines land in Task 5", strict=True)
+    def test_skipped_judge_is_named_in_the_recommendations(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        self._with_judge(tmp_path, blocking=False)
+        _patch_client(monkeypatch)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert (
+            "llm_judge.equivalence was skipped: no API key for gpt-4o-mini. "
+            "Export OPENAI_API_KEY to enable it."
+        ) in flat
+
+    def test_keyless_blocking_judge_exits_before_any_model_call(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        self._with_judge(tmp_path, blocking=True)
+        _patch_client(monkeypatch)
+        calls: list[str] = []
+
+        async def spy_complete(self: ModelClient, **kwargs: Any) -> CompletionResult:
+            calls.append(str(kwargs["model"]))
+            raise AssertionError("no model call may happen before the key preflight")
+
+        monkeypatch.setattr(ModelClient, "complete", spy_complete)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"])
+
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert (
+            "missing API key for gpt-4o-mini (llm_judge.equivalence); export OPENAI_API_KEY."
+            in flat
+        )
+        assert calls == []
+
+
+class TestFamilySummarySkipped:
+    def test_marks_a_skipped_semantic_and_an_all_skipped_judge(self) -> None:
+        evaluators = EvaluatorsConfig.model_validate(
+            {
+                "semantic": {"embedding_model": "openai/text-embedding-3-small"},
+                "llm_judge": [
+                    {"criterion_name": "e", "criterion_prompt": "p", "judge_model": "gpt-4o-mini"}
+                ],
+            }
+        )
+        from evalshift_cli.evaluators.keys import evaluator_key_gaps
+
+        gaps = evaluator_key_gaps(evaluators, {})
+        assert _evaluator_family_summary(evaluators, gaps) == "semantic (no key) · judge (no key)"
+        assert _evaluator_family_summary(evaluators) == "semantic · judge"
