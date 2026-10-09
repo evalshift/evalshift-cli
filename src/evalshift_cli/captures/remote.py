@@ -22,6 +22,7 @@ read side. They share the key layout and URI grammar, not code.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import tempfile
@@ -38,6 +39,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from evalshift_cli.captures.reader import captures_root, toolsets_root
+from evalshift_cli.captures.store_uri import StoreURI
 
 #: Largest object a fetch will download. Captures are kilobytes; this is a safety stop.
 MAX_OBJECT_BYTES = 32 * 1024 * 1024
@@ -45,6 +47,13 @@ MAX_OBJECT_BYTES = 32 * 1024 * 1024
 _CAPTURE_NAME = re.compile(r"^[A-Za-z0-9_-]+\.json$")
 _TOOLSET_NAME = re.compile(r"^[0-9a-f]{64}\.json$")
 _DURATION = re.compile(r"^(\d+)([mhd])$")
+
+#: Every module a scheme's pip extra provides; ``open_store`` checks all of them.
+_REQUIRED_MODULES: dict[str, tuple[str, ...]] = {
+    "s3": ("boto3",),
+    "gs": ("google.cloud.storage",),
+    "az": ("azure.storage.blob", "azure.identity"),
+}
 
 
 def _is_safe_suite_segment(segment: str) -> bool:
@@ -124,6 +133,46 @@ class RemoteStoreError(Exception):
 
 class RemoteStoreUnavailable(RemoteStoreError):  # noqa: N818 — the planned public name.
     """The client library for the store's scheme is not installed."""
+
+
+def _installed(module: str) -> bool:
+    """Whether ``module`` can be imported, without importing it."""
+    try:
+        return importlib.util.find_spec(module) is not None
+    except ModuleNotFoundError:  # a parent package is missing (no `google` at all)
+        return False
+
+
+def open_store(parsed: StoreURI) -> RemoteStore:
+    """Return the adapter for ``parsed`` without building its client yet.
+
+    Args:
+        parsed: A URI from :func:`evalshift_cli.captures.store_uri.parse_store_uri`.
+
+    Returns:
+        The scheme's adapter; its client is built on the first ``list`` or ``get``.
+
+    Raises:
+        RemoteStoreUnavailable: when a module the scheme's extra provides is not installed.
+            The summary names the first missing module; the hint names the pip extra.
+    """
+    for module in _REQUIRED_MODULES[parsed.scheme]:
+        if not _installed(module):
+            raise RemoteStoreUnavailable(
+                f"{parsed.scheme}:// captures store needs the optional dependency {module!r}",
+                hint=f'install it with: pip install "evalshift[{parsed.extra}]"',
+            )
+    if parsed.scheme == "s3":
+        from evalshift_cli.captures.stores.s3 import S3Store
+
+        return S3Store(parsed.bucket, parsed.prefix)
+    if parsed.scheme == "gs":
+        from evalshift_cli.captures.stores.gcs import GCSStore
+
+        return GCSStore(parsed.bucket, parsed.prefix)
+    from evalshift_cli.captures.stores.azure import AzureBlobStore
+
+    return AzureBlobStore(parsed.bucket, parsed.container or "", parsed.prefix)
 
 
 @dataclass
@@ -345,5 +394,6 @@ __all__ = [
     "RemoteStoreError",
     "RemoteStoreUnavailable",
     "fetch_captures",
+    "open_store",
     "parse_since",
 ]
