@@ -91,8 +91,9 @@ case under the same tool-use constraints the source ran under. See
 [Agent migrations](agents.md#requested-calls-are-the-ground-truth-when-they-were-captured).
 
 Pass the **messages list** (not a bare string) as the model-call input where you
-can: `capture sync` recovers conversation history verbatim from a messages list,
-and only approximates it when all it has is a bare string. See
+can: `capture sync` recovers conversation history, tool calls included, from a
+messages list in any wrapped provider's shape, and only approximates it when all
+it has is a bare string. See
 [Multi-turn conversations](conversations.md).
 
 ## 2. Record captures
@@ -147,7 +148,9 @@ first agent round or every recorded round becomes ground truth; `all` also
 carries the recorded tool results so `run` replays later rounds teacher-forced
 (see [Agent rounds](agents.md#agent-rounds-and-what-a-replay-can-reproduce)).
 `--tag` adds slice tags, `--print` previews the config block without writing,
-`--keep-duplicates` disables dedup.
+`--keep-duplicates` disables dedup. `--repair` rebuilds cases an earlier sync
+built from stringified message blocks (see
+[Multi-turn conversations](conversations.md#repairing-suites-promoted-before-this)).
 
 Full behaviour: [Configuration](configuration.md) and the
 [Capturing from production](https://github.com/evalshift/evalshift-cli/blob/main/DOCS.md#capturing-from-production)
