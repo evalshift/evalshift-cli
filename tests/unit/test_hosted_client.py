@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
-from evalshift_cli.hosted.client import HostedClient, HostedHTTPError
+from evalshift_cli.hosted.client import HostedAccountSuspendedError, HostedClient, HostedHTTPError
 from tests.conftest import FakeHostedClient
 
 
@@ -345,3 +345,41 @@ def test_fake_hosted_client_mirrors_hosted_client() -> None:
         assert inspect.signature(getattr(FakeHostedClient, name)) == inspect.signature(real), (
             f"FakeHostedClient.{name}() no longer matches HostedClient.{name}()"
         )
+
+
+SUSPENDED_MESSAGE = "Your account has been suspended. Contact support@evalshift.dev."
+
+
+def test_account_suspended_maps_to_its_own_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client_with_response(
+        monkeypatch,
+        httpx.Response(
+            403,
+            json={
+                "error": {
+                    "code": "account_suspended",
+                    "message": SUSPENDED_MESSAGE,
+                    "details": {"support_email": "support@evalshift.dev"},
+                }
+            },
+        ),
+    )
+
+    with pytest.raises(HostedAccountSuspendedError) as excinfo:
+        client.me()
+
+    assert isinstance(excinfo.value, HostedHTTPError)
+    assert excinfo.value.status_code == 403
+    assert str(excinfo.value) == SUSPENDED_MESSAGE
+
+
+def test_other_403s_stay_plain_http_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client_with_response(
+        monkeypatch,
+        httpx.Response(403, json={"error": {"code": "forbidden", "message": "nope"}}),
+    )
+
+    with pytest.raises(HostedHTTPError) as excinfo:
+        client.me()
+
+    assert not isinstance(excinfo.value, HostedAccountSuspendedError)

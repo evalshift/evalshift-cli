@@ -37,6 +37,17 @@ class HostedHTTPError(HostedError):
         super().__init__(message)
 
 
+ACCOUNT_SUSPENDED = "account_suspended"
+
+
+class HostedAccountSuspendedError(HostedHTTPError):
+    """The account behind the token is suspended (HTTP 403, code ``account_suspended``).
+
+    The message is the server's sentence and names who to contact, so callers print it as-is.
+    It is not an expired token: signing in again cannot help.
+    """
+
+
 class HostedClient:
     """Typed-ish wrapper around the hosted API endpoints used by the CLI."""
 
@@ -163,7 +174,10 @@ class HostedClient:
             ) from exc
         if response.status_code >= 400:
             code, message, details = _extract_error(response)
-            raise HostedHTTPError(response.status_code, message, code=code, details=details)
+            error_type = (
+                HostedAccountSuspendedError if code == ACCOUNT_SUSPENDED else HostedHTTPError
+            )
+            raise error_type(response.status_code, message, code=code, details=details)
         if not response.content:
             return None
         return response.json()

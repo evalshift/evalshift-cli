@@ -25,6 +25,7 @@ from evalshift_cli.hosted.bundle import (
     validate_bundle,
 )
 from evalshift_cli.hosted.client import (
+    HostedAccountSuspendedError,
     HostedClient,
     HostedError,
     HostedHTTPError,
@@ -515,6 +516,9 @@ def _auto_create_project(client: HostedClient, *, project_slug: str) -> None:
         raise PushError(f"invalid project slug {project_slug!r}; expected org/project") from exc
     try:
         projects = client.list_projects(org_slug)
+    except HostedAccountSuspendedError as exc:
+        # The server's sentence already says what to do; an access hint would mislead.
+        raise PushError(str(exc)) from exc
     except HostedHTTPError as exc:
         raise PushError(
             f"cannot auto-create {project_slug!r} at {client.host}: "
@@ -528,6 +532,9 @@ def _auto_create_project(client: HostedClient, *, project_slug: str) -> None:
         return
     try:
         client.create_project(org_slug, slug=project, name=_name_from_slug(project))
+    except HostedAccountSuspendedError as exc:
+        # The server's sentence already says what to do; an access hint would mislead.
+        raise PushError(str(exc)) from exc
     except HostedHTTPError as exc:
         if exc.status_code == _PAYMENT_REQUIRED:
             # An expired org is read-only: creating a project is refused with the same 402 a
