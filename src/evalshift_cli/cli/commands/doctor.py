@@ -8,8 +8,7 @@ Exit codes:
     * **0** — every check passed, or any failures were merely informational
       (e.g. an unset API key, or no config in this directory yet).
     * **1** — at least one **hard** failure was reported (currently: an
-      ``evalshift.yaml`` exists in the cwd but doesn't validate, or its
-      ``captures.store`` needs a client extra that isn't installed).
+      ``evalshift.yaml`` exists in the cwd but doesn't validate).
 
 Soft failures (missing API keys, no config yet) are surfaced visually with
 a yellow ``✗`` so users see them, but they never fail the command — this
@@ -250,12 +249,14 @@ def _config_check(cwd: Path) -> CheckResult:
 
 
 def _captures_store_check(cwd: Path) -> list[CheckResult]:
-    """One row for ``captures.store`` when the config names one: extra installed, bucket listable.
+    """One row for ``captures.store`` when the config names one: library installed, bucket listable.
 
     No config, an invalid config (the ``evalshift.yaml`` row already reports that) or no
-    ``captures.store`` produce no row. A missing client extra is a ``fail`` -- it is a local,
-    deterministic problem with a one-line fix. A listing that raises is a ``warn``: doctor runs
-    on laptops without cloud credentials, and that must not fail the command.
+    ``captures.store`` produce no row. A missing client library is a ``warn`` naming the package
+    to install: a run on a committed suite never touches the bucket (CI installs the bare
+    package, and ``compare`` exits on any doctor failure), and the capture commands that do
+    need it exit 1 themselves. A listing that raises is a ``warn`` too: doctor runs on laptops
+    without cloud credentials, and that must not fail the command.
     """
     cfg_path = cwd / CONFIG_FILENAME
     if not cfg_path.exists():
@@ -271,7 +272,7 @@ def _captures_store_check(cwd: Path) -> list[CheckResult]:
         store = open_store(parse_store_uri(uri))
     except RemoteStoreError as exc:
         detail = exc.summary if exc.hint is None else f"{exc.summary} — {exc.hint}"
-        return [CheckResult(name="captures.store", status="fail", detail=detail)]
+        return [CheckResult(name="captures.store", status="warn", detail=detail)]
     try:
         next(iter(store.list("captures/")), None)
     except Exception as exc:
@@ -528,8 +529,8 @@ def source_conformance_check(records: Sequence[EvalRecord]) -> CheckResult | Non
 def render_results(results: list[CheckResult], console: Console) -> None:
     """Render the check results as a Rich table.
 
-    Names and details are plain text, escaped so a bracketed value -- an install hint such as
-    ``pip install "evalshift[gcs]"`` or a user-written store URI -- is shown, not parsed as markup.
+    Names and details are plain text, escaped so an install hint such as ``pip install google-cloud-storage``
+    or a user-written store URI is shown, not parsed as markup.
     """
     table = Table(show_header=False, box=None, padding=(0, 1))
     table.add_column("status", no_wrap=True)

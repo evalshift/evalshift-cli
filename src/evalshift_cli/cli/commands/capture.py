@@ -242,8 +242,8 @@ def _configured_store(config_path: Path, *, console: Console, strict: bool) -> R
     one line, no traceback) when ``strict`` (``capture fetch`` has nothing else to do). Otherwise ``sync`` and ``list`` keep working on
     the local mirror the way they did before ``captures.store`` existed: an invalid or
     unreadable file is skipped, with a warning only when it has a top-level ``captures`` key (a
-    config that never asked for a store must not change their output). A missing client extra
-    is always a hard error: the user asked for a store it cannot reach.
+    config that never asked for a store must not change their output). A missing client library
+    is always a hard error here: the user asked for a store this command cannot read.
     """
     if not config_path.exists():
         return None

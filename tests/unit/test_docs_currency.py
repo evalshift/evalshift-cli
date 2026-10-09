@@ -253,3 +253,28 @@ def test_scaffolded_agent_guide_names_every_capture_subcommand(name: str) -> Non
     )
 
     assert f"`{name}`" in row, f"EVALSHIFT.md's capture row does not name `{name}`"
+
+
+#: Install-story phrases retired on 2026-10-09: every message and doc names the package to
+#: install (`pip install boto3`), never a pip extra, and `doctor` no longer fails over it.
+RETIRED_INSTALL_TERMS: tuple[str, ...] = (
+    "evalshift[s3]",
+    "evalshift[gcs]",
+    "evalshift[azure]",
+    "client extra",
+    "optional dependency",
+    "whose extra is missing",
+)
+
+_INSTALL_COPY_FILES: tuple[str, ...] = (
+    *PROSE_FILES,
+    "docs/sdk.md",
+    "docs/getting-started.md",
+    "docs/agents.md",
+)
+
+
+@pytest.mark.parametrize("term", RETIRED_INSTALL_TERMS)
+def test_copy_names_packages_not_extras(term: str) -> None:
+    offenders = [name for name in _INSTALL_COPY_FILES if term in _whitespace_normalized(name)]
+    assert offenders == [], f"{term!r} still appears in {offenders}"

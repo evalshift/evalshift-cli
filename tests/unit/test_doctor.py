@@ -807,18 +807,26 @@ class TestCapturesStoreCheck:
         assert row.status == "ok"
         assert "s3://acme-evals/p" in row.detail
 
-    def test_missing_extra_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_missing_library_warns_without_failing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A run on a committed suite never touches the bucket (the GitHub Action installs the
+        # bare package), so a missing client library must not fail doctor -- or compare, which
+        # exits on any doctor failure. The capture commands that do need it exit 1 themselves.
         self._config(tmp_path, "gs://b/p")
 
         def _raise(parsed: object) -> object:
             raise RemoteStoreUnavailable(
-                "gs:// needs google-cloud-storage", hint='pip install "evalshift[gcs]"'
+                "gs:// captures store needs google-cloud-storage, which is not installed",
+                hint="install it: pip install google-cloud-storage",
             )
 
         monkeypatch.setattr(doctor_module, "open_store", _raise)
-        row = _by_name(run_checks(cwd=tmp_path, env=_empty_env()), "captures.store")
-        assert row.status == "fail"
-        assert 'pip install "evalshift[gcs]"' in row.detail
+        results = run_checks(cwd=tmp_path, env=_empty_env())
+        row = _by_name(results, "captures.store")
+        assert row.status == "warn"
+        assert "pip install google-cloud-storage" in row.detail
+        assert not any(r.status == "fail" for r in results)
 
     def test_unreachable_store_warns(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from tests.unit.fake_remote_store import FakeRemoteStore
@@ -852,5 +860,5 @@ class TestCapturesStoreCheck:
         monkeypatch.setattr(doctor_module, "open_store", _raise)
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["doctor"], env={"COLUMNS": "200"})
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert 'pip install "evalshift[gcs]"' in result.stdout

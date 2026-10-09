@@ -1041,9 +1041,9 @@ Accepted URI forms — the same grammar the SDK uses:
 
 | Form | Store | Install | Credentials |
 | --- | --- | --- | --- |
-| `s3://<bucket>/<prefix>` | Amazon S3; MinIO, Cloudflare R2, Backblaze B2 via boto3's `AWS_ENDPOINT_URL` | `pip install "evalshift[s3]"` | IAM role in CI (OIDC), `aws sso login` locally |
-| `gs://<bucket>/<prefix>` | Google Cloud Storage | `pip install "evalshift[gcs]"` | Workload Identity in CI, `gcloud auth application-default login` locally |
-| `az://<account>/<container>/<prefix>` | Azure Blob Storage | `pip install "evalshift[azure]"` | Managed Identity / federated credential in CI, `az login` locally |
+| `s3://<bucket>/<prefix>` | Amazon S3; MinIO, Cloudflare R2, Backblaze B2 via boto3's `AWS_ENDPOINT_URL` | `pip install boto3` | IAM role in CI (OIDC), `aws sso login` locally |
+| `gs://<bucket>/<prefix>` | Google Cloud Storage | `pip install google-cloud-storage` | Workload Identity in CI, `gcloud auth application-default login` locally |
+| `az://<account>/<container>/<prefix>` | Azure Blob Storage | `pip install azure-storage-blob azure-identity` | Managed Identity / federated credential in CI, `az login` locally |
 
 `<prefix>` is optional. Credentials never go in the URI: a value containing `@` or `?` fails
 to load, naming the accepted forms. A rejected value is never echoed back (it may be a pasted

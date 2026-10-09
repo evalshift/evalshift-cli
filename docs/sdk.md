@@ -121,9 +121,9 @@ lifecycle rule; `EVALSHIFT_MAX_CAPTURES` applies to local disk only.
 
 Run the CLI from the directory holding `.evalshift/` (or set `EVALSHIFT_DIR`).
 If the captures live in a bucket, name it once in `evalshift.yaml`
-(`captures: {store: s3://acme-evals/support-agent}`) and install `evalshift[s3]` (or `[gcs]` /
-`[azure]`); `list` and `sync` then fetch new captures first. `evalshift capture fetch` does
-only that step.
+(`captures: {store: s3://acme-evals/support-agent}`) and install the provider's client library
+(`pip install boto3`, `google-cloud-storage` or `azure-storage-blob azure-identity`); `list` and
+`sync` then fetch new captures first. `evalshift capture fetch` does only that step.
 
 ```bash
 evalshift capture list                  # what was recorded (--json for machine output)

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `doctor`'s `captures.store` row no longer fails the command — and with it `compare` and
+  every GitHub Action run — when the store's client library is not installed; it warns, naming
+  the package to install. A run on a committed suite never reads the bucket; `capture fetch`,
+  `list` and `sync`, which do, still exit 1.
+
+### Changed
+
+- Every store message names the package to install instead of a pip extra: `pip install boto3`,
+  `google-cloud-storage`, `azure-storage-blob azure-identity` (both Azure packages in one
+  command). The `[s3]` / `[gcs]` / `[azure]` extras still exist but are no longer documented.
+
 ## [1.3.0] - 2026-10-09
 
 ### Added

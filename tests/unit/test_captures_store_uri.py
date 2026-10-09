@@ -104,3 +104,9 @@ def test_grammar_rejection_messages() -> None:
     assert str(no_container.value) == (
         "Azure store URI names no container; expected az://<account>/<container>/<prefix>"
     )
+
+
+def test_packages_names_every_library_the_scheme_needs() -> None:
+    assert parse_store_uri("s3://b/p").packages == "boto3"
+    assert parse_store_uri("gs://b/p").packages == "google-cloud-storage"
+    assert parse_store_uri("az://a/c/p").packages == "azure-storage-blob azure-identity"
