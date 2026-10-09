@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `capture sync --repair` rebuilds the `inputs` and `history` of cases an
+  earlier sync built from stringified message blocks, keeping every other
+  field and the case's input variable name, and re-downloads exactly the
+  captures it needs from `captures.store` even though they are promoted.
+  `capture sync` and `validate` warn when a suite still holds such cases;
+  without `--repair`, sync leaves them untouched. A repaired case that now
+  duplicates another promoted case is named
+  (`repaired case <a> duplicates <b>`) and nothing is deleted.
+
 ### Fixed
 
 - `capture sync` and `capture promote` now read every wrapped provider's own
@@ -22,17 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server-tool result or an unknown block type is skipped (`capture promote`
   refuses it) instead of being promoted with that content stringified or lost;
   `--allow-errored` does not apply.
-
-### Added
-
-- `capture sync --repair` rebuilds the `inputs` and `history` of cases an
-  earlier sync built from stringified message blocks, keeping every other
-  field and the case's input variable name, and re-downloads exactly the
-  captures it needs from `captures.store` even though they are promoted.
-  `capture sync` and `validate` warn when a suite still holds such cases;
-  without `--repair`, sync leaves them untouched. A repaired case that now
-  duplicates another promoted case is named
-  (`repaired case <a> duplicates <b>`) and nothing is deleted.
 
 ## [1.3.0] - 2026-10-09
 

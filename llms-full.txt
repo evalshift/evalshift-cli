@@ -343,14 +343,19 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   --repair rebuilds the inputs + history (only) of promoted cases an earlier sync built from
   stringified message blocks (or left with empty inputs), re-fetching their captures from
   captures.store past the promoted-id and --since skips (plus same-conversation siblings).
-  Without --repair, sync (--force included) leaves those cases alone ("left N case(s) for
-  --repair") and warns per suite holding stringified blocks; `validate` warns too. A candidate
-  whose capture is gone: "can't repair N case(s)"; one whose rebuild is now blocked (e.g. an
-  image): "can't repair <case>: <blocked message>", left as is. A case's single input key is
-  kept (promoted with --input-var question -> stays question), every other field too; other
-  promoted cases are untouched unless --force is also given. --repair is a FULL sync: it also
-  promotes new captures exactly like a plain sync, so pass the flags you normally sync with
-  (--input-var, --tag, --strict-args, ...).
+  Without --repair, sync (--force included) leaves every stringified case alone, and every
+  empty-inputs case a rebuild would change ("left N case(s) for --repair"), and warns per suite
+  holding stringified blocks; `validate` warns too. A case whose capture genuinely has no
+  inputs rebuilds unchanged, so it is NOT a repair: sync treats it as an ordinary promoted
+  case and --force refreshes it. A candidate whose capture is gone: "can't repair N case(s)".
+  A stringified case whose rebuild is now blocked (e.g. an image): "can't repair <case>:
+  <blocked message>", left as is; an empty-inputs case whose rebuild is blocked is left as is
+  too but gets the ordinary "skipped <capture>: ..." line and skip count. A case's single
+  input key is kept (promoted with --input-var question -> stays question; a case left with
+  empty inputs takes this run's --input-var), every other field too; other promoted cases are
+  untouched unless --force is also given. --repair is a FULL sync: it also promotes new
+  captures exactly like a plain sync, so pass the flags you normally sync with (--input-var,
+  --tag, --strict-args, ...).
   A repaired case whose replayed content now equals another promoted case's warns
   "<suite>: repaired case <a> duplicates <b> — delete one (duplicate examples inflate n)" and
   deletes nothing: delete one yourself.

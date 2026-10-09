@@ -147,19 +147,26 @@ LangChain turns could come out with empty `inputs`. `capture sync` and
 left with empty `inputs`, from their captures. It replaces only each affected
 case's `inputs` and `history` — the case's name, tags, `expected_*` and any
 other hand edits stay, and so does the name of its single input variable (a
-case promoted with `--input-var question` stays `question`) — and leaves every
-other promoted case alone unless you also pass `--force`. `--repair` is a full
+case promoted with `--input-var question` stays `question`; a case left with
+empty `inputs` takes this run's `--input-var`) — and leaves every other
+promoted case alone unless you also pass `--force`. `--repair` is a full
 sync: it also promotes any new captures, exactly like a plain sync, so run it
 with the flags you normally sync with (`--input-var`, `--tag`, `--strict-args`,
-…). With `captures.store` set it re-downloads exactly the captures it needs,
-even though they are promoted and even past `--since`, plus the other turns of
-the same conversation when a history has to be reconstructed. A case whose
-capture is gone from both `.evalshift/captures/` and the store is named
-(`can't repair N case(s)`): delete it or re-capture. A case whose rebuild is
-now refused — its turn carries an image, say — is named too
-(`can't repair <case>: …`) and left as it is. Without `--repair`, sync —
-`--force` included — leaves these cases untouched
-(`left N case(s) for --repair`).
+…). With `captures.store` set it re-downloads the capture behind each of those
+cases, plus every other promoted turn of the same conversation, even though
+they are promoted and even past `--since`. A case whose capture is gone from
+both `.evalshift/captures/` and the store is named (`can't repair N case(s)`):
+delete it or re-capture. A case with stringified blocks whose rebuild is now
+refused — its turn carries an image, say — is named too
+(`can't repair <case>: …`) and left as it is; a case left with empty `inputs`
+whose rebuild is refused is left as it is too, but reported like any other
+refused capture (`skipped <capture>: …`, counted in the summary).
+
+Without `--repair`, sync — `--force` included — leaves every case with
+stringified blocks untouched, and every case left with empty `inputs` that a
+rebuild would change (`left N case(s) for --repair`). A case whose capture
+genuinely has no inputs rebuilds unchanged, so it is not a repair: sync treats
+it like any other promoted case, and `--force` refreshes it.
 
 If a repaired case now replays the same content as another promoted case in
 its suite — a plain sync from a fresh clone may already have promoted that
