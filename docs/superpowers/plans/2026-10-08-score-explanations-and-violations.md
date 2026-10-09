@@ -1,0 +1,1373 @@
+# Score Explanations and Trace-Rule Violations on the Wire — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** A pushed run carries, per evaluator score, the evaluator's one-line explanation and, for `trace_invariants` rows, the rules each side broke, so the hosted report and share links can show *which* rule failed on *which* example instead of only a count.
+
+**Architecture:** Three repos, deployed in order. The server's bundle schema gains two optional fields on `ExampleScore` (`explanation`, `violations`), stored in two new nullable columns on `run_example_scores` and returned on the example-detail route both surfaces already use. The CLI's bundle builder stops dropping those two fields from its local `EvalRecord`s and re-vendors the server's exported schema. The client types the fields as optional and renders a per-evaluator "Scores" block in the example detail panel.
+
+**Tech Stack:** FastAPI + Pydantic v2 + Alembic + raw SQL over SQLAlchemy `text()` (Postgres in prod, in-memory SQLite in tests); Python 3.11+ CLI with Pydantic records and a vendored JSON Schema; React 19 + TypeScript + Vitest/Testing Library.
+
+**Spec:** No separate spec file. The design was agreed in chat on 2026-10-08 and is restated in **Design** below; executors read this document only.
+
+## Design
+
+**What is sent today.** `evalshift push` writes one score row per `(evaluator_name, kind)` per example with six fields: `evaluator_name`, `kind`, `source_score`, `target_score`, `delta`, `error` (`evalshift-cli/src/evalshift_cli/hosted/bundle.py`, `_build_examples`). The local `EvalRecord` also has `explanation` (one line, e.g. `target broke 1 trace rule(s): no-delete`) and `metadata`; for a `trace_invariants` row the metadata holds `rules_checked`, `source_violations`, `target_violations`, `owner` and `failure_categories`. The bundle drops both. The traces the violations were computed from, and the rules themselves (inside `evaluator_config`), already upload, so sending the verdicts adds no information the server does not already hold.
+
+**What changes.** Each score row gains:
+
+- `explanation: str | None` — the record's explanation, `null` when the evaluator wrote none. Sent for every evaluator, not only trace rules: the other evaluators' explanations are a few words (`target won`, `tie`, the cosine figure), the code path is one line, and the web panel can show them.
+- `violations: {source: Violation[], target: Violation[]} | None` — only on `kind == "trace_invariants"` rows that did not error; `null` on every other row. A `Violation` is exactly the CLI's `Violation.to_dict()`: `rule_id`, `rule_type`, `tool`, `round_index`, `detail`, plus the optional `sample` ordinal a repeated-sampling run adds. `rules_checked`, `owner` and `failure_categories` stay local: the first two are in the uploaded `evaluator_config`, the third in `decision`.
+
+**Backwards compatibility.** Both fields are optional with `None` defaults on the server, so bundles from older CLIs keep finalizing. The client types them optional so a run finalized before the server deploy renders exactly as today.
+
+**Deploy order (hard).** Server first: the server's bundle models are `extra="forbid"`, so a CLI that sends the new keys to the old server is rejected at finalize. CLI `build_bundle` validates against its vendored copy of the server schema before writing, so the CLI change ships *with* the re-vendored schema. The client can deploy any time after the server; its docs sync (`npm run sync:llms`) runs after the CLI docs merge.
+
+**Branches.** `evalshift-server`: `feat/score-violations`. `evalshift-cli`: `feat/push-score-violations`. `evalshift-client`: `feat/example-score-details`. Each repo is its own git repository under `/home/lukas/repos/evalshift/`; always run git with `-C <repo>` or from inside that repo. Create each branch from that repo's current `main`.
+
+## Global Constraints
+
+- Server gate before every commit: `make lint && make test` (ruff check, ruff format --check, mypy strict on `app`, pytest on in-memory SQLite). Single test: `uv run pytest tests/<file>.py::<name> -q`.
+- CLI gate before every commit: `ruff check . && ruff format --check . && mypy --strict src/evalshift_cli && pytest -m "not integration"` from the CLI repo root.
+- Client gate before every commit: `npm run lint && npm run typecheck && npm run build && npm audit --audit-level=high`, plus `npx vitest run`. Lint *errors* fail CI; `react-refresh/only-export-components` warnings are known.
+- Conventional Commits in all three repos. End every commit message with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+- Server bundle models stay `extra="forbid"`; new models follow suit.
+- The server's `schemas/bundle_manifest.schema.json` is generated by `make export-schemas` and committed; the CLI's `src/evalshift_cli/hosted/bundle_manifest.schema.json` is a byte-for-byte copy of it. Never hand-edit either.
+- Client: all backend calls stay in `src/lib/api.ts`; new UI composes existing primitives and theme variables (`--fail`, `--pass`, `--dim`, `--line-subtle`, `--panel`); no new styling convention.
+- Client docs: `public/cli-llms-full.txt` is owned by the CLI repo; update `evalshift-cli/llms-full.txt` and run `npm run sync:llms` in the client, never edit the copy.
+
+## Review Focus
+
+1. **A bundle from a CLI that predates the fields** (no `explanation`, no `violations` keys) must finalize and read back with both fields `null`. Pinned by Task 1 (`test_score_without_the_new_fields_still_validates`) and Task 2 (`test_example_detail_returns_null_explanation_and_violations_for_old_rows`).
+2. **A trace-rule row whose target kept every rule while the source broke one** (`violations.target == []`, `violations.source != []`) must read as a clean target, not as an empty list. Pinned by Task 6 (`says the target kept every rule when only the source broke one`).
+3. **Violation entries carrying keys outside the contract** (a future CLI adds a key to `Violation.to_dict()`) must not be sent, or the server's `extra="forbid"` rejects the whole push after upload. Pinned by Task 4 (`test_violation_entries_are_filtered_to_the_server_contract`).
+4. **Repeated-sampling runs** attach a `sample` ordinal to each violation. The server must accept it and the client must show it. Pinned by Task 1 (`test_violation_accepts_a_sample_ordinal`) and Task 6 (`names the sample on a repeated-sampling violation`).
+5. **An errored trace-rule row** (evaluator measurement broke; `error` set, metadata empty) must not be presented as "target kept every rule". Pinned by Task 4 (`test_an_errored_trace_rule_row_carries_no_violations`) and Task 6 (`shows the error on an errored row and no rule verdict`).
+
+---
+
+## Part A — evalshift-server (deploy first)
+
+### Task 1: Bundle schema accepts `explanation` and `violations`
+
+**Files:**
+- Modify: `app/runs/bundle.py` (class `ExampleScore`, currently at lines 117–135)
+- Create: `tests/test_phase29_score_schema.py`
+- Regenerate: `schemas/bundle_manifest.schema.json` (via `make export-schemas`)
+
+**Interfaces:**
+- Produces: `app.runs.bundle.ScoreViolation(rule_id: str, rule_type: str, tool: str, round_index: int, detail: str, sample: int | None = None)`; `app.runs.bundle.ScoreViolations(source: list[ScoreViolation] = [], target: list[ScoreViolation] = [])`; `ExampleScore.explanation: str | None = None`; `ExampleScore.violations: ScoreViolations | None = None`. Task 2 reads these off a validated `Bundle`.
+
+- [ ] **Step 1: Create the branch**
+
+```bash
+git -C /home/lukas/repos/evalshift/evalshift-server checkout main
+git -C /home/lukas/repos/evalshift/evalshift-server pull
+git -C /home/lukas/repos/evalshift/evalshift-server checkout -b feat/score-violations
+```
+
+- [ ] **Step 2: Write the failing schema tests**
+
+Create `tests/test_phase29_score_schema.py`:
+
+```python
+"""Phase 29: score rows may carry the evaluator's explanation and, for trace
+rules, the rules each side broke.
+
+Pure model tests — no database. The storage round trip lives in
+``test_phase_c_detail_writer.py`` and the read routes in
+``test_phase_c_detail_api.py`` / ``test_phase_c_share_detail.py``.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from pydantic import ValidationError
+
+from app.runs.bundle import ExampleScore
+
+VIOLATION: dict[str, Any] = {
+    "rule_id": "no-delete",
+    "rule_type": "forbidden",
+    "tool": "delete_file",
+    "round_index": 0,
+    "detail": "delete_file was called",
+}
+
+
+def _score(**overrides: Any) -> ExampleScore:
+    base: dict[str, Any] = {
+        "evaluator_name": "contracts",
+        "kind": "trace_invariants",
+        "source_score": 1.0,
+        "target_score": 0.5,
+        "delta": -0.5,
+        "error": None,
+    }
+    return ExampleScore.model_validate({**base, **overrides})
+
+
+def test_score_accepts_explanation_and_violations() -> None:
+    score = _score(
+        explanation="target broke 1 trace rule(s): no-delete",
+        violations={"source": [], "target": [VIOLATION]},
+    )
+    assert score.explanation == "target broke 1 trace rule(s): no-delete"
+    assert score.violations is not None
+    assert score.violations.source == []
+    assert score.violations.target[0].rule_id == "no-delete"
+    assert score.violations.target[0].round_index == 0
+    assert score.violations.target[0].sample is None
+
+
+def test_score_without_the_new_fields_still_validates() -> None:
+    """A bundle from a CLI predating the fields must finalize unchanged."""
+    score = _score()
+    assert score.explanation is None
+    assert score.violations is None
+
+
+def test_violation_accepts_a_sample_ordinal() -> None:
+    """``samples_per_example > 1`` tags each violation with the sample that broke the rule."""
+    score = _score(violations={"source": [], "target": [{**VIOLATION, "sample": 2}]})
+    assert score.violations is not None
+    assert score.violations.target[0].sample == 2
+
+
+def test_violation_rejects_unknown_keys() -> None:
+    """Same contract as every bundle model: an unknown key is a 422, not silently dropped."""
+    with pytest.raises(ValidationError):
+        _score(violations={"source": [], "target": [{**VIOLATION, "owner": "payments"}]})
+
+
+def test_violations_rejects_unknown_sides() -> None:
+    with pytest.raises(ValidationError):
+        _score(violations={"source": [], "target": [], "both": []})
+
+
+def test_violation_requires_a_rule_id() -> None:
+    with pytest.raises(ValidationError):
+        _score(violations={"source": [], "target": [{**VIOLATION, "rule_id": ""}]})
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `cd /home/lukas/repos/evalshift/evalshift-server && uv run pytest tests/test_phase29_score_schema.py -q`
+Expected: the first and third tests FAIL with a `ValidationError` mentioning `extra_forbidden` for `explanation` / `violations`; the rejection tests may already pass (they reject because the key itself is unknown). That is fine: they pin the contract once the fields exist.
+
+- [ ] **Step 4: Add the models and fields**
+
+In `app/runs/bundle.py`, insert the two models directly above `class ExampleScore(BaseModel):` and the two fields at the end of `ExampleScore`:
+
+```python
+class ScoreViolation(BaseModel):
+    """One trace rule one side broke, attributed to one call or one missing tool.
+
+    Mirrors the CLI's ``evaluators.invariants.Violation.to_dict()`` field for
+    field. ``sample`` is the zero-based sample ordinal on a
+    ``samples_per_example > 1`` run and absent otherwise.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule_id: str = Field(min_length=1)
+    rule_type: str
+    tool: str
+    round_index: int = Field(ge=0)
+    detail: str
+    sample: int | None = Field(default=None, ge=0)
+
+
+class ScoreViolations(BaseModel):
+    """Both sides' broken rules for one ``trace_invariants`` score row.
+
+    Carried as two lists rather than one tagged list so a reader can tell "the
+    source broke this rule too" by rule id without a join. A rule both sides
+    broke still fails the target — the CLI's policy counts it — which is the
+    reason the source list is worth sending at all.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: list[ScoreViolation] = Field(default_factory=list)
+    target: list[ScoreViolation] = Field(default_factory=list)
+```
+
+```python
+    # Added 2026-10-08. Both optional with ``None`` defaults: bundles from CLIs
+    # predating them must keep finalizing, and the columns they land in are
+    # nullable for the same reason.
+    #: The evaluator's one-line verdict (``target won``, ``target broke 1 trace
+    #: rule(s): no-delete``). ``None`` when the evaluator wrote none.
+    explanation: str | None = None
+    #: Only a ``trace_invariants`` row that did not error carries one: which
+    #: rules each side broke. ``None`` on every other row.
+    violations: ScoreViolations | None = None
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `cd /home/lukas/repos/evalshift/evalshift-server && uv run pytest tests/test_phase29_score_schema.py -q`
+Expected: 6 passed.
+
+- [ ] **Step 6: Regenerate the exported schema and run the parity guard**
+
+```bash
+cd /home/lukas/repos/evalshift/evalshift-server && make export-schemas
+git -C /home/lukas/repos/evalshift/evalshift-server diff --stat schemas/bundle_manifest.schema.json
+uv run pytest tests/test_bundle_schema_parity.py tests/test_phase_c_bundle_contract.py -q
+```
+
+Expected: the diff adds `ScoreViolation`, `ScoreViolations` definitions and the two new properties under `ExampleScore`; both test files pass.
+
+- [ ] **Step 7: Run the gate and commit**
+
+```bash
+cd /home/lukas/repos/evalshift/evalshift-server && make lint && make test
+git -C /home/lukas/repos/evalshift/evalshift-server add app/runs/bundle.py tests/test_phase29_score_schema.py schemas/bundle_manifest.schema.json
+git -C /home/lukas/repos/evalshift/evalshift-server commit -m "feat(bundle): accept score explanations and trace-rule violations" -m "Each example score may now carry the evaluator's one-line explanation and, for trace_invariants rows, the rules each side broke (rule id, type, tool, round, detail, sample). Both optional with null defaults so bundles from older CLIs still finalize. The traces and the rules these are derived from already upload; this sends the verdicts the local report has always shown." -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 2: Store the fields and return them from the example-detail routes
+
+**Files:**
+- Create: `migrations/versions/202610081200_phase29_score_explanations.py`
+- Modify: `tests/conftest.py` (the `CREATE TABLE run_example_scores` statement at ~line 1623)
+- Modify: `app/runs/detail_writer.py` (the score `INSERT` at ~lines 92–106)
+- Modify: `app/runs/detail_service.py` (`_load_example_scores`, ~lines 340–362)
+- Modify: `app/runs/schemas.py` (`ExampleScoreOut`, ~line 319)
+- Test: `tests/test_phase_c_detail_writer.py`, `tests/test_phase_c_detail_api.py`, `tests/test_phase_c_share_detail.py`
+
+**Interfaces:**
+- Consumes: `Bundle` with `ExampleScore.explanation` / `.violations` from Task 1.
+- Produces: `app.runs.schemas.ScoreViolationOut`, `ScoreViolationsOut`, and `ExampleScoreOut.explanation: str | None`, `ExampleScoreOut.violations: ScoreViolationsOut | None`, served by `GET /runs/{id}/examples/{prompt_id}/{example_id}` and `GET /share/{token}/examples/{prompt_id}/{example_id}` (the share route reuses `RunExampleDetail`, so it changes with no code of its own). The client (Task 6) types these.
+
+- [ ] **Step 1: Write the failing writer test**
+
+Append to `tests/test_phase_c_detail_writer.py`:
+
+```python
+TRACE_RULE_SCORE: dict[str, Any] = {
+    "evaluator_name": "contracts",
+    "kind": "trace_invariants",
+    "source_score": 1.0,
+    "target_score": 0.5,
+    "delta": -0.5,
+    "error": None,
+    "explanation": "target broke 1 trace rule(s): no-delete",
+    "violations": {
+        "source": [],
+        "target": [
+            {
+                "rule_id": "no-delete",
+                "rule_type": "forbidden",
+                "tool": "delete_file",
+                "round_index": 0,
+                "detail": "delete_file was called",
+                "sample": None,
+            }
+        ],
+    },
+}
+
+
+def _with_trace_rule_score(payload: dict[str, Any]) -> dict[str, Any]:
+    """The shared payload with one trace-rule score appended to ``cap_abc``.
+
+    Appended, not substituted: the other tests pin ``cap_abc``'s two rows and
+    ``cap_def``'s *absence* of rows (the LEFT JOIN case), so neither moves.
+    """
+    payload["examples"][0]["scores"].append(dict(TRACE_RULE_SCORE))
+    return payload
+
+
+async def test_score_explanation_and_violations_round_trip(
+    db_session: AsyncSession, seeded_run_id: str
+) -> None:
+    bundle = Bundle.model_validate(_with_trace_rule_score(detail_bundle_payload()))
+    await write_run_detail(db_session, run_id=seeded_run_id, bundle=bundle)
+
+    result = await db_session.execute(
+        text(
+            """
+            SELECT s.evaluator_name, s.explanation, s.violations
+            FROM run_example_scores s
+            JOIN run_examples e ON e.id = s.run_example_id
+            WHERE e.run_id = :run_id AND e.example_id = 'cap_abc'
+            ORDER BY s.evaluator_name
+            """
+        ),
+        {"run_id": seeded_run_id},
+    )
+    rows = {row[0]: (row[1], row[2]) for row in result}
+    assert rows["contracts"][0] == "target broke 1 trace rule(s): no-delete"
+    stored = rows["contracts"][1]
+    # A JSON string on SQLite; Postgres would hand JSONB back decoded.
+    parsed = json.loads(stored) if isinstance(stored, str) else stored
+    assert parsed == TRACE_RULE_SCORE["violations"]
+    # Rows that did not send the fields store nulls, not empty strings.
+    assert rows["semantic.cosine"] == (None, None)
+```
+
+Add `import json` to the test module's imports if it is not already there, and confirm `from typing import Any` and `from sqlalchemy import text` are present (they are used by the existing tests).
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `cd /home/lukas/repos/evalshift/evalshift-server && uv run pytest tests/test_phase_c_detail_writer.py::test_score_explanation_and_violations_round_trip -q`
+Expected: FAIL with an SQLite `OperationalError: no such column: s.explanation`.
+
+- [ ] **Step 3: Add the migration**
+
+Create `migrations/versions/202610081200_phase29_score_explanations.py`:
+
+```python
+"""phase29: score rows carry the evaluator's explanation and the trace rules broken
+
+The hosted report could say *how many* trace rules the target broke (the
+``max_invariant_violations`` budget) but never *which* rule on *which*
+example — the CLI dropped the record's ``explanation`` and the
+``source_violations`` / ``target_violations`` metadata from the bundle. Both
+now arrive on ``examples[].scores[]`` and land here.
+
+Two nullable columns, no backfill: rows written before this migration, and
+rows from CLIs that predate the fields, read as ``NULL`` and the example
+detail route returns ``null`` for them. ``violations`` is JSONB holding
+``{"source": [...], "target": [...]}`` exactly as validated by
+``app.runs.bundle.ScoreViolations``; nothing queries inside it, so no index.
+
+Revision ID: 202610081200
+Revises: 202610071800
+Create Date: 2026-10-08 12:00:00.000000
+"""
+
+from collections.abc import Sequence
+
+from alembic import op
+
+revision: str = "202610081200"
+down_revision: str | None = "202610071800"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+
+def upgrade() -> None:
+    op.execute("ALTER TABLE run_example_scores ADD COLUMN explanation TEXT NULL")
+    op.execute("ALTER TABLE run_example_scores ADD COLUMN violations JSONB NULL")
+
+
+def downgrade() -> None:
+    op.execute("ALTER TABLE run_example_scores DROP COLUMN violations")
+    op.execute("ALTER TABLE run_example_scores DROP COLUMN explanation")
+```
+
+Then mirror it in the SQLite test schema. In `tests/conftest.py`, inside the `CREATE TABLE run_example_scores (...)` statement (~line 1623), change
+
+```sql
+                    error TEXT NULL,
+                    UNIQUE (run_example_id, evaluator_name, kind)
+```
+
+to
+
+```sql
+                    error TEXT NULL,
+                    explanation TEXT NULL,
+                    violations TEXT NULL,
+                    UNIQUE (run_example_id, evaluator_name, kind)
+```
+
+(`TEXT`, not `JSONB`: SQLite has no JSONB, and `run_example_events.payload` already follows this split — JSONB in the migration, TEXT in the test schema, a JSON string bound on both.)
+
+- [ ] **Step 4: Write the two new columns**
+
+In `app/runs/detail_writer.py`, replace the score insert loop (the `for score in example.scores:` block) with:
+
+```python
+        for score in example.scores:
+            dumped = score.model_dump(mode="json")
+            # One JSON column, written the way ``_write_events`` writes
+            # ``payload``: a JSON string on both backends, parsed back on read.
+            violations = dumped.pop("violations")
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO run_example_scores (
+                        run_example_id, evaluator_name, kind, source_score,
+                        target_score, delta, error, explanation, violations
+                    ) VALUES (
+                        :run_example_id, :evaluator_name, :kind, :source_score,
+                        :target_score, :delta, :error, :explanation, :violations
+                    )
+                    """
+                ),
+                {
+                    "run_example_id": example_row_id,
+                    **dumped,
+                    "violations": json.dumps(violations) if violations is not None else None,
+                },
+            )
+```
+
+- [ ] **Step 5: Run the writer test to verify it passes**
+
+Run: `cd /home/lukas/repos/evalshift/evalshift-server && uv run pytest tests/test_phase_c_detail_writer.py -q`
+Expected: all pass, including the new round-trip test and the existing idempotency test (re-finalize clears and rewrites the rows).
+
+- [ ] **Step 6: Write the failing read tests**
+
+Append to `tests/test_phase_c_detail_api.py` (below the existing example-detail tests). It imports `TRACE_RULE_SCORE` from the writer test module the same way it already imports `detail_bundle_payload`:
+
+```python
+from tests.test_phase_c_detail_writer import TRACE_RULE_SCORE, detail_bundle_payload
+```
+
+```python
+def _append_trace_rule_score(payload: dict[str, Any]) -> None:
+    payload["examples"][0]["scores"].append(dict(TRACE_RULE_SCORE))
+
+
+@pytest_asyncio.fixture
+async def rules_run(
+    async_client: AsyncClient,
+    fake_storage: FakeStorageClient,
+) -> SeededRun:
+    """The shared run with one trace-rule score on ``cap_abc``."""
+    owner = await create_user("rules-owner@example.com")
+    project = await create_project(async_client, owner=owner)
+    return await seed_finalized_run(
+        async_client,
+        fake_storage,
+        owner=owner,
+        project=project,
+        run_id="rules-run",
+        mutate=_append_trace_rule_score,
+    )
+
+
+async def test_example_detail_carries_explanation_and_violations(
+    async_client: AsyncClient,
+    rules_run: SeededRun,
+) -> None:
+    """The panel's whole reason to exist: which rule, on which call, and whether the source broke it too."""
+    body = await get_example(async_client, rules_run)
+    contracts = next(row for row in body["scores"] if row["evaluator_name"] == "contracts")
+    assert contracts["kind"] == "trace_invariants"
+    assert contracts["explanation"] == "target broke 1 trace rule(s): no-delete"
+    assert contracts["violations"] == TRACE_RULE_SCORE["violations"]
+
+
+async def test_example_detail_returns_null_explanation_and_violations_for_old_rows(
+    async_client: AsyncClient,
+    text_run: SeededRun,
+) -> None:
+    """A run pushed by a CLI without the fields reads back as nulls, never as empty strings or lists."""
+    body = await get_example(async_client, text_run)
+    for row in body["scores"]:
+        assert row["explanation"] is None
+        assert row["violations"] is None
+```
+
+Then update the one exact-dict assertion the new fields widen. In `test_example_detail_returns_text_and_scores`, change
+
+```python
+    assert body["scores"][1] == {
+        "evaluator_name": "semantic.cosine",
+        "kind": "",
+        "source_score": 1.0,
+        "target_score": 0.8,
+        "delta": pytest.approx(-0.2),
+        "error": None,
+    }
+```
+
+to
+
+```python
+    assert body["scores"][1] == {
+        "evaluator_name": "semantic.cosine",
+        "kind": "",
+        "source_score": 1.0,
+        "target_score": 0.8,
+        "delta": pytest.approx(-0.2),
+        "error": None,
+        "explanation": None,
+        "violations": None,
+    }
+```
+
+And append to `tests/test_phase_c_share_detail.py` (it already imports `seed_finalized_run`; add `TRACE_RULE_SCORE` and `detail_bundle_payload` from `tests.test_phase_c_detail_writer`):
+
+```python
+async def test_share_example_detail_carries_the_trace_rule_verdicts(
+    async_client: AsyncClient, fake_storage: FakeStorageClient
+) -> None:
+    """A reviewer on a share link sees the same rule-level detail the owner does."""
+    example = detail_bundle_payload()["examples"][0]
+    example["scores"].append(dict(TRACE_RULE_SCORE))
+    shared = await _share(async_client, fake_storage, run_id="shared-rules", examples=[example])
+
+    response = await async_client.get(f"/share/{shared.token}/examples/replay/cap_abc")
+
+    assert response.status_code == 200
+    contracts = next(
+        row for row in response.json()["scores"] if row["evaluator_name"] == "contracts"
+    )
+    assert contracts["violations"]["target"][0]["rule_id"] == "no-delete"
+    assert contracts["violations"]["source"] == []
+```
+
+- [ ] **Step 7: Run them to verify they fail**
+
+Run: `cd /home/lukas/repos/evalshift/evalshift-server && uv run pytest tests/test_phase_c_detail_api.py tests/test_phase_c_share_detail.py -q -k "explanation or violations or trace_rule or text_and_scores"`
+Expected: FAIL with `KeyError: 'explanation'` (the response has no such key yet) and the exact-dict assertion failing on the missing keys.
+
+- [ ] **Step 8: Return the fields**
+
+In `app/runs/schemas.py`, insert above `class ExampleScoreOut(BaseModel):`:
+
+```python
+class ScoreViolationOut(BaseModel):
+    """One trace rule one side broke, as the CLI attributed it. See ``bundle.ScoreViolation``."""
+
+    rule_id: str
+    rule_type: str
+    tool: str
+    round_index: int
+    detail: str
+    sample: int | None = None
+
+
+class ScoreViolationsOut(BaseModel):
+    source: list[ScoreViolationOut] = Field(default_factory=list)
+    target: list[ScoreViolationOut] = Field(default_factory=list)
+```
+
+and add to `ExampleScoreOut` after `error: str | None`:
+
+```python
+    #: The evaluator's one-line verdict. ``None`` on rows finalized before the
+    #: field existed or when the evaluator wrote none.
+    explanation: str | None = None
+    #: Which rules each side broke; only a ``trace_invariants`` row carries one.
+    violations: ScoreViolationsOut | None = None
+```
+
+In `app/runs/detail_service.py`, replace the body of `_load_example_scores` after its docstring with:
+
+```python
+    result = await session.execute(
+        text(
+            """
+            SELECT evaluator_name, kind, source_score, target_score, delta, error,
+                   explanation, violations
+            FROM run_example_scores
+            WHERE run_example_id = :row_id
+            ORDER BY evaluator_name, kind
+            """
+        ),
+        {"row_id": row_id},
+    )
+    scores: list[ExampleScoreOut] = []
+    for row in result.mappings():
+        data = dict(row)
+        # Stored as a JSON string on SQLite and as JSONB on Postgres, which
+        # asyncpg hands back already decoded — the same split ``_load_example_traces``
+        # handles for ``payload``.
+        raw = data["violations"]
+        data["violations"] = json.loads(raw) if isinstance(raw, str) else raw
+        scores.append(ExampleScoreOut.model_validate(data))
+    return scores
+```
+
+- [ ] **Step 9: Run the read tests to verify they pass**
+
+Run: `cd /home/lukas/repos/evalshift/evalshift-server && uv run pytest tests/test_phase_c_detail_api.py tests/test_phase_c_share_detail.py -q`
+Expected: all pass.
+
+- [ ] **Step 10: Run the gate and commit**
+
+```bash
+cd /home/lukas/repos/evalshift/evalshift-server && make lint && make test
+git -C /home/lukas/repos/evalshift/evalshift-server add migrations/versions/202610081200_phase29_score_explanations.py tests/conftest.py app/runs/detail_writer.py app/runs/detail_service.py app/runs/schemas.py tests/test_phase_c_detail_writer.py tests/test_phase_c_detail_api.py tests/test_phase_c_share_detail.py
+git -C /home/lukas/repos/evalshift/evalshift-server commit -m "feat(runs): store and serve score explanations and trace-rule violations" -m "Two nullable columns on run_example_scores, written at finalize and returned by the example-detail route on both the authenticated and share surfaces. Older rows read back as null." -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 3: Document the two fields in the bundle spec
+
+**Files:**
+- Modify: `BUNDLE_SPEC.md` (the `examples[]` JSON example at ~lines 198–215 and the `scores` table row at ~line 261)
+
+- [ ] **Step 1: Update the example JSON**
+
+In the `examples[]` JSON block, change the one score object
+
+```json
+      {
+        "evaluator_name": "semantic.cosine",
+        "kind": "semantic",
+        "source_score": 1.0,
+        "target_score": 0.8438,
+        "delta": -0.1562,
+        "error": null
+      }
+```
+
+to
+
+```json
+      {
+        "evaluator_name": "semantic.cosine",
+        "kind": "semantic",
+        "source_score": 1.0,
+        "target_score": 0.8438,
+        "delta": -0.1562,
+        "error": null,
+        "explanation": "cosine 0.8438 vs 1.0000",
+        "violations": null
+      },
+      {
+        "evaluator_name": "contracts",
+        "kind": "trace_invariants",
+        "source_score": 1.0,
+        "target_score": 0.5,
+        "delta": -0.5,
+        "error": null,
+        "explanation": "target broke 1 trace rule(s): no-delete",
+        "violations": {
+          "source": [],
+          "target": [
+            {"rule_id": "no-delete", "rule_type": "forbidden", "tool": "delete_file",
+             "round_index": 0, "detail": "delete_file was called", "sample": null}
+          ]
+        }
+      }
+```
+
+- [ ] **Step 2: Update the `scores` row of the field table**
+
+Append to the `scores` row's description (keep the existing text):
+
+> Since 2026-10-08 each score may also carry `explanation` (string\|null, the evaluator's one-line verdict) and `violations` (object\|null). `violations` is set only on `kind: trace_invariants` rows that did not error: `{"source": [...], "target": [...]}`, each entry `{rule_id, rule_type, tool, round_index, detail, sample}` exactly as the CLI's rule checker attributed it (`sample` is the zero-based sample ordinal on a repeated-sampling run, else `null`). Both default to `null`; bundles from CLIs predating them are accepted unchanged. A rule the source also broke still appears under `target` — the policy counts it — which is what the `source` list is for.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git -C /home/lukas/repos/evalshift/evalshift-server add BUNDLE_SPEC.md
+git -C /home/lukas/repos/evalshift/evalshift-server commit -m "docs(bundle-spec): describe score explanation and violations" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+- [ ] **Step 4: Open the PR**
+
+```bash
+git -C /home/lukas/repos/evalshift/evalshift-server push -u origin feat/score-violations
+gh pr create --repo evalshift/evalshift-server --base main --head feat/score-violations --title "feat: carry score explanations and trace-rule violations" --body "$(cat <<'EOF'
+## Summary
+- bundle `examples[].scores[]` accepts optional `explanation` and, for `trace_invariants` rows, `violations` (`{source, target}` lists of `{rule_id, rule_type, tool, round_index, detail, sample}`)
+- stored in two new nullable columns on `run_example_scores` (migration 202610081200) and returned by the example-detail route on both the authenticated and share surfaces
+- exported schema regenerated; `BUNDLE_SPEC.md` updated
+
+## Deploy order
+Deploy this before releasing the CLI change (`evalshift-cli` `feat/push-score-violations`): the bundle models are `extra="forbid"`, so a CLI sending the new keys to the current server is rejected at finalize.
+
+## Test plan
+- [x] `make lint && make test`
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+```
+
+---
+
+## Part B — evalshift-cli (after the server PR merges and deploys)
+
+### Task 4: The bundle carries each record's explanation and trace-rule violations
+
+**Files:**
+- Replace: `src/evalshift_cli/hosted/bundle_manifest.schema.json` (copy of the server's regenerated export)
+- Modify: `src/evalshift_cli/hosted/bundle.py` (imports at lines 24–49; the score dict inside `_build_examples` at ~lines 455–466; add one helper below `_tool_match`)
+- Test: `tests/unit/test_bundle_shape.py` (the pinned key set at ~line 88; new tests beside `_record` / `_rows` at ~lines 452–480)
+
+**Interfaces:**
+- Consumes: the server's `schemas/bundle_manifest.schema.json` as merged in Task 1.
+- Produces: score rows with `explanation: str | None` and `violations: {"source": list[dict], "target": list[dict]} | None`; the helper `_score_violations(record: EvalRecord) -> dict[str, list[dict[str, Any]]] | None`.
+
+- [ ] **Step 1: Create the branch and re-vendor the schema**
+
+```bash
+git -C /home/lukas/repos/evalshift/evalshift-cli checkout main
+git -C /home/lukas/repos/evalshift/evalshift-cli pull
+git -C /home/lukas/repos/evalshift/evalshift-cli checkout -b feat/push-score-violations
+git -C /home/lukas/repos/evalshift/evalshift-server checkout main
+git -C /home/lukas/repos/evalshift/evalshift-server pull
+cp /home/lukas/repos/evalshift/evalshift-server/schemas/bundle_manifest.schema.json /home/lukas/repos/evalshift/evalshift-cli/src/evalshift_cli/hosted/bundle_manifest.schema.json
+cd /home/lukas/repos/evalshift/evalshift-cli && pytest tests/unit/test_bundle_shape.py::test_the_vendored_schema_matches_the_server_export -q
+```
+
+Expected: PASS (the test compares the vendored copy with `../evalshift-server/schemas/…`). Do this step first: `build_bundle` validates every bundle against the vendored schema before writing, so emitting the new keys against the old copy would fail every build.
+
+- [ ] **Step 2: Write the failing tests**
+
+In `tests/unit/test_bundle_shape.py`, extend the pinned key set in `test_example_rows_carry_split_ids_and_hoisted_metrics`:
+
+```python
+    assert set(row["scores"][0]) == {
+        "evaluator_name",
+        "kind",
+        "source_score",
+        "target_score",
+        "delta",
+        "error",
+        "explanation",
+        "violations",
+    }
+```
+
+Then add, directly below the existing `_rows` helper:
+
+```python
+NO_DELETE: dict[str, Any] = {
+    "rule_id": "no-delete",
+    "rule_type": "forbidden",
+    "tool": "delete_file",
+    "round_index": 0,
+    "detail": "delete_file was called",
+}
+
+
+def _rule_record(
+    example_id: str,
+    *,
+    target_violations: list[dict[str, Any]],
+    source_violations: list[dict[str, Any]] | None = None,
+    error: str | None = None,
+) -> EvalRecord:
+    """A ``trace_invariants`` row as ``TraceInvariantsEvaluator._record`` writes it."""
+    broken = sorted({v["rule_id"] for v in target_violations})
+    return EvalRecord(
+        run_id="r1",
+        prompt_id="replay",
+        example_id=example_id,
+        evaluator_name="contracts",
+        kind="trace_invariants",
+        source_score=1.0 if not source_violations else 0.5,
+        target_score=1.0 if not target_violations else 0.5,
+        delta=(1.0 if not target_violations else 0.5) - (1.0 if not source_violations else 0.5),
+        explanation=(
+            f"target broke {len(broken)} trace rule(s): {', '.join(broken)}"
+            if broken
+            else "target kept every trace rule"
+        ),
+        metadata={
+            "rules_checked": ["no-delete"],
+            "source_violations": source_violations or [],
+            "target_violations": target_violations,
+            "owner": "payments",
+            **({"failure_categories": ["INVARIANT_VIOLATION"]} if target_violations else {}),
+        },
+        error=error,
+    )
+
+
+def test_trace_rule_rows_carry_the_explanation_and_both_sides_violations() -> None:
+    row = _rows([_rule_record("ex1", target_violations=[NO_DELETE])], ("ex1",))["ex1"]
+    score = row["scores"][0]
+    assert score["explanation"] == "target broke 1 trace rule(s): no-delete"
+    assert score["violations"] == {"source": [], "target": [NO_DELETE]}
+
+
+def test_the_source_side_violations_ride_along() -> None:
+    """A rule both sides broke still fails the target; the source list is what lets a reader see that."""
+    row = _rows(
+        [_rule_record("ex1", target_violations=[NO_DELETE], source_violations=[NO_DELETE])],
+        ("ex1",),
+    )["ex1"]
+    assert row["scores"][0]["violations"]["source"] == [NO_DELETE]
+
+
+def test_rules_checked_owner_and_failure_categories_stay_local() -> None:
+    """They are in the uploaded evaluator config and decision already — the row must not repeat them."""
+    row = _rows([_rule_record("ex1", target_violations=[NO_DELETE])], ("ex1",))["ex1"]
+    score = row["scores"][0]
+    assert "metadata" not in score
+    assert set(score["violations"]) == {"source", "target"}
+
+
+def test_other_evaluators_carry_null_violations_and_their_explanation() -> None:
+    record = _record("ex1", "semantic", 1.0, 0.8).model_copy(update={"explanation": "cosine 0.80"})
+    score = _rows([record], ("ex1",))["ex1"]["scores"][0]
+    assert score["violations"] is None
+    assert score["explanation"] == "cosine 0.80"
+
+
+def test_an_empty_explanation_is_sent_as_null() -> None:
+    score = _rows([_record("ex1", "semantic", 1.0, 0.8)], ("ex1",))["ex1"]["scores"][0]
+    assert score["explanation"] is None
+
+
+def test_an_errored_trace_rule_row_carries_no_violations() -> None:
+    """An evaluator that broke measured nothing; an empty target list would read as a clean target."""
+    record = _rule_record("ex1", target_violations=[], error="trace missing")
+    record = record.model_copy(update={"metadata": {}})
+    assert _rows([record], ("ex1",))["ex1"]["scores"][0]["violations"] is None
+
+
+def test_violation_entries_are_filtered_to_the_server_contract() -> None:
+    """A future key on ``Violation.to_dict()`` must not reach a schema that forbids unknown properties."""
+    row = _rows(
+        [_rule_record("ex1", target_violations=[{**NO_DELETE, "sample": 1, "severity": "high"}])],
+        ("ex1",),
+    )["ex1"]
+    assert row["scores"][0]["violations"]["target"] == [{**NO_DELETE, "sample": 1}]
+```
+
+`_rows` already returns `{example_id: row}`; `_record` already exists with signature `_record(example_id, kind, source, target, **meta)`. `EvalRecord` is a Pydantic model with `validate_assignment=True`, so use `model_copy(update=...)` rather than attribute assignment on a record you want to keep otherwise identical.
+
+- [ ] **Step 3: Run them to verify they fail**
+
+Run: `cd /home/lukas/repos/evalshift/evalshift-cli && pytest tests/unit/test_bundle_shape.py -q -k "trace_rule or violations or explanation or hoisted"`
+Expected: the key-set test FAILS (missing `explanation`, `violations`); the new tests FAIL with `KeyError: 'explanation'` / `KeyError: 'violations'`.
+
+- [ ] **Step 4: Emit the fields**
+
+In `src/evalshift_cli/hosted/bundle.py` add the import (alphabetical among the `evalshift_cli` imports):
+
+```python
+from evalshift_cli.evaluators.trace_invariants import KIND as KIND_INVARIANTS
+```
+
+Add the helper directly below `_tool_match`:
+
+```python
+#: What a ``violations`` entry may carry on the wire — the server's
+#: ``ScoreViolation`` model is ``extra="forbid"``, so anything else the
+#: evaluator ever adds to ``Violation.to_dict()`` must be dropped here, not
+#: discovered as a 422 after the bundle has uploaded.
+_VIOLATION_KEYS = ("rule_id", "rule_type", "tool", "round_index", "detail", "sample")
+
+
+def _score_violations(record: EvalRecord) -> dict[str, list[dict[str, Any]]] | None:
+    """Which rules each side broke, for a ``trace_invariants`` row that measured.
+
+    Read off the ``source_violations`` / ``target_violations`` metadata the
+    evaluator wrote (``Violation.to_dict()``, plus a ``sample`` ordinal on a
+    repeated-sampling run). ``None`` on every other evaluator and on an errored
+    row — an errored row has no verdict, and an empty ``target`` list would read
+    as a clean one. ``rules_checked``, ``owner`` and ``failure_categories``
+    stay local: the first two ship in ``evaluator_config``, the third in
+    ``decision``.
+    """
+    if record.kind != KIND_INVARIANTS or record.error is not None:
+        return None
+
+    def entries(key: str) -> list[dict[str, Any]]:
+        raw = record.metadata.get(key) or []
+        return [
+            {field: item[field] for field in _VIOLATION_KEYS if field in item}
+            for item in raw
+            if isinstance(item, dict)
+        ]
+
+    return {"source": entries("source_violations"), "target": entries("target_violations")}
+```
+
+And in `_build_examples`, extend each score dict:
+
+```python
+                "scores": [
+                    {
+                        "evaluator_name": item.evaluator_name,
+                        # The server keys score rows on (evaluator_name, kind):
+                        # one evaluator can measure two axes — conformance and
+                        # divergence — under the same user-chosen name.
+                        "kind": item.kind,
+                        "source_score": item.source_score,
+                        "target_score": item.target_score,
+                        "delta": item.delta,
+                        "error": item.error,
+                        # Added 2026-10-08; hosted EvalShift accepts both since
+                        # its phase-29 deploy. Everything else in ``metadata``
+                        # stays local — see ``_score_violations``.
+                        "explanation": item.explanation or None,
+                        "violations": _score_violations(item),
+                    }
+                    for item in pair_scores
+                ],
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `cd /home/lukas/repos/evalshift/evalshift-cli && pytest tests/unit/test_bundle_shape.py -q`
+Expected: all pass, including `test_built_bundle_validates_against_the_vendored_schema` (which proves the re-vendored schema accepts the new keys end to end).
+
+- [ ] **Step 6: Run the gate and commit**
+
+```bash
+cd /home/lukas/repos/evalshift/evalshift-cli && ruff check . && ruff format --check . && mypy --strict src/evalshift_cli && pytest -m "not integration"
+git -C /home/lukas/repos/evalshift/evalshift-cli add src/evalshift_cli/hosted/bundle_manifest.schema.json src/evalshift_cli/hosted/bundle.py tests/unit/test_bundle_shape.py
+git -C /home/lukas/repos/evalshift/evalshift-cli commit -m "feat(push): send score explanations and trace-rule violations" -m "Each uploaded score row now carries the record's one-line explanation and, for trace_invariants rows that measured, the rules each side broke (rule id, type, tool, round, detail, sample). rules_checked, owner and failure_categories stay local; they already ship in evaluator_config and decision. The traces the verdicts were computed from upload already, so this adds no new exposure. Re-vendors the server schema that accepts the fields." -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 5: CLI docs and changelog say what now uploads
+
+**Files:**
+- Modify: `CHANGELOG.md` (the `## [Unreleased]` → `### Added` list)
+- Modify: `DOCS.md` (the **A push uploads** paragraph under `### What uploads and what stays local`, ~line 797)
+- Modify: `docs/hosted.md` (the `examples[]` row of the privacy-model table, ~line 298)
+- Modify: `llms-full.txt` (the bundle-contents paragraph around line 246 and the `trace_invariants` metadata lines around line 650)
+
+- [ ] **Step 1: Changelog**
+
+Add as the last bullet under `### Added` in `## [Unreleased]`:
+
+```markdown
+- `push` now uploads each score row's one-line `explanation` and, for
+  `trace_invariants` rows, the rules each side broke (`violations.source` /
+  `violations.target`: rule id, type, tool, round, detail, sample). Hosted
+  EvalShift shows them on the example detail and on share links instead of
+  only the violation count. `rules_checked`, `owner` and `failure_categories`
+  still stay local. Requires the hosted service's 2026-10-08 phase-29 deploy;
+  nothing else in the bundle changed.
+```
+
+- [ ] **Step 2: DOCS.md**
+
+In the **A push uploads** paragraph, change `per-evaluator scores and error strings,` to:
+
+`per-evaluator scores, error strings and one-line explanations, and for each \`trace_invariants\` evaluator the rules each side broke (rule id, type, tool, round, detail),`
+
+- [ ] **Step 3: docs/hosted.md**
+
+In the `examples[]` row, change `per-evaluator scores and error strings;` to:
+
+`per-evaluator scores, error strings and one-line explanations (`target won`, `cosine 0.84 vs 1.00`, `target broke 1 trace rule(s): no-delete`); for each \`trace_invariants\` evaluator, the rules each side broke — rule id, rule type, tool, round, a one-line detail that may quote an argument value, and the sample ordinal on a repeated-sampling run — so the hosted report can name the rule, not only count it (`rules_checked`, `owner` and `failure_categories` stay local);`
+
+- [ ] **Step 4: llms-full.txt**
+
+In the bundle-contents paragraph (the one listing `economics (run-level per-role …), methodology_notes, insights|null, evaluator_config, dataset_snapshot`), add after `examples[]`'s description of scores:
+
+`each score row also carries explanation (str|null) and, on trace_invariants rows that measured, violations {source: [...], target: [...]} of {rule_id, rule_type, tool, round_index, detail, sample} -- the rest of the record's metadata stays local.`
+
+In the `trace_invariants` block (the comment lines starting `# Score per side = (rules - rules broken) / rules; kind slug trace_invariants; metadata`), append a line:
+
+`#   push uploads explanation + source/target violations per row (not rules_checked/owner/failure_categories).`
+
+- [ ] **Step 5: Gate, commit, PR**
+
+```bash
+cd /home/lukas/repos/evalshift/evalshift-cli && ruff check . && ruff format --check . && mypy --strict src/evalshift_cli && pytest -m "not integration"
+git -C /home/lukas/repos/evalshift/evalshift-cli add CHANGELOG.md DOCS.md docs/hosted.md llms-full.txt
+git -C /home/lukas/repos/evalshift/evalshift-cli commit -m "docs: say that push uploads score explanations and trace-rule violations" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git -C /home/lukas/repos/evalshift/evalshift-cli push -u origin feat/push-score-violations
+gh pr create --repo evalshift/evalshift-cli --base main --head feat/push-score-violations --title "feat(push): send score explanations and trace-rule violations" --body "$(cat <<'EOF'
+## Summary
+- score rows in the bundle carry `explanation` and, for `trace_invariants` rows, `violations` (`{source, target}`), filtered to the server's contract; errored rows send `null`
+- re-vendored `bundle_manifest.schema.json` from the server's phase-29 export
+- docs + changelog
+
+## Depends on
+`evalshift-server` PR "feat: carry score explanations and trace-rule violations" being **deployed**, not just merged — pushes from this branch to the old server 422 at finalize.
+
+## Test plan
+- [x] `ruff check . && ruff format --check . && mypy --strict src/evalshift_cli && pytest -m "not integration"`
+- [ ] push `testApp`'s planner run to the local server with both branches checked out and confirm the example detail route returns `violations`
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+```
+
+---
+
+## Part C — evalshift-client (any time after the server deploy)
+
+### Task 6: The example detail panel lists every score with its explanation and broken rules
+
+**Files:**
+- Modify: `src/lib/api.ts` (type `ExampleScore`, ~line 1313)
+- Modify: `src/pages/app/runs/detail/ExampleDetailPanel.tsx` (imports; add `ScoreRows` and `ViolationList`; render between the output panes and the input `<details>`)
+- Test: `src/pages/app/runs/detail/ExampleDetailPanel.test.tsx`
+
+**Interfaces:**
+- Consumes: `GET …/examples/{prompt_id}/{example_id}` rows with `explanation` and `violations` (Task 2).
+- Produces: `ScoreViolation`, `ScoreViolations` types in `src/lib/api.ts`; `ExampleScore.explanation?: string | null`, `ExampleScore.violations?: ScoreViolations | null`.
+
+- [ ] **Step 1: Create the branch from main**
+
+```bash
+git -C /home/lukas/repos/evalshift/evalshift-client checkout main
+git -C /home/lukas/repos/evalshift/evalshift-client pull
+git -C /home/lukas/repos/evalshift/evalshift-client checkout -b feat/example-score-details
+```
+
+(If `feat/overview-regressions` has not merged yet, this task does not touch its files; the two branches merge independently.)
+
+- [ ] **Step 2: Write the failing tests**
+
+Append to `src/pages/app/runs/detail/ExampleDetailPanel.test.tsx` (inside a new `describe`, reusing the file's `detailWith` and `renderPanel` helpers):
+
+```tsx
+const NO_DELETE = {
+  rule_id: "no-delete",
+  rule_type: "forbidden",
+  tool: "delete_file",
+  round_index: 0,
+  detail: "delete_file was called",
+  sample: null,
+}
+
+function ruleScore(
+  violations: { source: typeof NO_DELETE[]; target: typeof NO_DELETE[] } | null,
+  overrides: Partial<RunExampleDetail["scores"][number]> = {},
+) {
+  return {
+    evaluator_name: "contracts",
+    source_score: 1,
+    target_score: 0.5,
+    delta: -0.5,
+    error: null,
+    explanation: "target broke 1 trace rule(s): no-delete",
+    violations,
+    ...overrides,
+  }
+}
+
+describe("ExampleDetailPanel scores", () => {
+  it("lists every evaluator with its scores and explanation", () => {
+    renderPanel(
+      detailWith({
+        scores: [
+          {
+            evaluator_name: "semantic.cosine",
+            source_score: 1,
+            target_score: 0.8,
+            delta: -0.2,
+            error: null,
+            explanation: "cosine 0.80 vs 1.00",
+            violations: null,
+          },
+          ruleScore({ source: [], target: [NO_DELETE] }),
+        ],
+      }),
+      "1.3.0",
+    )
+    const rows = screen.getAllByRole("listitem")
+    expect(rows[0]).toHaveTextContent("semantic.cosine")
+    expect(rows[0]).toHaveTextContent("1.000 → 0.800")
+    expect(rows[0]).toHaveTextContent("−0.200")
+    expect(rows[0]).toHaveTextContent("cosine 0.80 vs 1.00")
+    expect(rows[1]).toHaveTextContent("contracts")
+  })
+
+  it("names the rule, the tool and the round the target broke", () => {
+    renderPanel(detailWith({ scores: [ruleScore({ source: [], target: [NO_DELETE] })] }), "1.3.0")
+    expect(screen.getByText("no-delete")).toBeInTheDocument()
+    expect(screen.getByText("delete_file · round 0")).toBeInTheDocument()
+    expect(screen.getByText("delete_file was called")).toBeInTheDocument()
+    expect(screen.queryByText("source broke it too")).toBeNull()
+  })
+
+  it("marks a rule the source model broke as well", () => {
+    renderPanel(
+      detailWith({ scores: [ruleScore({ source: [NO_DELETE], target: [NO_DELETE] })] }),
+      "1.3.0",
+    )
+    expect(screen.getByText("source broke it too")).toBeInTheDocument()
+  })
+
+  it("says the target kept every rule when only the source broke one", () => {
+    renderPanel(
+      detailWith({
+        scores: [
+          ruleScore(
+            { source: [NO_DELETE], target: [] },
+            { target_score: 1, delta: 0.5, explanation: "target kept every trace rule" },
+          ),
+        ],
+      }),
+      "1.3.0",
+    )
+    expect(screen.getByText("Target kept every trace rule.")).toBeInTheDocument()
+    expect(screen.queryByText("no-delete")).toBeNull()
+  })
+
+  it("names the sample on a repeated-sampling violation", () => {
+    renderPanel(
+      detailWith({ scores: [ruleScore({ source: [], target: [{ ...NO_DELETE, sample: 2 }] })] }),
+      "1.3.0",
+    )
+    expect(screen.getByText("delete_file · round 0 · sample 2")).toBeInTheDocument()
+  })
+
+  it("shows the error on an errored row and no rule verdict", () => {
+    renderPanel(
+      detailWith({
+        scores: [ruleScore(null, { error: "trace missing", explanation: null })],
+      }),
+      "1.3.0",
+    )
+    expect(screen.getByText("trace missing")).toBeInTheDocument()
+    expect(screen.queryByText("Target kept every trace rule.")).toBeNull()
+  })
+
+  it("renders a run from before the fields existed exactly as before", () => {
+    renderPanel(
+      detailWith({
+        scores: [
+          { evaluator_name: "exact_match", source_score: 1, target_score: 0, delta: -1, error: null },
+        ],
+      }),
+      "1.2.0",
+    )
+    expect(screen.getByRole("listitem")).toHaveTextContent("exact_match")
+    expect(screen.queryByText(/trace rule/)).toBeNull()
+  })
+
+  it("shows no scores block when nothing was scored", () => {
+    renderPanel(detailWith({ scores: [] }), "1.3.0")
+    expect(screen.queryByText("Scores")).toBeNull()
+    expect(screen.queryByRole("list")).toBeNull()
+  })
+})
+```
+
+- [ ] **Step 3: Run them to verify they fail**
+
+Run: `cd /home/lukas/repos/evalshift/evalshift-client && npx vitest run src/pages/app/runs/detail/ExampleDetailPanel.test.tsx`
+Expected: the new tests FAIL with `Unable to find role="listitem"` / `Unable to find an element with the text`. (TypeScript errors on `explanation` / `violations` do not stop Vitest; they are fixed in the next step.)
+
+- [ ] **Step 4: Add the types**
+
+In `src/lib/api.ts`, replace the `ExampleScore` type with:
+
+```ts
+/** One trace rule one side broke on one example, as the CLI's rule checker
+ * attributed it: to a tool call in a round, or to a tool that never got
+ * called. `sample` is the zero-based sample ordinal on a repeated-sampling
+ * run and null otherwise. Mirrors the server's `ScoreViolationOut`. */
+export type ScoreViolation = {
+  rule_id: string
+  rule_type: string
+  tool: string
+  round_index: number
+  detail: string
+  sample: number | null
+}
+
+/** Both sides' broken rules for one trace-rule score. A rule under `source`
+ * that is also under `target` was broken by both models; it still fails the
+ * target, which is why the source list is worth showing. */
+export type ScoreViolations = {
+  source: ScoreViolation[]
+  target: ScoreViolation[]
+}
+
+export type ExampleScore = {
+  evaluator_name: string
+  source_score: number
+  target_score: number
+  delta: number
+  error: string | null
+  /** The evaluator's one-line verdict. Optional, not just nullable: runs
+   * finalized before the server's 2026-10-08 phase-29 deploy return no such
+   * key, and the generated fixture predates it too. */
+  explanation?: string | null
+  /** Only a trace-rule evaluator that measured carries one. Same optionality
+   * as `explanation`. */
+  violations?: ScoreViolations | null
+}
+```
+
+- [ ] **Step 5: Render the block**
+
+In `src/pages/app/runs/detail/ExampleDetailPanel.tsx`:
+
+Extend the imports: add `ScoreViolations` and `ExampleScore` to the `@/lib/api` type import, and `formatScoreDelta` to the existing `@/pages/app/format` import (keep `formatScore`).
+
+Add the two components above `worstScore`:
+
+```tsx
+/** Every trace rule the target broke on this example, one line each, with the
+ * ones the source broke too marked — a rule both models break is more likely
+ * a rule to review with its owner than a migration regression, and the
+ * policy still counts it. */
+function ViolationList({ violations }: { violations: ScoreViolations }) {
+  if (violations.target.length === 0) {
+    return (
+      <span className="text-caption text-(--pass)">
+        Target kept every trace rule.
+      </span>
+    )
+  }
+  const sourceRules = new Set(violations.source.map((v) => v.rule_id))
+  return (
+    <ul className="flex flex-col gap-1">
+      {violations.target.map((v, index) => (
+        <li
+          key={`${v.rule_id}/${v.tool}/${v.round_index}/${v.sample ?? "-"}/${index}`}
+          className="flex flex-wrap items-baseline gap-2 text-caption"
+        >
+          <span className="font-mono text-(--fail)">{v.rule_id}</span>
+          <span className="font-mono text-(--dim2)">
+            {v.tool} · round {v.round_index}
+            {v.sample !== null ? ` · sample ${v.sample}` : ""}
+          </span>
+          <span className="text-(--dim)">{v.detail}</span>
+          {sourceRules.has(v.rule_id) ? <Chip>source broke it too</Chip> : null}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** One row per evaluator: the two scores, the delta, the evaluator's own
+ * sentence, and for a trace-rule evaluator the rules behind its score. The
+ * output panes above quote only the worst evaluator; this is the rest. */
+function ScoreRows({ scores }: { scores: ExampleScore[] }) {
+  if (scores.length === 0) return null
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="font-mono text-micro uppercase tracking-[0.1em] text-(--dim2)">
+        Scores
+      </span>
+      <ul className="flex flex-col divide-y divide-(--line-subtle) rounded-[10px] border border-(--line-subtle) bg-(--panel)">
+        {scores.map((score) => (
+          <li
+            key={score.evaluator_name}
+            className="flex flex-col gap-1.5 px-3.5 py-2.5"
+          >
+            <div className="flex flex-wrap items-baseline justify-between gap-3 font-mono text-caption">
+              <span className="text-(--fg)">{score.evaluator_name}</span>
+              <span className="tabular-nums text-(--dim)">
+                {formatScore(score.source_score)} → {formatScore(score.target_score)}{" "}
+                <span
+                  className={
+                    score.delta < 0
+                      ? "text-(--fail)"
+                      : score.delta > 0
+                        ? "text-(--pass)"
+                        : "text-(--dim2)"
+                  }
+                >
+                  {formatScoreDelta(score.delta)}
+                </span>
+              </span>
+            </div>
+            {score.error ? (
+              <span className="text-caption text-(--fail)">{score.error}</span>
+            ) : null}
+            {score.explanation ? (
+              <span className="text-caption text-(--dim)">{score.explanation}</span>
+            ) : null}
+            {score.violations ? <ViolationList violations={score.violations} /> : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+```
+
+The `key` on a score row is the evaluator name. The server orders rows by `(evaluator_name, kind)` and an evaluator with two axes shares one name, so if the panel ever shows both axes, the client type needs `kind` and the key becomes `${evaluator_name}/${kind}`; today the client type carries no `kind`, and React warns rather than breaks on a duplicate key.
+
+Render it inside the `{detail ? (<> … </>) : null}` block, between the closing `</div>` of the two-pane grid and the `<details …>` for the input prompt:
+
+```tsx
+          <ScoreRows scores={detail.scores} />
+```
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `cd /home/lukas/repos/evalshift/evalshift-client && npx vitest run src/pages/app/runs/detail/ExampleDetailPanel.test.tsx src/pages/app/runs/detail/tabs/ExamplesTab.test.tsx src/pages/share/SharedRun.test.tsx`
+Expected: all pass. (`formatScoreDelta(-0.2)` renders `−0.200` with the U+2212 minus; `formatScore` renders three decimals.)
+
+- [ ] **Step 7: Check it in the browser**
+
+Start the client against the local server with both server and CLI branches checked out and the planner run pushed (see the CLI PR's test plan). From the client repo: `VITE_API_URL=http://localhost:8080 npx vite --port 3001 --strictPort` (3001 is in the local server's CORS allowlist; the user's own dev server usually holds 3000). Open the pushed run, Examples tab, expand `cap_11fa9b632c234b8c9a3d134f726f05fc`: the Scores block lists `routing` and the trace-rule evaluator with its broken rule. Also confirm an old run (pushed before the server change) shows the Scores block with no rule lines and no console errors.
+
+- [ ] **Step 8: Gate and commit**
+
+```bash
+cd /home/lukas/repos/evalshift/evalshift-client && npm run lint && npm run typecheck && npm run build && npm audit --audit-level=high && npx vitest run
+git -C /home/lukas/repos/evalshift/evalshift-client add src/lib/api.ts src/pages/app/runs/detail/ExampleDetailPanel.tsx src/pages/app/runs/detail/ExampleDetailPanel.test.tsx
+git -C /home/lukas/repos/evalshift/evalshift-client commit -m "feat(run-detail): list every score with its explanation and broken trace rules" -m "The example panel quoted only the worst evaluator's two numbers. It now lists every evaluator with source, target and delta, the evaluator's one-line verdict, and for a trace-rule evaluator the rules the target broke — tool, round, detail — marking the ones the source broke too. Runs finalized before the server carried these fields render as before." -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 7: The upload docs page says explanations and violations upload
+
+**Files:**
+- Modify: `src/pages/docs/pages/WhatGetsUploaded.tsx` (the `examples[]` entry, ~line 33)
+- Regenerate: `public/cli-llms-full.txt` via `npm run sync:llms` (only after the CLI docs PR from Task 5 has merged)
+
+- [ ] **Step 1: Update the `examples[]` entry**
+
+Change `"no tool results, no model-call events); per-evaluator scores and " + "error strings; per-side cost and latency; tags and slice names. "` to:
+
+```ts
+      "no tool results, no model-call events); per-evaluator scores, error " +
+      "strings and one-line explanations, and for each trace_invariants " +
+      "evaluator the rules each side broke (rule id, type, tool, round, " +
+      "detail; the detail line may quote an argument value); per-side cost " +
+      "and latency; tags and slice names. " +
+```
+
+- [ ] **Step 2: Sync the CLI docs copy**
+
+Only once `evalshift-cli` `main` contains Task 5's `llms-full.txt` change:
+
+```bash
+cd /home/lukas/repos/evalshift/evalshift-client && npm run sync:llms
+git -C /home/lukas/repos/evalshift/evalshift-client diff --stat public/cli-llms-full.txt
+```
+
+If the CLI PR has not merged yet, skip this step and note it in the PR body; the docs-currency tripwire tests will flag the drift later.
+
+- [ ] **Step 3: Gate, commit, PR**
+
+```bash
+cd /home/lukas/repos/evalshift/evalshift-client && npm run lint && npm run typecheck && npm run build && npm audit --audit-level=high && npx vitest run
+git -C /home/lukas/repos/evalshift/evalshift-client add src/pages/docs/pages/WhatGetsUploaded.tsx public/cli-llms-full.txt
+git -C /home/lukas/repos/evalshift/evalshift-client commit -m "docs: say that pushes carry score explanations and trace-rule violations" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git -C /home/lukas/repos/evalshift/evalshift-client push -u origin feat/example-score-details
+gh pr create --repo evalshift/evalshift-client --base main --head feat/example-score-details --title "feat(run-detail): show score explanations and broken trace rules per example" --body "$(cat <<'EOF'
+## Summary
+- example detail panel lists every evaluator's scores, its explanation, and for trace-rule evaluators the rules the target broke (marking ones the source broke too)
+- `ExampleScore` gains optional `explanation` / `violations`; runs from before the server change render as before
+- upload docs updated; `cli-llms-full.txt` re-synced (or: pending the CLI docs merge)
+
+## Depends on
+`evalshift-server` phase-29 deploy for the fields to be non-null; safe to merge before it.
+
+## Test plan
+- [x] `npm run lint && npm run typecheck && npm run build && npm audit --audit-level=high && npx vitest run`
+- [x] checked in Chrome against the local server with a pushed trace-rule run
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+```
+
+---
+
+## Rollout
+
+1. Merge the server PR; deploy to Fly (the migration adds two nullable columns; no backfill, no downtime).
+2. Merge the CLI PR. The feature ships in the pending CLI minor release (`[Unreleased]` already holds 1.3.0's trace-invariants entry); it must not be released before step 1 is live. Then bump the action pin as usual.
+3. Merge the client PR any time after step 1. Re-run `npm run sync:llms` after step 2 if Task 7 skipped it.
+4. Verify on prod: push a run with a `trace_invariants` entry, open an example on the hosted report, confirm the Scores block names the rule; open its share link and confirm the same.
+
+## Out of scope (noted for later)
+
+- A `blocking` flag per score row so the panel can label advisory trace-rule entries. The Policy tab remains the authority on what gated the verdict.
+- Showing the explanation in the Overview's "Worst regressions" list (`GET /runs/{id}/regressions` would need to join it).
+- Redaction of `detail` strings. They can quote an argument value that the uploaded traces already contain; if trace redaction is ever added, the detail strings need the same pass.
