@@ -1222,9 +1222,10 @@ def capture_sync(
                 )
                 # Routed by *why* it was blocked, not lumped under one counter:
                 # --allow-errored rescues an errored turn but can never rescue
-                # a capture with no usable recorded toolset or one that
-                # switched toolsets mid-run, so the summary below must not
-                # offer that as a fix for either.
+                # a capture with no usable recorded toolset, one that switched
+                # toolsets mid-run, or one whose messages carry content a text
+                # replay can't carry (unreplayable_content), so the summary
+                # below must not offer that as a fix for any of them.
                 if built.blocked_reason == "no_toolset":
                     skipped_no_toolset += 1
                 elif built.blocked_reason == "multi_toolset":

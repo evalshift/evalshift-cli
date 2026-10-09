@@ -137,8 +137,8 @@ class BuiltExample:
             content a text replay can't carry (an image, a document, a server-tool
             result, an unknown block type) — a replay without it is not ground truth.
             None of the latter three is rescued by ``--allow-errored``: re-capturing fixes
-            the first but reproduces the second identically. ``None`` when
-            ``blocked`` is ``None``.
+            the first, and the second and third reproduce identically unless the app
+            changes what it records. ``None`` when ``blocked`` is ``None``.
         promotion_source: Which yardstick the tool-call ground truth came
             from — ``"requested"`` when the capture recorded the calls the
             model itself asked for, ``"executed"`` when it fell back to the
