@@ -49,7 +49,13 @@ from evalshift_cli.evaluators.trace_invariants import (
 )
 from evalshift_cli.models.client import ModelClient
 from evalshift_cli.runner.checkpoint import append_call, read_state, write_state
-from evalshift_cli.runner.models import Call, EvaluatorCoverage, RunModels, RunState
+from evalshift_cli.runner.models import (
+    Call,
+    EvaluatorCoverage,
+    RunModels,
+    RunState,
+    SkippedEvaluator,
+)
 from evalshift_cli.suite.models import ChatMessage, Suite, SuiteExample
 from evalshift_cli.traces.loader import TRACES_FILENAME
 from tests.unit.suite_examples import suite_example
@@ -1109,6 +1115,8 @@ class TestJudgeClientSharingAndReporting:
             "evalshift_cli.cache.schema.DEFAULT_CACHE_PATH",
             tmp_path / "cache.db",
         )
+        # The judge is blocking by default; without its key evaluate refuses.
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         _write_config(tmp_path, with_judge=True)
         run_id = _scaffold_run(tmp_path)
         monkeypatch.chdir(tmp_path)
@@ -1134,7 +1142,7 @@ class TestJudgeClientSharingAndReporting:
         assert state.evaluator_coverage is not None
 
     def _evaluate_with_accepting_judge(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, judge_model: str
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, judge_model: str, key_env: str
     ) -> RunState:
         """Score a run whose judge accepts ``temperature`` without complaint."""
         import litellm
@@ -1148,6 +1156,8 @@ class TestJudgeClientSharingAndReporting:
         # Pin LiteLLM's reasoning flag: DeepSeek ids think by default, and the
         # answer must not depend on the installed LiteLLM's model map.
         monkeypatch.setattr(litellm, "supports_reasoning", lambda **_: True)
+        # The judge is blocking by default; without its key evaluate refuses.
+        monkeypatch.setenv(key_env, "test-key")
         _write_config(tmp_path, with_judge=True, judge_model=judge_model)
         run_id = _scaffold_run(tmp_path)
         monkeypatch.chdir(tmp_path)
@@ -1172,14 +1182,18 @@ class TestJudgeClientSharingAndReporting:
         # DeepSeek thinking mode accepts temperature and ignores it, so the
         # client never sees a rejection; the judge is flagged from the model
         # id instead, under its canonical id and exactly once.
-        state = self._evaluate_with_accepting_judge(monkeypatch, tmp_path, "deepseek-v4-pro")
+        state = self._evaluate_with_accepting_judge(
+            monkeypatch, tmp_path, "deepseek-v4-pro", "DEEPSEEK_API_KEY"
+        )
         assert state.non_deterministic_models.count("deepseek/deepseek-v4-pro") == 1
         assert state.evaluator_coverage is not None
 
     def test_temperature_honouring_judge_stays_off_state(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        state = self._evaluate_with_accepting_judge(monkeypatch, tmp_path, "gemini-2.5-flash")
+        state = self._evaluate_with_accepting_judge(
+            monkeypatch, tmp_path, "gemini-2.5-flash", "GEMINI_API_KEY"
+        )
         assert "gemini/gemini-2.5-flash" not in state.non_deterministic_models
 
 
@@ -1852,3 +1866,164 @@ class TestMissingImportedTracesNamesTheFamily:
         assert (
             "agent_trace and trace_invariants (traces: imported) evaluators require imported traces"
         ) in stdout
+
+
+_ALL_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "DEEPSEEK_API_KEY",
+)
+
+
+def _clear_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in _ALL_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+def _judges_config(tmp_path: Path, *judges: tuple[str, str, bool], structural: bool = True) -> None:
+    """Write a config with the given ``(criterion, judge_model, blocking)`` judges."""
+    structural_block = (
+        "\n          structural:\n            - type: length\n              min_chars: 1"
+        if structural
+        else ""
+    )
+    judge_block = "".join(
+        f"\n            - criterion_name: {name}"
+        f"\n              criterion_prompt: which is better?"
+        f"\n              judge_model: {model}"
+        f"\n              blocking: {str(blocking).lower()}"
+        for name, model, blocking in judges
+    )
+    (tmp_path / "evalshift.yaml").write_text(
+        f"""
+        version: 1
+        prompts:
+          - id: greet
+            detection: manual
+            content: "Hi {{name}}"
+            variables: [name]
+        defaults:
+          source_model: gemini-2.5-flash
+          target_model: gemini-2.5-pro
+        evaluators:{structural_block}
+          llm_judge:{judge_block}
+        """,
+        encoding="utf-8",
+    )
+
+
+class TestEvaluatorKeyGaps:
+    def test_advisory_keyless_judge_is_skipped_without_a_call(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from evalshift_cli.models import client as client_module
+
+        _clear_keys(monkeypatch)
+        _judges_config(tmp_path, ("equivalence", "gpt-4o-mini", False))
+        run_id = _scaffold_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        async def no_call(**_: Any) -> Any:
+            raise AssertionError("a skipped judge must not be called")
+
+        monkeypatch.setattr(client_module.litellm, "acompletion", no_call)
+
+        result = runner.invoke(app, ["evaluate", run_id])
+
+        assert result.exit_code == 0, result.stdout
+        flat = " ".join(result.stdout.split())
+        assert "llm_judge.equivalence skipped: no API key for gpt-4o-mini" in flat
+        assert "export OPENAI_API_KEY to enable it." in flat
+        run_dir = tmp_path / ".evalshift" / "runs" / run_id
+        rows = (run_dir / SCORES_FILENAME).read_text(encoding="utf-8").splitlines()
+        assert all("llm_judge" not in row for row in rows)
+        assert read_state(run_dir).skipped_evaluators == [
+            SkippedEvaluator(
+                evaluator_name="llm_judge.equivalence",
+                kind="llm_judge",
+                label="llm_judge.equivalence",
+                model="gpt-4o-mini",
+                env_vars=["OPENAI_API_KEY"],
+            )
+        ]
+
+    def test_blocking_keyless_judge_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _clear_keys(monkeypatch)
+        _judges_config(tmp_path, ("equivalence", "gpt-4o-mini", True))
+        run_id = _scaffold_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["evaluate", run_id])
+
+        assert result.exit_code == 1
+        flat = " ".join(result.stdout.split())
+        assert "missing API key for a blocking evaluator" in flat
+        assert "OPENAI_API_KEY" in flat
+        assert not (tmp_path / ".evalshift" / "runs" / run_id / SCORES_FILENAME).exists()
+
+    def test_every_evaluator_skipped_names_the_keys(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _clear_keys(monkeypatch)
+        _judges_config(tmp_path, ("equivalence", "gpt-4o-mini", False), structural=False)
+        run_id = _scaffold_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["evaluate", run_id])
+
+        assert result.exit_code == 1
+        flat = " ".join(result.stdout.split())
+        assert "every configured evaluator was skipped" in flat
+        assert "OPENAI_API_KEY" in flat
+        assert "no evaluators configured" not in flat
+
+    def test_only_the_keyless_judge_is_skipped(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from evalshift_cli.models import client as client_module
+
+        _clear_keys(monkeypatch)
+        monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+        monkeypatch.setattr("evalshift_cli.cache.schema.DEFAULT_CACHE_PATH", tmp_path / "cache.db")
+        _judges_config(
+            tmp_path,
+            ("equivalence", "gpt-4o-mini", False),
+            ("tone", "gemini-2.5-flash", False),
+        )
+        run_id = _scaffold_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        async def fake_acompletion(**_: Any) -> Any:
+            return _judge_response('{"winner": "A"}')
+
+        monkeypatch.setattr(client_module.litellm, "acompletion", fake_acompletion)
+        monkeypatch.setattr(
+            client_module.litellm, "completion_cost", lambda completion_response=None, **_: 0.0
+        )
+
+        result = runner.invoke(app, ["evaluate", run_id])
+
+        assert result.exit_code == 0, result.stdout
+        run_dir = tmp_path / ".evalshift" / "runs" / run_id
+        names = {
+            json.loads(line)["evaluator_name"]
+            for line in (run_dir / SCORES_FILENAME).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+        assert "llm_judge.tone" in names
+        assert "llm_judge.equivalence" not in names
+        assert [s.evaluator_name for s in read_state(run_dir).skipped_evaluators] == [
+            "llm_judge.equivalence"
+        ]
+
+    def test_state_without_skipped_evaluators_still_loads(self, tmp_path: Path) -> None:
+        run_id = _scaffold_run(tmp_path)
+        state_path = tmp_path / ".evalshift" / "runs" / run_id / "state.json"
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+        raw.pop("skipped_evaluators", None)
+        state_path.write_text(json.dumps(raw), encoding="utf-8")
+        assert read_state(state_path.parent).skipped_evaluators == []

@@ -121,6 +121,32 @@ class EvaluatorCoverage(_StrictModel):
     blocking: bool = True
 
 
+class SkippedEvaluator(_StrictModel):
+    """An evaluator the evaluate stage did not run because its model had no key.
+
+    Written by ``evaluate`` for an *advisory* ``semantic`` / ``llm_judge``
+    entry whose judge or embedding model had no API key — a blocking one is
+    refused instead. Recorded, not just printed, because ``analyze``, the
+    report and the bundle run later and each must still say what was missing.
+
+    Attributes:
+        evaluator_name: The name its records would have carried.
+        kind: ``"semantic"`` or ``"llm_judge"``.
+        label: How messages name it.
+        model: The judge or embedding model id as written in config.
+        env_vars: The env vars that would have satisfied it, primary first.
+        note: A side effect of the skip (e.g. the ``tool_arguments``
+            fallback), or ``""``.
+    """
+
+    evaluator_name: str
+    kind: str
+    label: str
+    model: str
+    env_vars: list[str]
+    note: str = ""
+
+
 class RunState(_StrictModel):
     """Top-level state of an in-flight run.
 
@@ -182,6 +208,9 @@ class RunState(_StrictModel):
             Recorded so evaluate and report can read the run's shape without
             the config that launched it. ``1`` for every run made before the
             field existed.
+        skipped_evaluators: Advisory ``semantic`` / ``llm_judge`` entries the
+            ``evaluate`` stage skipped because their model had no API key.
+            Empty when every evaluator ran. See :class:`SkippedEvaluator`.
     """
 
     run_id: str = Field(min_length=1)
@@ -210,6 +239,10 @@ class RunState(_StrictModel):
     # Defaulted so state.json files written before this field existed still
     # load under extra="forbid".
     samples_per_example: int = Field(default=1, ge=1)
+    # Written by `evalshift evaluate` alongside evaluator_coverage. Defaulted
+    # so state.json files written before this field existed still load under
+    # extra="forbid".
+    skipped_evaluators: list[SkippedEvaluator] = Field(default_factory=list)
 
 
 class Call(_StrictModel):
@@ -352,6 +385,7 @@ __all__ = [
     "RunModels",
     "RunState",
     "RunStatus",
+    "SkippedEvaluator",
     "UnmeasuredPair",
     "representative_calls",
 ]

@@ -30,7 +30,9 @@ from rich.text import Text
 
 from evalshift_cli.config.models import EvalShiftConfig
 
-ConfigErrorKind = Literal["missing", "not_a_file", "yaml_parse", "not_a_mapping", "schema"]
+ConfigErrorKind = Literal[
+    "missing", "not_a_file", "yaml_parse", "not_a_mapping", "schema", "missing_key"
+]
 
 
 @dataclass(frozen=True, slots=True)

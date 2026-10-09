@@ -37,6 +37,8 @@ one that measured everything.
 from __future__ import annotations
 
 import asyncio
+import os
+from collections.abc import Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -62,11 +64,18 @@ from evalshift_cli.cli.commands.doctor import (
     render_results,
     source_conformance_check,
 )
-from evalshift_cli.config.loader import ConfigError, load_config
+from evalshift_cli.config.loader import ConfigError, ConfigErrorDetail, load_config
 from evalshift_cli.config.models import EvalShiftConfig, EvaluatorsConfig
 from evalshift_cli.evaluators.agent_trace import AgentTraceEvaluator
 from evalshift_cli.evaluators.base import EvalRecord, Evaluator, EvaluatorError, PairedScore
 from evalshift_cli.evaluators.failures import INVARIANT_VIOLATION
+from evalshift_cli.evaluators.keys import (
+    EvaluatorKeyGap,
+    evaluator_key_gaps,
+    missing_key_error,
+    skip_warning,
+    without_gaps,
+)
 from evalshift_cli.evaluators.llm_judge import PairwiseJudgeEvaluator
 from evalshift_cli.evaluators.semantic import CosineSimilarityEvaluator, _cosine
 from evalshift_cli.evaluators.structural import (
@@ -94,7 +103,7 @@ from evalshift_cli.runner.checkpoint import (
     run_dir_for,
     write_state,
 )
-from evalshift_cli.runner.models import Call, EvaluatorCoverage, UnmeasuredPair
+from evalshift_cli.runner.models import Call, EvaluatorCoverage, SkippedEvaluator, UnmeasuredPair
 from evalshift_cli.runner.orchestrator import resolve_example_tools, toolset_base_candidates
 from evalshift_cli.suite.loader import SuiteError, load_jsonl
 from evalshift_cli.suite.models import Suite, SuiteExample
@@ -166,6 +175,9 @@ class EvaluateResult:
     #: inside a Live grid this table would fight with, and renders it itself
     #: immediately above the verdict it invalidates.
     harness_check: CheckResult | None = None
+    #: Advisory evaluators dropped because their model had no API key; the
+    #: same list ``state.json`` carries as ``skipped_evaluators``.
+    skipped: tuple[SkippedEvaluator, ...] = ()
 
 
 class NoEvaluatorsError(ValueError):
@@ -207,12 +219,39 @@ def run_evaluate(
     # One resolution point for the run's evaluator set: which suite this run
     # was launched against decides what scores it, and that answer must be
     # the same one report and bundle reach later.
+    resolved = cfg.evaluators_for(state.suite_name)
+    # Before any evaluator is built, so a keyless judge or embedder costs no
+    # call and no retry. A blocking one is refused: skipping a gate would turn
+    # a broken config into a green check.
+    gaps = evaluator_key_gaps(resolved, os.environ)
+    blocking_gaps = [gap for gap in gaps if gap.blocking]
+    if blocking_gaps:
+        raise ConfigError(
+            config_path,
+            "missing_key",
+            "missing API key for a blocking evaluator",
+            details=[_gap_detail(gap) for gap in blocking_gaps],
+        )
+    skipped_gaps = [gap for gap in gaps if not gap.blocking]
     evaluators = _build_evaluators(
-        cfg.evaluators_for(state.suite_name),
+        without_gaps(resolved, skipped_gaps),
         project_root,
         judge_client=judge_client,
         suite_path=Path(state.suite_path),
     )
+    if not evaluators and skipped_gaps:
+        raise ConfigError(
+            config_path,
+            "missing_key",
+            "every configured evaluator was skipped: none of their models has an API key",
+            details=[_gap_detail(gap) for gap in skipped_gaps],
+        )
+    if not quiet:
+        for gap in skipped_gaps:
+            console.print(
+                skip_warning(label=gap.label, model=gap.model, env_vars=gap.env_vars, note=gap.note)
+            )
+    skipped = tuple(_skipped_record(gap) for gap in skipped_gaps)
     if not evaluators:
         raise NoEvaluatorsError(
             "no evaluators configured. Add at least one entry under evaluators: in evalshift.yaml.",
@@ -275,6 +314,7 @@ def run_evaluate(
         state.model_copy(
             update={
                 "evaluator_coverage": coverage,
+                "skipped_evaluators": list(skipped),
                 "non_deterministic_models": [
                     *state.non_deterministic_models,
                     *runtime_nondet,
@@ -298,6 +338,67 @@ def run_evaluate(
         evaluator_names=tuple(e.name for e in evaluators),
         coverage=tuple(coverage),
         harness_check=harness_check,
+        skipped=skipped,
+    )
+
+
+def preflight_evaluator_keys(
+    console: Console,
+    evaluators_cfg: EvaluatorsConfig,
+    env: Mapping[str, str],
+) -> list[EvaluatorKeyGap]:
+    """Check every judge / embedding model's key before any model call.
+
+    Shared by ``run`` and ``compare`` so the line a user sees before money is
+    spent is the one :func:`run_evaluate` would act on.
+
+    Args:
+        console: Where to print the per-gap lines.
+        evaluators_cfg: The resolved evaluator set for this run's suite.
+        env: Environment mapping, typically ``os.environ``.
+
+    Returns:
+        The advisory gaps — the evaluators the evaluate stage will skip.
+
+    Raises:
+        typer.Exit: Code 1 when any blocking evaluator's model has no key.
+    """
+    gaps = evaluator_key_gaps(evaluators_cfg, env)
+    blocking = [gap for gap in gaps if gap.blocking]
+    for gap in blocking:
+        console.print(missing_key_error(label=gap.label, model=gap.model, env_vars=gap.env_vars))
+    if blocking:
+        console.print(
+            "  Export the key, or set [bold]blocking: false[/bold] on the evaluator "
+            "to run without it."
+        )
+        raise typer.Exit(code=1)
+    skipped = [gap for gap in gaps if not gap.blocking]
+    for gap in skipped:
+        console.print(
+            skip_warning(label=gap.label, model=gap.model, env_vars=gap.env_vars, note=gap.note)
+        )
+    return skipped
+
+
+def _gap_detail(gap: EvaluatorKeyGap) -> ConfigErrorDetail:
+    return ConfigErrorDetail(
+        location=f"evaluators.{gap.kind}",
+        message=(
+            f"{gap.label} uses {gap.model}; export {' or '.join(gap.env_vars)}"
+            + (" (or set blocking: false to run without it)" if gap.blocking else "")
+        ),
+    )
+
+
+def _skipped_record(gap: EvaluatorKeyGap) -> SkippedEvaluator:
+    return SkippedEvaluator(
+        evaluator_name=gap.evaluator_name,
+        kind=gap.kind,
+        label=gap.label,
+        model=gap.model,
+        env_vars=list(gap.env_vars),
+        note=gap.note,
     )
 
 
@@ -1236,5 +1337,6 @@ __all__ = [
     "NoEvaluatorsError",
     "NoPairsError",
     "evaluate",
+    "preflight_evaluator_keys",
     "run_evaluate",
 ]
