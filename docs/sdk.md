@@ -14,20 +14,25 @@ dense LLM reference at <https://www.evalshift.dev/sdk-llms-full.txt>.
 
 ```
 your agent (evalshift-sdk)  →  .evalshift/captures/<suite>/cap_<hex>.json
-                            →  evalshift capture sync
+                            →  or, EVALSHIFT_SINK=s3://… : <prefix>/captures/<suite>/cap_<hex>.json
+                            →  evalshift capture sync       (fetches from captures.store first)
                             →  .evalshift/suites/<suite>/golden.jsonl + evalshift.yaml
 ```
 
-- **Disk is the only interface.** The SDK never imports or calls the CLI, and
-  the CLI reads captures from disk without calling SDK code (`doctor` only
-  checks which package the `evalshift` import name resolves to).
+- **The layout is the interface.** The SDK never imports or calls the CLI, and the CLI reads
+  captures from disk without calling SDK code (`doctor` only checks which package the
+  `evalshift` import name resolves to). The same layout — `captures/<suite>/cap_<hex>.json`
+  plus `toolsets/<hex>.json` — is what the SDK writes to local disk *or* under a prefix in an
+  object store you own; the CLI mirrors the latter into `.evalshift/` and reads it unchanged.
 - **One environment or two.** The CLI imports as `evalshift_cli` and depends on
   the SDK, so `pip install evalshift` gives you both and `import evalshift` is
   always the SDK. A production agent that only records captures installs
   `evalshift-sdk` alone.
 - **Off by default.** Nothing is recorded unless `EVALSHIFT_CAPTURE=1` is set,
   so the instrumentation is safe to leave in production code permanently.
-- **No network.** The SDK writes local files only. Python 3.10+, stdlib-only.
+- **No network by default.** The SDK writes local files unless `EVALSHIFT_SINK` names a bucket
+  you own (`s3://`, `gs://`, `az://`, SDK 0.5.0+), and then it writes only there — never to
+  EvalShift. Python 3.10+, stdlib-only; the cloud clients are optional extras.
 
 ## 1. Instrument the agent
 
@@ -103,12 +108,26 @@ newest captures. `EVALSHIFT_MAX_CAPTURES`, `EVALSHIFT_DEDUP`,
 `EVALSHIFT_CAPTURE_TTL` and `EVALSHIFT_SAMPLE_RATE` tune that; they are read by
 the SDK, in your agent's process.
 
+```bash
+# on a host whose disk does not outlive it (Fargate, Lambda, pods):
+EVALSHIFT_CAPTURE=1 EVALSHIFT_SINK=s3://acme-evals/support-agent python your_agent.py
+```
+
+The SDK ships each capture (and its toolset sidecar) to the bucket on a background thread,
+fail-open; see the SDK docs for the `SIGTERM` / Lambda flush note. Bucket retention is a
+lifecycle rule; `EVALSHIFT_MAX_CAPTURES` applies to local disk only.
+
 ## 3. Promote captures into suites
 
-Run the CLI from the directory holding `.evalshift/` (or set `EVALSHIFT_DIR`):
+Run the CLI from the directory holding `.evalshift/` (or set `EVALSHIFT_DIR`).
+If the captures live in a bucket, name it once in `evalshift.yaml`
+(`captures: {store: s3://acme-evals/support-agent}`) and install `evalshift[s3]` (or `[gcs]` /
+`[azure]`); `list` and `sync` then fetch new captures first. `evalshift capture fetch` does
+only that step.
 
 ```bash
 evalshift capture list                  # what was recorded (--json for machine output)
+evalshift capture fetch                 # mirror new captures from captures.store
 evalshift capture sync                  # promote ALL captures → suites + wire evalshift.yaml
 evalshift capture promote cap_ab12 --as refund_case_1
 evalshift capture diff cap_ab12 cap_cd34

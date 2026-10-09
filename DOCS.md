@@ -14,7 +14,7 @@ The suite is the crux, so the capture SDK is the recommended way to build one: i
 
 - **Package name:** `evalshift` · **CLI entry point:** `evalshift` · **version:** 1.2.2
 - **Python:** >= 3.11 · **License:** Apache-2.0 · **Status:** stable
-- **Local-first.** Runs, scores, stats, and reports all happen on your machine under `.evalshift/`. The only network calls are the model API calls you asked for — and, if you opt in, pushes to the hosted service.
+- **Local-first.** Runs, scores, stats, and reports all happen on your machine under `.evalshift/`. The only network calls are the model API calls you asked for — and, if you opt in, pushes to the hosted service and reads from a capture bucket you own (`captures.store`).
 - **Four pieces:** CLI (this doc), SDK, GitHub Action, hosted server — each with its own machine-readable reference for AI tools. See [Ecosystem and AI-tool references](#ecosystem-and-ai-tool-references).
 
 ---
@@ -159,11 +159,21 @@ The evalshift-sdk (`pip install evalshift-sdk` — already a dependency of the C
 
 ```bash
 evalshift capture list                 # table of recorded captures (--json for machine-readable)
+evalshift capture fetch                # (captures.store only) mirror new captures into .evalshift/
 evalshift capture sync                 # promote ALL captures → suites + wire config
 evalshift capture promote cap_ab12 --as refund_case_1   # promote one
 evalshift capture diff cap_ab12 cap_cd34               # compare two tool traces
 evalshift capture clean                # delete promoted capture files + sweep orphaned toolsets
 ```
+
+**Captures that live in a bucket.** Production hosts on Fargate, Lambda or Kubernetes lose their disk when they stop, so the SDK can ship captures to an object store you own instead (`EVALSHIFT_SINK=s3://<bucket>/<prefix>`, `gs://…` or `az://<account>/<container>/…` in the agent's environment, SDK 0.5.0+). Name the same store once in `evalshift.yaml`:
+
+```yaml
+captures:
+  store: s3://acme-evals/support-agent
+```
+
+and `capture sync` and `capture list` fetch what is new before they read the local directory — captures are immutable and toolsets content-addressed, so only objects missing locally are downloaded, captures already promoted are skipped (so `capture clean` never causes a re-download), and each file is written atomically. Bucket keys are untrusted: one not shaped like the SDK's layout — a suite directory containing `:`, `/`, `\`, NUL or `..`, or starting or ending with `.` or a space, included — is counted as malformed and never written, and no key can place a file outside `.evalshift/`. One summary line reports it (`fetched 12 capture(s) and 1 toolset(s) from s3://…`; with `capture list --json` it goes to stderr, so stdout stays pure JSON). `--since 24h` limits a fetch to recently written captures, `--offline` skips it, and `capture fetch` does only that step. `promote`, `diff` and `clean` stay local. Install the matching extra — `evalshift[s3]`, `[gcs]` or `[azure]` (azure-storage-blob plus azure-identity) — and authenticate with the provider's normal chain (an OIDC role in CI, `aws sso login` / `gcloud auth application-default login` / `az login` locally); credentials never go in the URI, and a value containing `@` or `?` fails to load without being echoed back. A missing extra exits 1 naming the `pip install "evalshift[<extra>]"` to run; a list or download failure exits 1, so `sync` promotes nothing from a partial fetch. If `evalshift.yaml` cannot be read or does not validate, `sync` and `list` skip the fetch and work on the local directory as before, warning only when the file mentions `captures`. Full field reference: [`captures`](docs/configuration.md#captures).
 
 **`capture sync`** is the workhorse. Per suite it:
 
@@ -207,7 +217,7 @@ init          →   doctor   →   run          →   evaluate       →   analy
                                                                    .json (if policy)
 ```
 
-- **`doctor`** validates local config and shows which provider keys are visible. Exit 1 only when an existing `evalshift.yaml` fails validation — the row gives the problem count and points at `evalshift validate`, which prints each problem; missing keys are soft warnings. Its second row, `evalshift-sdk`, reports the SDK version the `evalshift` import name resolves to in this environment (`warn` when the SDK is missing or shadowed by an older CLI's leftover files; never a failure). It also reports the toolset each configured suite carries (or the flat `golden.jsonl`) and flags a suite whose examples carry more than one distinct toolset — legal (each example dispatches its own), but also the shape a wiring mistake takes. When a workflow under `.github/workflows/` uses the GitHub Action it adds a `ci pin` row: `ok` (`pinned to <v>`) when CI installs this CLI version, `warn` when the pin is older, absent, or newer than the local CLI (see [Pin drift](#pin-drift)). When the config wires an `llm_judge` evaluator and names both `defaults.source_model` and `target_model`, a `judge family` row warns for every `judge_model` that resolves to the same provider as an arm (self-preference bias; `ok` "from a third family" otherwise, no row when either arm is unset) — advisory, never a failure; `validate` prints the same line and the report repeats it above the verdict (see [`evaluators.llm_judge`](docs/configuration.md#evaluatorsllm_judge)).
+- **`doctor`** validates local config and shows which provider keys are visible. Exit 1 only when an existing `evalshift.yaml` fails validation — the row gives the problem count and points at `evalshift validate`, which prints each problem — or when its `captures.store` needs a client extra that is not installed; missing keys are soft warnings. Its second row, `evalshift-sdk`, reports the SDK version the `evalshift` import name resolves to in this environment (`warn` when the SDK is missing or shadowed by an older CLI's leftover files; never a failure). It also reports the toolset each configured suite carries (or the flat `golden.jsonl`) and flags a suite whose examples carry more than one distinct toolset — legal (each example dispatches its own), but also the shape a wiring mistake takes. When a workflow under `.github/workflows/` uses the GitHub Action it adds a `ci pin` row: `ok` (`pinned to <v>`) when CI installs this CLI version, `warn` when the pin is older, absent, or newer than the local CLI (see [Pin drift](#pin-drift)). When the config sets `captures.store`, a `captures.store` row reports it: `fail` (exit 1) naming the `pip install "evalshift[<extra>]"` when the client extra is missing, `warn` when the bucket cannot be listed (no cloud credentials on this machine, say), `ok` (`<uri> reachable`) otherwise; no row without a store. When the config wires an `llm_judge` evaluator and names both `defaults.source_model` and `target_model`, a `judge family` row warns for every `judge_model` that resolves to the same provider as an arm (self-preference bias; `ok` "from a third family" otherwise, no row when either arm is unset) — advisory, never a failure; `validate` prints the same line and the report repeats it above the verdict (see [`evaluators.llm_judge`](docs/configuration.md#evaluatorsllm_judge)).
 - **`run`** parses prompts, validates every example against every prompt, estimates cost, then dispatches `(prompt × example × {source, target})` calls through an async orchestrator under a concurrency semaphore. Responses are cached — per call, and per replayed round for tool-calling examples (see [Response cache](#response-cache)); progress is checkpointed every 50 completions.
 - **`evaluate`** scores each (source, target) pair with the configured evaluators, one `EvalRecord` per pair × evaluator. Scoring runs under the same `defaults.concurrency` semaphore as `run`, and the embedding/judge calls it makes go through the same response cache.
 - **`analyze`** runs paired statistics per `(prompt, evaluator, slice)`, applies Benjamini–Hochberg FDR correction, classifies severities, and — when a `migration_policy` is configured — computes a pass/fail verdict.
@@ -319,6 +329,7 @@ suites: {}
 | `migration_policy` | block \| absent | Regression budgets, see [Migration policy](#migration-policy-and-ci-gating) |
 | `suites` | map | Named suites (`{name: {source: captured\|jsonl, path: ..., evaluators: ..., managed: true}}`); the block between the `>>> evalshift suites` markers is managed by `capture sync`. See [Per-suite evaluators](#per-suite-evaluators) |
 | `retention` | block | `max_runs_per_suite` (default 20, `0` disables), `run_ttl_days` (default off) |
+| `captures` | block | `store`: `s3://`, `gs://` or `az://` URI of the object store the SDK ships captures to; `sync` and `list` mirror it locally first. Omit for local disk only. See [Capturing from production](#capturing-from-production) |
 
 `thresholds` was a top-level field until it was removed. It was free-form and gated nothing — `migration_policy` is the single source of truth for gating — so rather than being silently ignored it is now rejected by name, and a config that still carries it fails to load:
 
@@ -792,7 +803,7 @@ evalshift logout
 
 ### What uploads and what stays local
 
-The full field-by-field data contract lives in [docs/hosted.md — Privacy model](docs/hosted.md#privacy-model--exactly-what-uploads); this is the summary. The CLI has **no telemetry** — no analytics, no crash reporting. Its only network traffic is (1) your configured model providers, with your own keys, during `run`/`evaluate`/`report`, and (2) the hosted API on `login`, `whoami`, and `push`.
+The full field-by-field data contract lives in [docs/hosted.md — Privacy model](docs/hosted.md#privacy-model--exactly-what-uploads); this is the summary. The CLI has **no telemetry** — no analytics, no crash reporting. Its only network traffic is (1) your configured model providers, with your own keys, during `run`/`evaluate`/`report`, and (2) the hosted API on `login`, `whoami`, and `push` — plus, with `captures.store` configured, reads from your own capture bucket.
 
 **A push uploads**, inside `run_bundle.json.gz`: the manifest (run id, `org/project` slug, model ids, suite name, git SHA/branch/PR number, the local suite file path string, content hashes, timestamp, CLI version); per-example rows — the example's template `inputs` and `expected` output **verbatim**, both models' **full output text**, the replay's tool-call traces (tool names, arguments and call ids, round markers, final text and refusal messages, capped at 256 KB per side; imported agent traces are not uploaded), per-evaluator scores, error strings and one-line explanations, for each `trace_invariants` evaluator the rules each side broke (rule id, type, tool, round, detail; also for entries checked on imported traces, whose timelines otherwise stay local), per-side cost and latency, tags; aggregate/analysis/decision/economics (numbers, not content); methodology notes; the insights narrative (prose that can quote the regressions it summarizes); the evaluator config with every prompt body replaced by a `content_hash` (prompt names, file paths and variable names do ship, and so does each `llm_judge` `criterion_prompt`); and a dataset snapshot holding only metadata plus an `examples_hash`. Request metadata beside the bundle: the bearer token as an auth header to the configured host only, and the compressed size.
 
@@ -858,7 +869,7 @@ Common conventions: `-c/--config` defaults to `./evalshift.yaml`; run artefacts 
 `-f/--force` · `-d/--directory <dir>` · `--ci` · `--wire-agents/--no-wire-agents` (default on) · `--provider gemini|openai|anthropic|deepseek` · `--profile model-upgrade|cost-reduction|local-model|quantization|provider-switch` (default `model-upgrade`)
 Without `--ci`, warns after writing when an existing workflow under `.github/workflows/` pins an older or newer CLI than this one, or none at all (see [Pin drift](#pin-drift)); `init --ci` writes the pin itself and does not warn about the file it just wrote.
 
-**`evalshift doctor`** — environment/config check. Exit 1 only on an invalid existing config. Row 2, `evalshift-sdk`, confirms `import evalshift` is the SDK (`warn` when missing or shadowed, never a failure). Reports the toolset each configured suite carries and flags a suite whose examples carry more than one distinct toolset. The suite-side checks cover every suite in the config's `suites:` block, falling back to `./golden.jsonl` when none are wired. Adds a `ci pin` row when a workflow uses the GitHub Action (`warn` on pin drift, never a failure) and a `judge family` row when an `llm_judge` judge shares a provider with a configured arm (`warn`, never a failure).
+**`evalshift doctor`** — environment/config check. Exit 1 only on an invalid existing config or a `captures.store` whose client extra is missing. Row 2, `evalshift-sdk`, confirms `import evalshift` is the SDK (`warn` when missing or shadowed, never a failure). Reports the toolset each configured suite carries and flags a suite whose examples carry more than one distinct toolset. The suite-side checks cover every suite in the config's `suites:` block, falling back to `./golden.jsonl` when none are wired. Adds a `ci pin` row when a workflow uses the GitHub Action (`warn` on pin drift, never a failure) and a `judge family` row when an `llm_judge` judge shares a provider with a configured arm (`warn`, never a failure). Adds a `captures.store` row when the config names a store (`fail` on a missing extra, `warn` when the bucket cannot be listed).
 
 **`evalshift run`** — paired evaluation run (costs money — calls real models).
 `-f/--from <model>` · `-t/--to <model>` · `-c/--config` · `-s/--suite <file>` · `--suite-name <name>` · `--resume` · `-y/--yes`
@@ -884,9 +895,10 @@ All `run` flags, plus `--gate` · `--policy-gate` · `--open` · `--push` · `--
 
 ### Captures
 
-**`evalshift capture list [suite]`** — `--json`
+**`evalshift capture list [suite]`** — `--json` · `-c/--config` · `--offline`
+**`evalshift capture fetch`** — `--suite` · `--since <30m|24h|7d|ISO>` · `-c/--config` (needs `captures.store`)
 **`evalshift capture promote <capture-id>`** — `--as <case-id>` · `--suite` · `--input-var` (default `input`) · `--tag` (repeatable) · `--strict-args` · `--names-only` · `--tool-count` · `--rounds {first,all}` (default `first`) · `--allow-errored` · `-f/--force`
-**`evalshift capture sync`** — `--suite` · `--input-var` · `--tag` · `--strict-args` · `--names-only` · `--tool-count` · `--rounds {first,all}` · `--allow-errored` · `-c/--config` · `-f/--force` · `--write/--print` (default write) · `--keep-duplicates`
+**`evalshift capture sync`** — `--suite` · `--input-var` · `--tag` · `--strict-args` · `--names-only` · `--tool-count` · `--rounds {first,all}` · `--allow-errored` · `-c/--config` · `-f/--force` · `--write/--print` (default write) · `--keep-duplicates` · `--since` · `--offline`
 **`evalshift capture clean [suite]`** — `--promoted` (default) · `--all` · `-y/--yes`
 **`evalshift capture diff <cap-a> <cap-b>`**
 
@@ -1026,7 +1038,7 @@ No. EvalShift compares model behaviour, not framework code: prompts come from co
 
 ### Where does my data go?
 
-Nowhere, by default. Model inputs/outputs go to the providers you configured (that's the point); everything else stays under `.evalshift/` and `~/.evalshift/`. The hosted service only sees what `push` explicitly uploads. One thing worth knowing: [run insights](#run-insights) sends the worst regressions' inputs and outputs to `defaults.insights_model` — the same exposure as an `llm_judge` criterion. `--no-insights` turns it off.
+Nowhere, by default. Model inputs/outputs go to the providers you configured (that's the point); everything else stays under `.evalshift/` and `~/.evalshift/`. The hosted service only sees what `push` explicitly uploads. One thing worth knowing: [run insights](#run-insights) sends the worst regressions' inputs and outputs to `defaults.insights_model` — the same exposure as an `llm_judge` criterion. `--no-insights` turns it off. With `captures.store` configured, `capture sync`, `list` and `fetch` read from the bucket *you* named using *your* cloud credentials; nothing is sent to EvalShift, and `doctor` reports whether that store is reachable.
 
 ---
 

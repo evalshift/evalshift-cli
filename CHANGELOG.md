@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `captures.store` in `evalshift.yaml`: name the object store the capture SDK
+  ships captures to — `s3://<bucket>/<prefix>`, `gs://<bucket>/<prefix>` or
+  `az://<account>/<container>/<prefix>` — and `capture sync` and `capture list`
+  mirror new captures and toolset sidecars from it into `.evalshift/` before
+  they run, with no flags. Only objects missing locally are downloaded
+  (captures are immutable, toolsets content-addressed), captures already
+  promoted are skipped so `capture clean` never causes a re-download, and
+  every file is written atomically. New `capture fetch` does only that step;
+  `--since 30m|24h|7d|<ISO>` limits a fetch to recently written captures and
+  `--offline` skips it. Keys from a bucket are validated against the SDK's
+  layout and anything else is ignored as malformed — including a suite
+  directory containing `:`, `/`, `\`, NUL or `..`, or starting or ending with
+  `.` or a space — and no destination can land outside `.evalshift/`. Extras:
+  `evalshift[s3]`, `[gcs]`, `[azure]` (azure-storage-blob and azure-identity);
+  a missing one exits 1 naming the `pip install` to run. Credentials come from
+  each provider's default chain and are rejected in the URI: a value with `@`
+  or `?` fails to load, naming the accepted forms without echoing it.
+  `capture list --json` keeps stdout pure JSON (the fetch line and warnings
+  go to stderr). `doctor` reports whether the store is installed (`fail`, exit 1,
+  when the extra is missing) and reachable (`warn` when it cannot be listed).
+  Without `captures.store` nothing changes; a `sync` or `list` whose
+  `evalshift.yaml` cannot be read or does not validate skips the fetch,
+  warning only when the file mentions `captures`.
 - `evaluators.trace_invariants`: hand-written rules over tool-call traces —
   `forbidden`, `required`, `order`, `call_count` (`min_calls` and/or
   `max_calls` per tool; equal bounds = an exact count) and
