@@ -70,8 +70,13 @@ from evalshift_cli.evaluators.agent_trace import AgentTraceEvaluator
 from evalshift_cli.evaluators.base import EvalRecord, Evaluator, EvaluatorError, PairedScore
 from evalshift_cli.evaluators.failures import INVARIANT_VIOLATION
 from evalshift_cli.evaluators.keys import (
+    ALL_SKIPPED_SUMMARY,
     EvaluatorKeyGap,
+    all_skipped_error,
     evaluator_key_gaps,
+    forced_gate_hint,
+    gap_detail,
+    has_evaluators,
     missing_key_error,
     skip_warning,
     without_gaps,
@@ -230,7 +235,7 @@ def run_evaluate(
             config_path,
             "missing_key",
             "missing API key for a blocking evaluator",
-            details=[_gap_detail(gap) for gap in blocking_gaps],
+            details=[_gap_detail(gap, cfg, state.suite_name) for gap in blocking_gaps],
         )
     skipped_gaps = [gap for gap in gaps if not gap.blocking]
     evaluators = _build_evaluators(
@@ -243,8 +248,8 @@ def run_evaluate(
         raise ConfigError(
             config_path,
             "missing_key",
-            "every configured evaluator was skipped: none of their models has an API key",
-            details=[_gap_detail(gap) for gap in skipped_gaps],
+            ALL_SKIPPED_SUMMARY,
+            details=[_gap_detail(gap, cfg, state.suite_name) for gap in skipped_gaps],
         )
     if not quiet:
         for gap in skipped_gaps:
@@ -361,34 +366,51 @@ def preflight_evaluator_keys(
         The advisory gaps — the evaluators the evaluate stage will skip.
 
     Raises:
-        typer.Exit: Code 1 when any blocking evaluator's model has no key.
+        typer.Exit: Code 1 when any blocking evaluator's model has no key,
+            or when skipping the advisory ones would leave nothing to score
+            with — refused here rather than after every arm call is paid for.
     """
     gaps = evaluator_key_gaps(evaluators_cfg, env)
     blocking = [gap for gap in gaps if gap.blocking]
     for gap in blocking:
         console.print(missing_key_error(label=gap.label, model=gap.model, env_vars=gap.env_vars))
+        if gap.blocked_by:
+            console.print(f"  {escape(gap.label)} is {escape(forced_gate_hint(gap))}.")
     if blocking:
-        console.print(
-            "  Export the key, or set [bold]blocking: false[/bold] on the evaluator "
-            "to run without it."
-        )
+        if any(not gap.blocked_by for gap in blocking):
+            console.print(
+                "  Export the key, or set [bold]blocking: false[/bold] on the evaluator "
+                "to run without it."
+            )
         raise typer.Exit(code=1)
     skipped = [gap for gap in gaps if not gap.blocking]
     for gap in skipped:
         console.print(
             skip_warning(label=gap.label, model=gap.model, env_vars=gap.env_vars, note=gap.note)
         )
+    if skipped and not has_evaluators(without_gaps(evaluators_cfg, skipped)):
+        console.print(all_skipped_error())
+        raise typer.Exit(code=1)
     return skipped
 
 
-def _gap_detail(gap: EvaluatorKeyGap) -> ConfigErrorDetail:
-    return ConfigErrorDetail(
-        location=f"evaluators.{gap.kind}",
-        message=(
-            f"{gap.label} uses {gap.model}; export {' or '.join(gap.env_vars)}"
-            + (" (or set blocking: false to run without it)" if gap.blocking else "")
-        ),
+def _gap_detail(
+    gap: EvaluatorKeyGap, cfg: EvalShiftConfig, suite_name: str | None
+) -> ConfigErrorDetail:
+    """One ``ConfigError`` detail, located where the gap's entry is written.
+
+    A named suite whose own ``evaluators`` block mentions the family replaces
+    the top-level one (see ``evaluators_for``), so that block is where the
+    entry — and the fix — lives.
+    """
+    suite = cfg.suites.get(suite_name) if suite_name is not None else None
+    own = suite.evaluators if suite is not None else None
+    location = (
+        f"suites.{suite_name}.evaluators.{gap.kind}"
+        if own is not None and gap.kind in own.model_fields_set
+        else f"evaluators.{gap.kind}"
     )
+    return ConfigErrorDetail(location=location, message=gap_detail(gap))
 
 
 def _skipped_record(gap: EvaluatorKeyGap) -> SkippedEvaluator:

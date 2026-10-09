@@ -602,6 +602,79 @@ class TestEvaluatorKeyPreflight:
         )
         assert calls == []
 
+    def test_every_evaluator_skipped_exits_before_any_model_call(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An advisory-only config with no keys would spend the run, then fail."""
+        _scaffold(tmp_path)
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "          structural:\n"
+                "            - type: length\n"
+                "              min_chars: 1\n"
+                "              max_chars: 200",
+                "          llm_judge:\n"
+                "            - criterion_name: equivalence\n"
+                "              criterion_prompt: which is better?\n"
+                "              judge_model: gpt-4o-mini\n"
+                "              blocking: false",
+            ),
+            encoding="utf-8",
+        )
+        _patch_client(monkeypatch)
+        calls: list[str] = []
+
+        async def spy_complete(self: ModelClient, **kwargs: Any) -> CompletionResult:
+            calls.append(str(kwargs["model"]))
+            raise AssertionError("no model call may happen before the key preflight")
+
+        monkeypatch.setattr(ModelClient, "complete", spy_complete)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"])
+
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert "every configured evaluator would be skipped" in flat
+        assert "OPENAI_API_KEY" in flat
+        assert calls == []
+        assert not (tmp_path / ".evalshift" / "runs").exists()
+
+    def test_tool_arguments_forced_gate_names_the_entry(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "              max_chars: 200",
+                "              max_chars: 200\n"
+                "          semantic:\n"
+                "            embedding_model: openai/text-embedding-3-small\n"
+                "            blocking: false\n"
+                "          tool_arguments:\n"
+                "            - name: args\n"
+                "              default_strategy: semantic\n"
+                "              blocking: true",
+            ),
+            encoding="utf-8",
+        )
+        _patch_client(monkeypatch)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"])
+
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert (
+            "semantic is blocking because tool_arguments `args` uses the semantic strategy — "
+            "export OPENAI_API_KEY or change that strategy."
+        ) in flat
+        assert "blocking: false" not in flat
+
     def test_another_suites_keyless_blocking_judge_does_not_fail_the_doctor_stage(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

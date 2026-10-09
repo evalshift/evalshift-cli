@@ -10,7 +10,10 @@ and the decision's recommendation cannot drift apart.
 An advisory gap is skipped; a blocking one is refused. ``semantic``'s
 effective blocking flag also accounts for ``tool_arguments``, which borrows
 its embedder: skipping it would silently move a blocking ``semantic``
-strategy onto exact matching.
+strategy onto exact matching. When that, not ``semantic``'s own flag, is
+what makes it a gate, the gap names the ``tool_arguments`` entry
+(``blocked_by``) so no message tells the user to set a flag that is already
+``false``.
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ EXACT_FALLBACK_NOTE = (
 AUTO_FALLBACK_NOTE = (
     "tool_arguments compares free-text arguments with difflib instead of embeddings until then."
 )
+#: ``ConfigError`` summary when the evaluate stage drops every evaluator.
+ALL_SKIPPED_SUMMARY = "every configured evaluator was skipped: none of their models has an API key"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +51,8 @@ class EvaluatorKeyGap:
         env_vars: The env vars that would satisfy it, primary first.
         blocking: Effective flag — see the module docstring for ``semantic``.
         note: A side effect of skipping it, or ``""``.
+        blocked_by: The ``tool_arguments`` entry that makes a ``semantic``
+            whose own flag is ``false`` a gate, or ``""``.
     """
 
     evaluator_name: str
@@ -55,6 +62,7 @@ class EvaluatorKeyGap:
     env_vars: tuple[str, ...]
     blocking: bool
     note: str = ""
+    blocked_by: str = ""
 
 
 def evaluator_key_gaps(
@@ -77,7 +85,9 @@ def evaluator_key_gaps(
     if semantic is not None:
         keys = missing_api_keys(semantic.embedding_model, env)
         if keys:
-            blocking, note = _semantic_effect(semantic.blocking, evaluators.tool_arguments)
+            blocking, note, blocked_by = _semantic_effect(
+                semantic.blocking, evaluators.tool_arguments
+            )
             gaps.append(
                 EvaluatorKeyGap(
                     evaluator_name=SEMANTIC_EVALUATOR_NAME,
@@ -87,6 +97,7 @@ def evaluator_key_gaps(
                     env_vars=keys,
                     blocking=blocking,
                     note=note,
+                    blocked_by=blocked_by,
                 )
             )
     for judge in evaluators.llm_judge:
@@ -134,6 +145,18 @@ def without_gaps(
     return evaluators.model_copy(update=update)
 
 
+def has_evaluators(evaluators: EvaluatorsConfig) -> bool:
+    """Whether ``evaluators`` has any entry left to score with.
+
+    Args:
+        evaluators: A resolved set, typically after :func:`without_gaps`.
+
+    Returns:
+        ``True`` when any evaluator family has an entry.
+    """
+    return any(getattr(evaluators, field) for field in type(evaluators).model_fields)
+
+
 def skip_warning(*, label: str, model: str, env_vars: Sequence[str], note: str = "") -> str:
     """Terminal line (Rich markup) for an advisory evaluator that will be skipped.
 
@@ -170,6 +193,59 @@ def missing_key_error(*, label: str, model: str, env_vars: Sequence[str]) -> str
     )
 
 
+def all_skipped_error() -> str:
+    """Terminal line (Rich markup) when every evaluator would be skipped.
+
+    Printed under the per-gap skip warnings, which name the env vars, before
+    any model call: a run nothing would score is refused up front.
+
+    Returns:
+        The error line.
+    """
+    return (
+        "[red]✗[/red] every configured evaluator would be skipped: none of their models "
+        "has an API key, so nothing would score this run. Export a key above, "
+        "or add an evaluator that needs none."
+    )
+
+
+def forced_gate_hint(gap: EvaluatorKeyGap) -> str:
+    """Why a ``semantic`` with ``blocking: false`` is a gate, and the fix.
+
+    Args:
+        gap: A gap whose ``blocked_by`` names the ``tool_arguments`` entry.
+
+    Returns:
+        Plain text naming the entry and the env vars; never "set blocking:
+        false", which is already the case.
+    """
+    return (
+        f"blocking because tool_arguments `{gap.blocked_by}` uses the semantic strategy — "
+        f"export {' or '.join(gap.env_vars)} or change that strategy"
+    )
+
+
+def gap_detail(gap: EvaluatorKeyGap) -> str:
+    """Plain one-line description of a gap, with its remedy.
+
+    Shared by the evaluate stage's error details and ``doctor``'s rows.
+
+    Args:
+        gap: The gap to describe.
+
+    Returns:
+        ``<label> uses <model>; export <ENV>`` plus why it blocks and how to
+        stop it blocking, or that it is skipped until then.
+    """
+    head = f"{gap.label} uses {gap.model}; "
+    if gap.blocked_by:
+        return head + forced_gate_hint(gap)
+    export = f"export {' or '.join(gap.env_vars)}"
+    if gap.blocking:
+        return f"{head}{export} (or set blocking: false to run without it)"
+    return f"{head}{export} (skipped until then)"
+
+
 def skip_recommendation(*, label: str, model: str, env_vars: Sequence[str], note: str = "") -> str:
     """Plain-text ``recommendations`` line for an evaluator the run skipped.
 
@@ -195,25 +271,35 @@ def _uses(ta: ToolArgumentsEvaluatorConfig, strategy: str) -> bool:
 def _semantic_effect(
     semantic_blocking: bool,
     tool_arguments: Sequence[ToolArgumentsEvaluatorConfig],
-) -> tuple[bool, str]:
-    """Effective blocking flag and side-effect note for a keyless ``semantic``."""
-    if any(ta.blocking and _uses(ta, "semantic") for ta in tool_arguments):
-        return True, EXACT_FALLBACK_NOTE
+) -> tuple[bool, str, str]:
+    """Effective blocking flag, side-effect note and forcing entry for ``semantic``.
+
+    The third item names the blocking ``tool_arguments`` entry when it, not
+    ``semantic``'s own flag, makes the gap a gate.
+    """
+    forcing = [ta.name for ta in tool_arguments if ta.blocking and _uses(ta, "semantic")]
+    if forcing:
+        return True, EXACT_FALLBACK_NOTE, "" if semantic_blocking else forcing[0]
     if any(_uses(ta, "semantic") for ta in tool_arguments):
-        return semantic_blocking, EXACT_FALLBACK_NOTE
+        return semantic_blocking, EXACT_FALLBACK_NOTE, ""
     if any(_uses(ta, "auto") for ta in tool_arguments):
-        return semantic_blocking, AUTO_FALLBACK_NOTE
-    return semantic_blocking, ""
+        return semantic_blocking, AUTO_FALLBACK_NOTE, ""
+    return semantic_blocking, "", ""
 
 
 __all__ = [
+    "ALL_SKIPPED_SUMMARY",
     "AUTO_FALLBACK_NOTE",
     "EXACT_FALLBACK_NOTE",
     "LLM_JUDGE_KIND",
     "SEMANTIC_EVALUATOR_NAME",
     "SEMANTIC_KIND",
     "EvaluatorKeyGap",
+    "all_skipped_error",
     "evaluator_key_gaps",
+    "forced_gate_hint",
+    "gap_detail",
+    "has_evaluators",
     "missing_key_error",
     "skip_recommendation",
     "skip_warning",

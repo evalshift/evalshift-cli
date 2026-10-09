@@ -1965,6 +1965,67 @@ class TestEvaluatorKeyGaps:
         assert "OPENAI_API_KEY" in flat
         assert not (tmp_path / ".evalshift" / "runs" / run_id / SCORES_FILENAME).exists()
 
+    def test_tool_arguments_forced_gate_names_the_entry(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _clear_keys(monkeypatch)
+        (tmp_path / "evalshift.yaml").write_text(
+            """
+            version: 1
+            prompts:
+              - id: greet
+                detection: manual
+                content: "Hi {name}"
+                variables: [name]
+            evaluators:
+              semantic:
+                embedding_model: openai/text-embedding-3-small
+                blocking: false
+              tool_arguments:
+                - name: args
+                  default_strategy: semantic
+                  blocking: true
+            """,
+            encoding="utf-8",
+        )
+        run_id = _scaffold_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["evaluate", run_id])
+
+        assert result.exit_code == 1
+        # The panel wraps the detail; drop its border to read it as one line.
+        flat = " ".join(result.stdout.replace("│", " ").split())
+        assert "blocking because tool_arguments `args` uses the semantic strategy" in flat
+        assert "blocking: false" not in flat
+
+    def test_a_suites_own_judge_is_located_in_its_block(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _clear_keys(monkeypatch)
+        _judges_config(tmp_path)
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace("          llm_judge:", "").rstrip()
+            + "\n        suites:\n"
+            + "          s:\n"
+            + "            path: golden.jsonl\n"
+            + "            evaluators:\n"
+            + "              llm_judge:\n"
+            + "                - criterion_name: equivalence\n"
+            + "                  criterion_prompt: which is better?\n"
+            + "                  judge_model: gpt-4o-mini\n",
+            encoding="utf-8",
+        )
+        run_id = _scaffold_run(tmp_path, suite_name="s")
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["evaluate", run_id])
+
+        assert result.exit_code == 1
+        flat = " ".join(result.stdout.split())
+        assert "suites.s.evaluators.llm_judge" in flat
+
     def test_every_evaluator_skipped_names_the_keys(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

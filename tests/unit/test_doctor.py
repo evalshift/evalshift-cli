@@ -810,6 +810,24 @@ class TestEvaluatorKeysCheck:
         assert row.status == "warn"
         assert "skipped until then" in row.detail
 
+    def test_tool_arguments_forced_gate_names_the_entry(self, tmp_path: Path) -> None:
+        (tmp_path / CONFIG_FILENAME).write_text(
+            "prompts:\n  - {id: a, detection: manual, content: hi}\n"
+            "evaluators:\n"
+            "  semantic:\n"
+            "    embedding_model: openai/text-embedding-3-small\n"
+            "    blocking: false\n"
+            "  tool_arguments:\n"
+            "    - name: args\n"
+            "      default_strategy: semantic\n"
+            "      blocking: true\n",
+            encoding="utf-8",
+        )
+        (row,) = _key_rows(run_checks(cwd=tmp_path, env=_empty_env()))
+        assert row.status == "fail"
+        assert "blocking because tool_arguments `args` uses the semantic strategy" in row.detail
+        assert "blocking: false" not in row.detail
+
     def test_ok_when_every_key_is_set(self, tmp_path: Path) -> None:
         _write_judge_config(tmp_path, judges=("openai/gpt-4.1-mini",))
         (row,) = _key_rows(run_checks(cwd=tmp_path, env={"OPENAI_API_KEY": "k"}))

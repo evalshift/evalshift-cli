@@ -51,7 +51,7 @@ from evalshift_cli.config.models import EvalShiftConfig
 from evalshift_cli.evaluators import tool_selection
 from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.evaluators.failures import BROKEN_HARNESS_CAUSES
-from evalshift_cli.evaluators.keys import EvaluatorKeyGap, evaluator_key_gaps
+from evalshift_cli.evaluators.keys import EvaluatorKeyGap, evaluator_key_gaps, gap_detail
 from evalshift_cli.models.family import (
     configured_judge_models,
     describe_overlap,
@@ -481,10 +481,7 @@ def _evaluator_key_checks(cwd: Path, env: Mapping[str, str]) -> list[CheckResult
         CheckResult(
             name=EVALUATOR_KEYS_CHECK,
             status="fail" if gap.blocking else "warn",
-            detail=(
-                f"{gap.label} uses {gap.model}; export {' or '.join(gap.env_vars)}"
-                + ("" if gap.blocking else " (skipped until then)")
-            ),
+            detail=gap_detail(gap),
         )
         for gap in gaps.values()
     ]

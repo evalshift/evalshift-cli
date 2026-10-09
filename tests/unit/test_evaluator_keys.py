@@ -9,7 +9,11 @@ from evalshift_cli.evaluators.keys import (
     AUTO_FALLBACK_NOTE,
     EXACT_FALLBACK_NOTE,
     EvaluatorKeyGap,
+    all_skipped_error,
     evaluator_key_gaps,
+    forced_gate_hint,
+    gap_detail,
+    has_evaluators,
     missing_key_error,
     skip_recommendation,
     skip_warning,
@@ -114,6 +118,25 @@ class TestSemanticToolArgumentsInteraction:
         assert gap.blocking is False
         assert gap.note == AUTO_FALLBACK_NOTE
 
+    def test_forced_gate_names_the_tool_arguments_entry(self) -> None:
+        gap = self._gap(strategies={"query": "semantic"}, blocking=True)
+        assert gap.blocked_by == "args"
+
+    def test_advisory_tool_arguments_names_no_entry(self) -> None:
+        gap = self._gap(strategies={"query": "semantic"}, blocking=False)
+        assert gap.blocked_by == ""
+
+    def test_own_blocking_flag_names_no_entry(self) -> None:
+        # semantic is a gate on its own account; the tool_arguments entry is
+        # not why it blocks, so "set blocking: false" is still the right hint.
+        evaluators = _evaluators(
+            semantic={"embedding_model": "openai/text-embedding-3-small", "blocking": True},
+            tool_arguments=[{"name": "args", "default_strategy": "semantic", "blocking": True}],
+        )
+        (gap,) = evaluator_key_gaps(evaluators, {})
+        assert gap.blocking is True
+        assert gap.blocked_by == ""
+
 
 class TestWithoutGaps:
     def test_drops_only_the_named_evaluators(self) -> None:
@@ -132,6 +155,22 @@ class TestWithoutGaps:
     def test_no_gaps_returns_the_same_instance(self) -> None:
         evaluators = _evaluators(llm_judge=[_JUDGE])
         assert without_gaps(evaluators, []) is evaluators
+
+
+class TestHasEvaluators:
+    def test_empty_set_has_none(self) -> None:
+        assert has_evaluators(_evaluators()) is False
+
+    def test_dropping_every_keyless_entry_can_leave_none(self) -> None:
+        evaluators = _evaluators(
+            semantic={"embedding_model": "openai/text-embedding-3-small", "blocking": False},
+            llm_judge=[_JUDGE],
+        )
+        assert has_evaluators(evaluators) is True
+        assert has_evaluators(without_gaps(evaluators, evaluator_key_gaps(evaluators, {}))) is False
+
+    def test_any_other_family_counts(self) -> None:
+        assert has_evaluators(_evaluators(tool_selection=[{"name": "sel"}])) is True
 
 
 class TestMessages:
@@ -164,3 +203,47 @@ class TestMessages:
             "llm_judge.equivalence was skipped: no API key for gemini-2.5-flash. "
             "Export GEMINI_API_KEY or GOOGLE_API_KEY to enable it."
         )
+
+    def test_all_skipped_error(self) -> None:
+        assert all_skipped_error() == (
+            "[red]✗[/red] every configured evaluator would be skipped: none of their "
+            "models has an API key, so nothing would score this run. Export a key above, "
+            "or add an evaluator that needs none."
+        )
+
+
+def _gap(**overrides: Any) -> EvaluatorKeyGap:
+    fields: dict[str, Any] = {
+        "evaluator_name": "semantic.cosine",
+        "kind": "semantic",
+        "label": "semantic",
+        "model": "openai/text-embedding-3-small",
+        "env_vars": ("OPENAI_API_KEY",),
+        "blocking": True,
+    }
+    return EvaluatorKeyGap(**{**fields, **overrides})
+
+
+class TestGapDetail:
+    def test_blocking(self) -> None:
+        assert gap_detail(_gap()) == (
+            "semantic uses openai/text-embedding-3-small; export OPENAI_API_KEY "
+            "(or set blocking: false to run without it)"
+        )
+
+    def test_advisory(self) -> None:
+        assert gap_detail(_gap(blocking=False)) == (
+            "semantic uses openai/text-embedding-3-small; export OPENAI_API_KEY "
+            "(skipped until then)"
+        )
+
+    def test_forced_gate_names_the_entry_not_the_flag(self) -> None:
+        gap = _gap(blocked_by="args")
+        assert forced_gate_hint(gap) == (
+            "blocking because tool_arguments `args` uses the semantic strategy — "
+            "export OPENAI_API_KEY or change that strategy"
+        )
+        assert gap_detail(gap) == (
+            f"semantic uses openai/text-embedding-3-small; {forced_gate_hint(gap)}"
+        )
+        assert "blocking: false" not in gap_detail(gap)

@@ -186,8 +186,11 @@ evalshift doctor
   exit 1), warn if the bucket cannot be listed (exit 0), ok "<uri> reachable"; no row without
   a store (or when evalshift.yaml is invalid -- its own row reports that).
   `evaluator keys` row (config has semantic or llm_judge; checks the top-level block + every
-  named suite's resolved set): fail (exit 1) "<label> uses <model>; export <VAR>" for a blocking
-  evaluator with no key; warn (exit 0) "... (skipped until then)" for an advisory one; one ok
+  named suite's resolved set): fail (exit 1) "<label> uses <model>; export <VAR> (or set
+  blocking: false to run without it)" for a blocking evaluator with no key ("<label> uses
+  <model>; blocking because tool_arguments `<name>` uses the semantic strategy — export <VAR>
+  or change that strategy" when that entry is what makes semantic a gate); warn (exit 0)
+  "... (skipped until then)" for an advisory one; one ok
   "judge and embedding models have API keys" otherwise; no row without a loadable config.
   compare's doctor stage ignores this row (its own suite-scoped preflight decides).
 evalshift run [-f/--from MODEL] [-t/--to MODEL] [-c CONFIG] [-s/--suite FILE]
@@ -1229,9 +1232,16 @@ content leaves the machine.
     "⚠ <label> skipped: no API key for <model> — export <VAR> to enable it." (+ note line)
   Blocking -> "✗ missing API key for <model> (<label>); export <VAR>." and exit 1, before any
   spend (skipping a gate would turn a broken config into a green check). Label: `semantic` or
-  `llm_judge.<criterion_name>`. Effective blocking for a keyless semantic: BLOCKING when a
+  `llm_judge.<criterion_name>`. Every evaluator would be skipped (advisory gaps leave no
+  evaluator family) -> the skip warnings, then "✗ every configured evaluator would be skipped:
+  none of their models has an API key, so nothing would score this run. Export a key above, or
+  add an evaluator that needs none." and exit 1, before any call. Effective blocking for a
+  keyless semantic: BLOCKING when a
   blocking tool_arguments entry uses the explicit `semantic` strategy (strategies value or
-  default_strategy) -- else that gate would silently degrade to exact; otherwise semantic's own
+  default_strategy) -- else that gate would silently degrade to exact; when semantic's own flag
+  is false the line names the entry: "semantic is blocking because tool_arguments `<name>` uses
+  the semantic strategy — export <VAR> or change that strategy." (same wording in evaluate's
+  ConfigError detail and the doctor row; never "set blocking: false"); otherwise semantic's own
   flag, with note "tool_arguments compares free-text arguments with difflib instead of
   embeddings until then." (auto) or "...fields using the semantic strategy fall back to exact
   matching until then." (explicit, advisory entry). evaluate (run_evaluate, shared by compare/

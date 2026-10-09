@@ -15,7 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wires that key as a second secret.
 - `compare`, `run` and `evaluate` check every judge and embedding model's API
   key before the first call. An advisory evaluator without one is skipped with
-  a line naming the env var to export; a blocking one stops the run. The skip
+  a line naming the env var to export; a blocking one stops the run, and so
+  does a config whose every evaluator would be skipped. A `semantic` that is a
+  gate only because a blocking `tool_arguments` entry uses its embedder is
+  reported as such, naming that entry. The skip
   is recorded in `state.json` (`skipped_evaluators`) and repeated in the
   verdict's recommendations, the HTML report and the bundle.
 - `doctor` gains an `evaluator keys` row.

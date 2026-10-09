@@ -513,14 +513,16 @@ is skipped — no embedding calls — with
 `⚠ semantic skipped: no API key for openai/text-embedding-3-small — export OPENAI_API_KEY to enable it.`;
 the skip is recorded in `state.json` (`skipped_evaluators`) and repeated in
 the verdict's recommendations. A blocking one stops the run with exit 1
-instead. `evaluate` applies the same rule.
+instead. So does a config whose every evaluator would be skipped — nothing
+would score the run, so it is refused before any call rather than after the
+arms are paid for. `evaluate` applies the same rule.
 
 **Interaction with `tool_arguments`.** [`tool_arguments`](#evaluatorstool_arguments)
 borrows this block's embedder, so skipping it changes how arguments score:
 
 | `tool_arguments` uses | Without the embedder | A keyless `semantic` is treated as |
 | --- | --- | --- |
-| the `semantic` strategy (in `strategies` or as `default_strategy`) on a **blocking** entry | that gate would fall back to `exact` | **blocking** — the run stops |
+| the `semantic` strategy (in `strategies` or as `default_strategy`) on a **blocking** entry | that gate would fall back to `exact` | **blocking** — the run stops, naming the entry when this block says `blocking: false` (``semantic is blocking because tool_arguments `args` uses the semantic strategy — export OPENAI_API_KEY or change that strategy.``) |
 | the `semantic` strategy on an advisory entry | `exact` | this block's own `blocking`; the warning says so |
 | `auto` (the default) | free text graded by `difflib` ratio | this block's own `blocking`; the warning says so |
 
