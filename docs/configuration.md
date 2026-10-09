@@ -1043,7 +1043,8 @@ Accepted URI forms — the same grammar the SDK uses:
 | `az://<account>/<container>/<prefix>` | Azure Blob Storage | `pip install "evalshift[azure]"` | Managed Identity / federated credential in CI, `az login` locally |
 
 `<prefix>` is optional. Credentials never go in the URI: a value containing `@` or `?` fails
-to load, naming the accepted forms. Under the prefix the layout is exactly the local one —
+to load, naming the accepted forms. A rejected value is never echoed back (it may be a pasted
+key or connection string); the error names only its scheme. Under the prefix the layout is exactly the local one —
 `captures/<suite>/cap_<hex>.json` and `toolsets/<hex>.json` — so the bucket is a mirror of
 `.evalshift/`, not a different format.
 

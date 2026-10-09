@@ -733,7 +733,7 @@ retention:
 captures:
   store: s3://<bucket>/<prefix> | gs://<bucket>/<prefix> | az://<account>/<container>/<prefix>
   -- optional block; store validated at load (bad scheme, missing bucket/container, '@' or '?'
-  -> load error naming the forms; the '@'/'?' error never echoes the value); prefix optional,
+  -> load error naming the forms; no error echoes the value, only its scheme); prefix optional,
   trailing slash stripped; default none = local disk only. Extras: evalshift[s3] (boto3;
   AWS_ENDPOINT_URL covers MinIO/R2/B2), [gcs] (google-cloud-storage), [azure]
   (azure-storage-blob + azure-identity). Credentials: each provider's default chain only.

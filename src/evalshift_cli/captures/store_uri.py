@@ -58,8 +58,8 @@ def parse_store_uri(uri: str) -> StoreURI:
     Raises:
         ValueError: for an unknown scheme, a missing bucket or container, or a URI carrying
             credentials (``@``) or query parameters (``?``). The message names the accepted
-            forms so a config error is self-explanatory; the ``@`` and ``?`` messages never
-            echo the URI, since that is exactly where a key or signature would sit.
+            forms so a config error is self-explanatory, and never echoes the value: a rejected
+            value may be a key, a signature or a pasted connection string.
     """
     text = uri.strip()
     if "@" in text:
@@ -71,19 +71,24 @@ def parse_store_uri(uri: str) -> StoreURI:
         raise ValueError(
             "query parameters are not accepted in a store URI; use the provider's credential chain"
         )
+    # No message below echoes the value either: a rejected value may be a pasted connection
+    # string or key. Only the parsed scheme, which cannot hold one, is quoted back.
     parts = urlsplit(text)
+    if not parts.scheme:
+        raise ValueError(f"store URI has no scheme; accepted forms: {STORE_URI_FORMS}")
     if parts.scheme not in _EXTRA_FOR_SCHEME:
-        raise ValueError(f"unsupported store URI {text!r}; accepted forms: {STORE_URI_FORMS}")
+        raise ValueError(
+            f"unsupported store URI scheme {parts.scheme!r}; accepted forms: {STORE_URI_FORMS}"
+        )
     if not parts.netloc:
-        raise ValueError(f"store URI {text!r} names no bucket; accepted forms: {STORE_URI_FORMS}")
+        raise ValueError(f"store URI names no bucket; accepted forms: {STORE_URI_FORMS}")
     scheme = cast(Scheme, parts.scheme)
     path = parts.path.strip("/")
     if scheme == "az":
         container, _, prefix = path.partition("/")
         if not container:
             raise ValueError(
-                f"Azure store URI {text!r} names no container; "
-                "expected az://<account>/<container>/<prefix>"
+                "Azure store URI names no container; expected az://<account>/<container>/<prefix>"
             )
         return StoreURI(scheme, parts.netloc, container, prefix.strip("/"))
     return StoreURI(scheme, parts.netloc, None, path)

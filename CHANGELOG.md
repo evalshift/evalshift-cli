@@ -25,7 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `evalshift[s3]`, `[gcs]`, `[azure]` (azure-storage-blob and azure-identity);
   a missing one exits 1 naming the `pip install` to run. Credentials come from
   each provider's default chain and are rejected in the URI: a value with `@`
-  or `?` fails to load, naming the accepted forms without echoing it.
+  or `?` fails to load, naming the accepted forms. No rejected value is echoed
+  back (it may be a pasted key or connection string); only its scheme is named.
   `capture list --json` keeps stdout pure JSON (the fetch line and warnings
   go to stderr). `doctor` reports whether the store is installed (`fail`, exit 1,
   when the extra is missing) and reachable (`warn` when it cannot be listed).

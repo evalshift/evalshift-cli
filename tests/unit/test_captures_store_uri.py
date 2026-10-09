@@ -63,3 +63,44 @@ def test_credential_rejection_does_not_echo_secret(uri: str, secret: str) -> Non
     with pytest.raises(ValueError, match="credential chain") as excinfo:
         parse_store_uri(uri)
     assert secret not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("uri", "fragment", "secret"),
+    [
+        # An Azure connection string pasted as the store: no `@` or `?`, so it reaches the
+        # scheme check, and that message must not echo it.
+        (
+            "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=SUPERSECRET==",
+            "accepted forms",
+            "SUPERSECRET",
+        ),
+        ("https://acct.blob.core.windows.net/c/SUPERSECRET", "accepted forms", "SUPERSECRET"),
+        ("s3:///AKIASUPERSECRET/key", "names no bucket", "SUPERSECRET"),
+        ("az://SUPERSECRETACCOUNT/", "names no container", "SUPERSECRET"),
+    ],
+)
+def test_grammar_rejection_does_not_echo_value(uri: str, fragment: str, secret: str) -> None:
+    with pytest.raises(ValueError, match=fragment) as excinfo:
+        parse_store_uri(uri)
+    assert secret not in str(excinfo.value)
+
+
+def test_grammar_rejection_messages() -> None:
+    with pytest.raises(ValueError) as unsupported:
+        parse_store_uri("ftp://bucket/prefix")
+    assert str(unsupported.value) == (
+        "unsupported store URI scheme 'ftp'; accepted forms: "
+        "s3://<bucket>/<prefix>, gs://<bucket>/<prefix>, az://<account>/<container>/<prefix>"
+    )
+    with pytest.raises(ValueError) as no_scheme:
+        parse_store_uri("bucket/prefix")
+    assert str(no_scheme.value).startswith("store URI has no scheme; accepted forms: s3://")
+    with pytest.raises(ValueError) as no_bucket:
+        parse_store_uri("s3:///prefix")
+    assert str(no_bucket.value).startswith("store URI names no bucket; accepted forms: s3://")
+    with pytest.raises(ValueError) as no_container:
+        parse_store_uri("az://acmeprod")
+    assert str(no_container.value) == (
+        "Azure store URI names no container; expected az://<account>/<container>/<prefix>"
+    )
