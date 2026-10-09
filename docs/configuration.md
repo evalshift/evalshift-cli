@@ -21,6 +21,7 @@ evaluators: {...}         # optional (but at least one is needed for `evaluate`)
 suites: {...}             # optional named suites for `run --suite-name`, each with
                           # its own optional `evaluators:` block
 retention: {...}          # optional run-history pruning policy
+captures: {...}           # optional, see below
 ```
 
 Unknown keys are rejected (`extra: forbid` everywhere) so typos fail
@@ -1013,6 +1014,50 @@ evalshift runs clean --suite main_chat    # restrict to one suite
 `--keep` beats `EVALSHIFT_MAX_RUNS`, which beats the config value. `runs clean` works even without a
 valid `evalshift.yaml` (it falls back to the defaults), so it's always available for disk cleanup.
 
+## `captures`
+
+Where the capture SDK's recordings live when they are not on this machine. Omit the block
+entirely for the default: captures are read from `.evalshift/captures/` (or `EVALSHIFT_DIR`)
+on local disk and nothing here is needed.
+
+Production agents on Fargate, Lambda or Kubernetes lose their disk when they stop, so the
+SDK can ship captures to an object store you own instead (`EVALSHIFT_SINK=<uri>` in the
+agent's environment — see [Capture SDK](sdk.md)). Name the same store here and the CLI
+pulls new captures down before it promotes them, with no flags to remember:
+
+```yaml
+captures:
+  store: s3://acme-evals/support-agent
+```
+
+| Field   | Type          | Default | Description |
+| ------- | ------------- | ------- | ----------- |
+| `store` | string (URI)  | (none)  | Object store the SDK writes to. `capture sync` and `capture list` fetch new captures and toolset sidecars from it into the local directory first; `capture fetch` does only that step. |
+
+CLI versions before this release reject the `captures:` key (the config is strict), so bump
+the CLI — and a pinned GitHub Action's `evalshift-version` — before adding it.
+
+Accepted URI forms — the same grammar the SDK uses:
+
+| Form | Store | Install | Credentials |
+| --- | --- | --- | --- |
+| `s3://<bucket>/<prefix>` | Amazon S3; MinIO, Cloudflare R2, Backblaze B2 via boto3's `AWS_ENDPOINT_URL` | `pip install "evalshift[s3]"` | IAM role in CI (OIDC), `aws sso login` locally |
+| `gs://<bucket>/<prefix>` | Google Cloud Storage | `pip install "evalshift[gcs]"` | Workload Identity in CI, `gcloud auth application-default login` locally |
+| `az://<account>/<container>/<prefix>` | Azure Blob Storage | `pip install "evalshift[azure]"` | Managed Identity / federated credential in CI, `az login` locally |
+
+`<prefix>` is optional. Credentials never go in the URI: a value containing `@` or `?` fails
+to load, naming the accepted forms. A rejected value is never echoed back (it may be a pasted
+key or connection string); the error names at most its scheme. Under the prefix the layout is exactly the local one —
+`captures/<suite>/cap_<hex>.json` and `toolsets/<hex>.json` — so the bucket is a mirror of
+`.evalshift/`, not a different format.
+
+What the fetch does: it lists the bucket, downloads only objects missing locally (captures
+are immutable and toolsets content-addressed, so "exists" means "current"), skips captures
+already promoted into a suite (so `capture clean` never causes a re-download), and writes
+each file atomically. `--since 24h` (or `7d`, `30m`, an ISO date) limits a fetch to recently
+written captures; `--offline` skips it and works with what is already local. Retention in the bucket
+is yours to set with a lifecycle rule; the SDK's `max_captures` does not apply there.
+
 ## Capture lifecycle
 
 The companion `evalshift-sdk` package records real agent runs to
@@ -1021,10 +1066,15 @@ the base). The CLI consumes them via the `capture` commands:
 
 ```shell
 evalshift capture list                          # see what the SDK recorded
+evalshift capture fetch                         # (captures.store only) mirror new captures locally
 evalshift capture sync --input-var query        # promote every capture + wire suites:
 evalshift run --suite-name support_agent --yes  # score a candidate model against it
 evalshift capture clean                         # prune already-promoted captures
 ```
+
+With [`captures.store`](#captures) configured, `list` and `sync` run the same fetch first
+and print one summary line (`fetched 12 capture(s) and 1 toolset(s) from s3://…`); pass
+`--offline` to skip it. `promote`, `diff` and `clean` operate on the local mirror only.
 
 `capture clean [<suite>]` deletes promoted captures by default (`--promoted`);
 `--all` deletes every capture, promoted or not. It never touches promoted

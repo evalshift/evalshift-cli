@@ -123,6 +123,11 @@ Then exercise the agent with capture turned on:
 EVALSHIFT_CAPTURE=1 python your_agent.py   # writes .evalshift/captures/
 ```
 
+Running on Fargate, Lambda or Kubernetes, where the disk does not outlive the task? Add
+`EVALSHIFT_SINK=s3://<bucket>/<prefix>` (or `gs://…` / `az://…`) next to it and put the same
+URI under `captures: {store: …}` in `evalshift.yaml`; step 6 then fetches from the bucket
+first. See [`captures`](configuration.md#captures).
+
 Captures are off unless `EVALSHIFT_CAPTURE=1` is set, so the decorator can
 stay in production code. If the agent calls OpenAI, Anthropic or Google GenAI
 directly, wrap the client once — `wrap_openai(OpenAI())`, `wrap_anthropic`,

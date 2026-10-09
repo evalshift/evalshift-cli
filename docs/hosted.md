@@ -271,8 +271,8 @@ to clear a push with a security or compliance team, this is the section to
 hand them.
 
 The CLI contains **no telemetry**: no analytics, no crash reporting, no
-phone-home of any kind. It opens exactly two kinds of network connections,
-both initiated by you:
+phone-home of any kind. It opens two kinds of network connections (three with
+`captures.store`), all initiated by you:
 
 1. **Your model providers** (whichever you configure — any provider LiteLLM
    supports), using your own API keys: `run` sends the rendered prompts and
@@ -284,6 +284,11 @@ both initiated by you:
    when you run `login`, `whoami`, `push`, or `compare --push`. The local
    commands — `doctor`, `run`, `evaluate`, `analyze`, `report`, `bundle` —
    send nothing to EvalShift-operated services.
+
+With [`captures.store`](configuration.md#captures) configured, `capture sync`,
+`capture list`, `capture fetch` and `doctor` also read from that object store —
+a bucket you own, with your own cloud credentials. Nothing from it goes to
+EvalShift.
 
 ### What `push` sends, block by block
 
@@ -322,7 +327,9 @@ The bundle itself contains:
   imported agent traces (`traces.jsonl`; only the verdicts computed on them
   upload — `agent_trace` scores and `trace_invariants` rule results — never
   the timelines; see the `examples[]` row above), the SQLite response cache,
-  `.evalshift/captures/`, `state.json`, `report.json`, and `report.html`.
+  `.evalshift/captures/` (and, with `captures.store` configured, the bucket
+  *you* named that they are mirrored from — read with your credentials, never
+  uploaded to EvalShift), `state.json`, `report.json`, and `report.html`.
 
 The content hashes that replace this data (`dataset_hash`, `examples_hash`,
 `prompts[].content_hash`) are SHA-256 digests, so hosted diffs and baselines

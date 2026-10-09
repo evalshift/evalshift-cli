@@ -5,9 +5,10 @@ Package: evalshift (PyPI) | CLI entry point: evalshift | version: 1.2.2
 Python: >=3.11 | license: Apache-2.0 | status: stable
 Install: pip install evalshift   (or: uv pip install evalshift)
 
-Product flow: evalshift-sdk captures real agent behavior in production -> this CLI replays those
-captures against a candidate model (scores, paired statistics, HTML report) -> opt-in hosted
-service keeps run history, diffs and PR gates. The SDK is the recommended source of golden
+Product flow: evalshift-sdk captures real agent behavior in production (to local disk, or to a
+user-owned S3/GCS/Azure bucket) -> this CLI replays those captures against a candidate model
+(scores, paired statistics, HTML report) -> opt-in hosted service keeps run history, diffs and
+PR gates. The SDK is the recommended source of golden
 suites; hand-written golden.jsonl is equally supported.
 
 Purpose: local-first CLI for safe LLM model migrations. Runs the same prompts on two models
@@ -17,7 +18,8 @@ runs paired statistics over the deltas (Shapiro-Wilk screen, paired-t or Wilcoxo
 with 95% CI, Benjamini-Hochberg FDR at alpha=0.05), classifies severities, computes an optional
 migration-policy verdict, and renders a single-file HTML report. Everything happens on the
 user's machine under .evalshift/; the only network traffic is the model API calls plus
-opt-in pushes to hosted EvalShift (api.evalshift.dev).
+opt-in pushes to hosted EvalShift (api.evalshift.dev) and, with captures.store set, reads from
+the user's own capture bucket.
 
 Ecosystem — four pieces, one reference each. Fetch the one matching the task:
 | Piece | What it is | Reference for AI tools |
@@ -28,9 +30,10 @@ Ecosystem — four pieces, one reference each. Fetch the one matching the task:
 Data flow: SDK captures -> CLI runs and bundles -> server stores/diffs -> web app displays.
 
 Companion package: evalshift-sdk (separate PyPI package, in-process capture SDK) records
-production agent runs as JSON captures under .evalshift/captures/<suite>/cap_<hex>.json;
-this CLI promotes them into golden suites (`evalshift capture sync`). Disk is the only
-interface between SDK and CLI — they never import or call each other.
+production agent runs as JSON captures under .evalshift/captures/<suite>/cap_<hex>.json; or,
+with EVALSHIFT_SINK, under the same layout in the user's bucket;
+this CLI promotes them into golden suites (`evalshift capture sync`). That file layout is the
+only interface between SDK and CLI — they never import or call each other.
 The CLI imports as `evalshift_cli` and depends on evalshift-sdk, so one environment holds
 both and `import evalshift` is always the SDK. `python -m evalshift_cli` is the module form
 of the `evalshift` binary.
@@ -150,8 +153,9 @@ evalshift init [-f/--force] [-d/--directory DIR] [--ci] [--wire-agents/--no-wire
     quantization: .02/0/.97/.005/.02/0/.00/.20 | provider-switch: .03/0/.95/.01/.03/0/.20/.40
 evalshift doctor
   Env/config check. Exit 1 ONLY when an existing evalshift.yaml fails validation (the row shows
-  the problem count + "run `evalshift validate` for details"; validate prints each problem);
-  missing API keys are soft warnings (exit 0).
+  the problem count + "run `evalshift validate` for details"; validate prints each problem) or
+  its captures.store needs a client extra that is not installed; missing API keys are soft
+  warnings (exit 0).
   Row 2 `evalshift-sdk`: ok ("<v> (import name `evalshift`)"); warn (exit 0) when the SDK is
   not installed, fails to import, or the name resolves to something else (an older CLI's
   leftover files, a local evalshift/ directory).
@@ -171,6 +175,9 @@ evalshift doctor
   when none overlaps; no row when either arm is unset or no llm_judge is configured. Provider
   "other" (id the registry cannot place) never matches. Same wording from `validate`; the report
   repeats it (see Judge family below).
+  captures.store: fail if the extra is missing (detail names pip install "evalshift[<extra>]";
+  exit 1), warn if the bucket cannot be listed (exit 0), ok "<uri> reachable"; no row without
+  a store (or when evalshift.yaml is invalid -- its own row reports that).
 evalshift run [-f/--from MODEL] [-t/--to MODEL] [-c CONFIG] [-s/--suite FILE]
     [--suite-name NAME] [--resume] [-y/--yes]
   Paired run over (prompt x example x {source,target}). --from/--to override
@@ -293,8 +300,30 @@ evalshift push [RUN_ID] [--bundle PATH] [--project] [--host] [--token]
   server actually sent are shown (writing the CLI's other defaults would pin values meant to
   move with the CLI). Stops appearing once evalshift.yaml has its own migration_policy.
 
-Captures (read from .evalshift/captures/ under CWD, or $EVALSHIFT_DIR):
-evalshift capture list [SUITE] [--json]
+Captures (read from .evalshift/captures/ under CWD, or $EVALSHIFT_DIR; with captures.store set
+in evalshift.yaml, list/sync first mirror the bucket into it):
+evalshift capture list [SUITE] [--json] [-c CONFIG] [--offline]
+  With captures.store set, runs fetch first (limited to SUITE when given) unless --offline.
+  With --json, stdout is pure JSON: the fetch summary and every warning go to stderr.
+evalshift capture fetch [--suite S] [--since 30m|24h|7d|ISO] [-c CONFIG]
+  Mirrors captures.store into <base>: lists toolsets/ then captures/, downloads only objects
+  missing locally (captures immutable, toolsets content-addressed -> exists == current), skips
+  capture ids already promoted (clean never causes a re-download), skips captures older than
+  --since and objects over 32 MB, counts keys not shaped like the SDK layout as malformed
+  (never written; a key cannot escape <base>; a trailing newline makes a key malformed;
+  folder-marker keys ending in '/' are skipped without counting). A suite segment is accepted as the SDK writes
+  it (spaces, unicode, leading _ fine); one containing ':' (Windows drive / NTFS stream), '/',
+  '\', NUL or '..', or starting/ending with '.' or space, is malformed. Writes atomically
+  (tmp + os.replace). Prints "fetched N capture(s) and M toolset(s) from <uri> (skipped ...)".
+  Exits 1 on any list/get failure (files already written stay; a re-run resumes), with a hint
+  naming the scheme's credential chain (s3: aws sso login / AWS_PROFILE / the CI OIDC role;
+  gs: gcloud auth application-default login / Workload Identity; az: az login / managed
+  identity) and --offline on sync/list. A local write failure exits 1 naming the file, with a
+  hint to check free disk space and permissions on its directory. Missing extra -> exit 1 naming
+  pip install "evalshift[s3|gcs|azure]" (az:// needs azure-storage-blob AND azure-identity,
+  both in [azure]). No captures.store, or no evalshift.yaml -> exit 1; an invalid
+  evalshift.yaml -> its load error, exit 1; an unreadable or non-UTF-8 one -> a one-line
+  "could not read <path>" error, exit 1. Has no --offline flag.
 evalshift capture promote CAPTURE_ID [--as CASE_ID] [--suite S] [--input-var NAME=input]
     [--tag T]... [--strict-args] [--names-only] [--tool-count] [--rounds first(default)|all]
     [--allow-errored] [-f/--force]
@@ -303,7 +332,12 @@ evalshift capture promote CAPTURE_ID [--as CASE_ID] [--suite S] [--input-var NAM
   EXITS 1 if the capture's trace carries an error event; --allow-errored promotes anyway.
 evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--strict-args]
     [--names-only] [--tool-count] [--rounds first(default)|all] [--allow-errored] [-c CONFIG] [-f]
-    [--write/--print (default write)] [--keep-duplicates]
+    [--write/--print (default write)] [--keep-duplicates] [--since 30m|24h|7d|ISO] [--offline]
+  With captures.store set, sync runs fetch first (same summary line) unless --offline; a fetch
+  failure or missing extra exits 1 before anything is promoted. --since without a store (or
+  with --offline) exits 1. An unreadable or invalid evalshift.yaml skips the fetch (warning
+  only when the file has a top-level captures: key) and sync/list continue on the local mirror
+  as before.
   Promotes EVERY capture: groups by conversation_id, orders by turn_index, one SuiteExample per
   turn; writes .evalshift/suites/<suite>/golden.jsonl and rewrites the managed suites: block in
   evalshift.yaml (between ">>> evalshift suites" markers). Content-duplicate captures skipped by
@@ -701,6 +735,13 @@ migration_policy:                   # optional; fractions not percents
 retention:
   max_runs_per_suite: int = 20 (>=0; 0 disables)
   run_ttl_days: int>=1|null = null
+captures:
+  store: s3://<bucket>/<prefix> | gs://<bucket>/<prefix> | az://<account>/<container>/<prefix>
+  -- optional block; store validated at load (bad scheme, missing bucket/container, '@' or '?'
+  -> load error naming the forms; no error echoes the value, at most its scheme); prefix optional,
+  trailing slash stripped; default none = local disk only. Extras: evalshift[s3] (boto3;
+  AWS_ENDPOINT_URL covers MinIO/R2/B2), [gcs] (google-cloud-storage), [azure]
+  (azure-storage-blob + azure-identity). Credentials: each provider's default chain only.
 
 Model ids: built-in registry provides aliases/metadata but NEVER gates — LiteLLM is the
 call-time authority; any LiteLLM-supported model works. Unknown ids pass through with provider
@@ -1082,12 +1123,15 @@ Canonical human-readable version: docs/hosted.md "Privacy model". Cite THIS cont
 user asks what `push` sends, whether EvalShift phones home, or whether suite/prompt/customer
 content leaves the machine.
 
-- The CLI has NO telemetry, analytics, or crash reporting. Only two kinds of outbound traffic,
-  both user-initiated: (1) the user's own model providers with the user's own keys during
-  run/evaluate/report (rendered prompts + histories to both models; outputs to embedding/judge
-  models; worst regressions' inputs+outputs to defaults.insights_model unless --no-insights);
+- The CLI has NO telemetry, analytics, or crash reporting. Two kinds of outbound traffic
+  (three with captures.store), all user-initiated: (1) the user's own
+  model providers with the user's own keys during run/evaluate/report (rendered prompts +
+  histories to both models; outputs to embedding/judge models; worst regressions'
+  inputs+outputs to defaults.insights_model unless --no-insights);
   (2) the hosted API (https://api.evalshift.dev or --host) on `login`/`whoami`/`push`/
-  `compare --push` ONLY. doctor/run/evaluate/analyze/report/bundle send nothing to EvalShift.
+  `compare --push` ONLY; (3) only with captures.store set, reads from the user's own bucket
+  by capture sync/list/fetch and doctor, with the user's cloud credentials (nothing from it
+  goes to EvalShift). doctor/run/evaluate/analyze/report/bundle send nothing to EvalShift.
 - `push` sends: run_bundle.json.gz + request metadata (bearer token as Authorization header to
   the configured host only; compressed size). `login` sends a client name containing the
   machine hostname.
@@ -1119,7 +1163,8 @@ content leaves the machine.
   suite conversation histories (`history`, embedded system messages included); tool
   definitions/schemas (toolsets); raw.jsonl; imported agent traces (traces.jsonl; only the
   verdicts computed on them upload -- agent_trace scores and trace_invariants rule results --
-  never the timelines; see examples[] above); the SQLite response cache; .evalshift/captures/;
+  never the timelines; see examples[] above); the SQLite response cache; .evalshift/captures/
+  (with captures.store, captures are read from the user's own bucket, never sent to EvalShift);
   state.json; report.json; report.html.
 - Hashes that replace content (dataset_hash, examples_hash, prompts[].content_hash) are
   SHA-256 over canonical JSON, so hosted diffs/baselines align without the content.
@@ -1262,7 +1307,8 @@ content leaves the machine.
 - Report is a single self-contained HTML file: no external assets, works offline.
 - Run pruning never touches an in-progress run or the run just finished.
 - Exit codes: 0 success; 1 handled errors and tripped CI gates; doctor exits 1 only on invalid
-  existing config; init exits 2 on unknown --provider; Typer usage errors exit 2.
+  existing config or a captures.store whose client extra is missing; init exits 2 on unknown
+  --provider; Typer usage errors exit 2.
 
 ## Minimal examples
 

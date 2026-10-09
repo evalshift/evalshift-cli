@@ -98,7 +98,8 @@ evalshift runs clean                    # prune old runs (--keep, --older-than, 
 
 For local commands, your prompts and your suite never leave your machine.
 The only outbound calls are to the LLM providers you configure — any provider
-LiteLLM supports — using your own API keys. `bundle` packages artifacts locally;
+LiteLLM supports — using your own API keys — and, if you set `captures.store`,
+reads from your own capture bucket with your own cloud credentials. `bundle` packages artifacts locally;
 hosted upload happens only when you run `push` or `compare --push`.
 
 ## For AI coding agents

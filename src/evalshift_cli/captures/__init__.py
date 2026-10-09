@@ -7,8 +7,9 @@ that contract: it reads those files (:mod:`evalshift_cli.captures.reader`) and
 *promotes* a capture into a golden suite case (:mod:`evalshift_cli.captures.promote`)
 that ``evalshift run`` can evaluate.
 
-The SDK and CLI never call each other — the only contract is the on-disk
-capture envelope, frozen at SDK schema version ``1.0.0``.
+The SDK and CLI never call each other — the only contract is the capture envelope and its
+layout (``captures/<suite>/<capture_id>.json`` + ``toolsets/<hex>.json``), on local disk or
+mirrored from an object store by :mod:`evalshift_cli.captures.remote`.
 """
 
 from __future__ import annotations

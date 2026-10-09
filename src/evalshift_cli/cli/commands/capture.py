@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,6 +52,15 @@ from evalshift_cli.captures.reader import (
     promoted_toolset_refs,
     toolsets_root,
 )
+from evalshift_cli.captures.remote import (
+    FetchSummary,
+    RemoteStore,
+    RemoteStoreError,
+    fetch_captures,
+    open_store,
+    parse_since,
+)
+from evalshift_cli.captures.store_uri import parse_store_uri
 from evalshift_cli.cli.commands._suites import (
     derive_suite_evaluators,
     inject_suites_block,
@@ -59,6 +69,7 @@ from evalshift_cli.cli.commands._suites import (
     suite_entry_payload,
 )
 from evalshift_cli.cli.commands.doctor import CONFIG_FILENAME
+from evalshift_cli.config.loader import ConfigError, load_config
 from evalshift_cli.config.models import SuiteEvaluatorsOverride
 from evalshift_cli.suite.loader import SuiteError, load_jsonl
 from evalshift_cli.traces.diff import diff_traces
@@ -76,6 +87,33 @@ _BaseOption = Annotated[
     Path | None,
     typer.Option(
         "--base", help="Capture base dir (default: $EVALSHIFT_DIR or .evalshift).", hidden=True
+    ),
+]
+_ConfigOption = Annotated[
+    Path,
+    typer.Option(
+        "--config",
+        "-c",
+        help=f"Path to evalshift.yaml (default: ./{CONFIG_FILENAME}).",
+        file_okay=True,
+        dir_okay=False,
+    ),
+]
+_OfflineOption = Annotated[
+    bool,
+    typer.Option(
+        "--offline",
+        help="Skip fetching from captures.store; use only the captures already on disk.",
+    ),
+]
+_SinceOption = Annotated[
+    str | None,
+    typer.Option(
+        "--since",
+        help=(
+            "Only fetch captures newer than this from captures.store: a duration "
+            "(30m, 24h, 7d) or an ISO date/datetime."
+        ),
     ),
 ]
 
@@ -181,6 +219,125 @@ def _promoted_content_owners(
     return owners
 
 
+#: A top-level ``captures:`` key: at column 0, so neither a comment nor a nested key matches.
+_TOP_LEVEL_CAPTURES_KEY = re.compile(rb"^captures\s*:", re.MULTILINE)
+
+
+def _mentions_captures(config_path: Path) -> bool:
+    """Whether the raw config file has a top-level ``captures`` key (``False`` if unreadable).
+
+    Structural rather than a substring test: ``evalshift init`` writes "captures" into its
+    comments, and a config that only mentions the word never asked for a store.
+    """
+    try:
+        return _TOP_LEVEL_CAPTURES_KEY.search(config_path.read_bytes()) is not None
+    except OSError:
+        return False
+
+
+def _configured_store(config_path: Path, *, console: Console, strict: bool) -> RemoteStore | None:
+    """The store ``captures.store`` names, or ``None`` when there is none to fetch from.
+
+    A missing config file means no store. An invalid or unreadable one is a hard error (exit 1,
+    one line, no traceback) when ``strict`` (``capture fetch`` has nothing else to do). Otherwise ``sync`` and ``list`` keep working on
+    the local mirror the way they did before ``captures.store`` existed: an invalid or
+    unreadable file is skipped, with a warning only when it has a top-level ``captures`` key (a
+    config that never asked for a store must not change their output). A missing client extra
+    is always a hard error: the user asked for a store it cannot reach.
+    """
+    if not config_path.exists():
+        return None
+    try:
+        cfg = load_config(config_path)
+    except ConfigError as exc:
+        if strict:
+            console.print(exc.format_rich())
+            raise typer.Exit(code=1) from exc
+        _warn_store_skipped(config_path, exc.summary, console=console)
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        if strict:
+            # The exception's type only: its text can carry raw bytes of the file.
+            console.print(
+                f"[red]✗[/red] could not read {escape(str(config_path))} "
+                f"({type(exc).__name__}); capture fetch needs a readable evalshift.yaml.",
+                soft_wrap=True,
+            )
+            raise typer.Exit(code=1) from exc
+        _warn_store_skipped(config_path, type(exc).__name__, console=console)
+        return None
+    if cfg.captures.store is None:
+        return None
+    try:
+        return open_store(parse_store_uri(cfg.captures.store))
+    except RemoteStoreError as exc:
+        console.print(exc.format_rich())
+        raise typer.Exit(code=1) from exc
+
+
+def _warn_store_skipped(config_path: Path, reason: str, *, console: Console) -> None:
+    """Warn that captures.store is being skipped, if the file looks like it configures one."""
+    if not _mentions_captures(config_path):
+        return
+    console.print(
+        f"[yellow]⚠[/yellow] could not read {escape(str(config_path))} ({escape(reason)}); "
+        "skipping captures.store and using the captures already on disk.",
+    )
+
+
+def _resolve_since(since: str | None) -> datetime | None:
+    if since is None:
+        return None
+    try:
+        return parse_since(since)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--since") from exc
+
+
+def _fetch_into_base(
+    store: RemoteStore,
+    *,
+    base: Path | None,
+    suite: str | None,
+    since: datetime | None,
+    console: Console,
+) -> FetchSummary:
+    """Mirror ``store`` into ``base`` and print the one-line summary; exit 1 on failure."""
+    skip_ids = _promoted_capture_ids_or_warn(base=base, console=console)
+    try:
+        summary = fetch_captures(store, base=base, suite=suite, since=since, skip_ids=skip_ids)
+    except RemoteStoreError as exc:
+        console.print(exc.format_rich())
+        raise typer.Exit(code=1) from exc
+    # soft_wrap: one line per fetch, so a long store URI or skip list never splits a count
+    # from its label in a CI log someone greps.
+    console.print(f"[green]✓[/green] {escape(summary.describe())}", soft_wrap=True)
+    return summary
+
+
+def _maybe_fetch(
+    *,
+    config_path: Path,
+    offline: bool,
+    since: str | None,
+    suite: str | None,
+    base: Path | None,
+    console: Console,
+) -> None:
+    """The automatic fetch step ``sync`` and ``list`` run before reading the local mirror."""
+    since_dt = _resolve_since(since)
+    store = None if offline else _configured_store(config_path, console=console, strict=False)
+    if store is None:
+        if since_dt is not None:
+            console.print(
+                "[red]✗[/red] --since needs captures.store in evalshift.yaml and no --offline: "
+                "there is nothing to fetch from.",
+            )
+            raise typer.Exit(code=1)
+        return
+    _fetch_into_base(store, base=base, suite=suite, since=since_dt, console=console)
+
+
 @capture_app.command(name="list")
 def capture_list(
     suite: Annotated[
@@ -191,10 +348,21 @@ def capture_list(
         bool,
         typer.Option("--json", help="Emit machine-readable JSON instead of a table."),
     ] = False,
+    config_path: _ConfigOption = Path(CONFIG_FILENAME),
+    offline: _OfflineOption = False,
     base: _BaseOption = None,
 ) -> None:
     """List captures recorded by the SDK."""
-    console = Console()
+    # With --json, stdout carries only the JSON: the fetch line and every warning go to stderr.
+    console = Console(stderr=as_json)
+    _maybe_fetch(
+        config_path=config_path,
+        offline=offline,
+        since=None,
+        suite=suite,
+        base=base,
+        console=console,
+    )
     records = iter_captures(suite=suite, base=base, on_error=_warn_unreadable(console))
     promoted = _promoted_capture_ids_or_warn(base=base, console=console)
 
@@ -239,6 +407,38 @@ def capture_list(
             "✓" if r.envelope.capture_id in promoted else "",
         )
     console.print(table)
+
+
+@capture_app.command(name="fetch")
+def capture_fetch(
+    suite: Annotated[
+        str | None,
+        typer.Option("--suite", help="Only fetch captures for this suite."),
+    ] = None,
+    since: _SinceOption = None,
+    config_path: _ConfigOption = Path(CONFIG_FILENAME),
+    base: _BaseOption = None,
+) -> None:
+    """Mirror new captures from captures.store (evalshift.yaml) into the local directory.
+
+    ``capture sync`` and ``capture list`` run this step automatically; ``fetch`` exists for
+    inspecting with ``list``, ``diff`` or ``promote`` by hand before promoting anything.
+    """
+    console = Console()
+    if not config_path.exists():
+        console.print(
+            f"[red]✗[/red] {escape(str(config_path))} not found; capture fetch needs "
+            "captures.store in evalshift.yaml.",
+        )
+        raise typer.Exit(code=1)
+    store = _configured_store(config_path, console=console, strict=True)
+    if store is None:
+        console.print(
+            "[red]✗[/red] no captures.store configured in evalshift.yaml "
+            "(for example: captures: {store: s3://bucket/prefix}).",
+        )
+        raise typer.Exit(code=1)
+    _fetch_into_base(store, base=base, suite=suite, since=_resolve_since(since), console=console)
 
 
 def _check_rounds(rounds: str) -> None:
@@ -751,16 +951,7 @@ def capture_sync(
             ),
         ),
     ] = False,
-    config_path: Annotated[
-        Path,
-        typer.Option(
-            "--config",
-            "-c",
-            help=f"Path to evalshift.yaml (default: ./{CONFIG_FILENAME}).",
-            file_okay=True,
-            dir_okay=False,
-        ),
-    ] = Path(CONFIG_FILENAME),
+    config_path: _ConfigOption = Path(CONFIG_FILENAME),
     force: Annotated[
         bool,
         typer.Option("--force", "-f", help="Overwrite promoted cases that already exist."),
@@ -784,11 +975,21 @@ def capture_sync(
             ),
         ),
     ] = False,
+    since: _SinceOption = None,
+    offline: _OfflineOption = False,
     base: _BaseOption = None,
 ) -> None:
     """Promote every capture into a suite and wire the suites: block into evalshift.yaml."""
     console = Console()
     _check_rounds(rounds)
+    _maybe_fetch(
+        config_path=config_path,
+        offline=offline,
+        since=since,
+        suite=suite,
+        base=base,
+        console=console,
+    )
     records = iter_captures(suite=suite, base=base, on_error=_warn_unreadable(console))
     if not records:
         where = f" for suite {suite!r}" if suite else ""

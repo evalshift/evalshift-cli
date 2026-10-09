@@ -8,7 +8,8 @@ Exit codes:
     * **0** — every check passed, or any failures were merely informational
       (e.g. an unset API key, or no config in this directory yet).
     * **1** — at least one **hard** failure was reported (currently: an
-      ``evalshift.yaml`` exists in the cwd but doesn't validate).
+      ``evalshift.yaml`` exists in the cwd but doesn't validate, or its
+      ``captures.store`` needs a client extra that isn't installed).
 
 Soft failures (missing API keys, no config yet) are surfaced visually with
 a yellow ``✗`` so users see them, but they never fail the command — this
@@ -36,9 +37,12 @@ from typing import Final, Literal
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from evalshift_cli import __version__
+from evalshift_cli.captures.remote import RemoteStoreError, open_store
+from evalshift_cli.captures.store_uri import parse_store_uri
 from evalshift_cli.captures.toolset import EMPTY_TOOLSET_FINGERPRINT, fingerprint_tools
 from evalshift_cli.cli.commands._suites import SUITE_FILENAME
 from evalshift_cli.config.loader import ConfigError, load_config
@@ -115,6 +119,7 @@ def run_checks(cwd: Path, env: Mapping[str, str]) -> list[CheckResult]:
     results = [_python_check(), _sdk_check()]
     results.extend(_api_key_check(env, aliases) for aliases in PROVIDER_KEYS)
     results.append(_config_check(cwd))
+    results.extend(_captures_store_check(cwd))
     results.extend(_tool_consistency_checks(cwd))
     results.extend(_judge_family_checks(cwd))
     results.extend(_ci_pin_check(cwd))
@@ -242,6 +247,42 @@ def _config_check(cwd: Path) -> CheckResult:
         status="ok",
         detail=f"valid ({n} prompt{'s' if n != 1 else ''})",
     )
+
+
+def _captures_store_check(cwd: Path) -> list[CheckResult]:
+    """One row for ``captures.store`` when the config names one: extra installed, bucket listable.
+
+    No config, an invalid config (the ``evalshift.yaml`` row already reports that) or no
+    ``captures.store`` produce no row. A missing client extra is a ``fail`` -- it is a local,
+    deterministic problem with a one-line fix. A listing that raises is a ``warn``: doctor runs
+    on laptops without cloud credentials, and that must not fail the command.
+    """
+    cfg_path = cwd / CONFIG_FILENAME
+    if not cfg_path.exists():
+        return []
+    try:
+        cfg = load_config(cfg_path)
+    except ConfigError:
+        return []
+    uri = cfg.captures.store
+    if uri is None:
+        return []
+    try:
+        store = open_store(parse_store_uri(uri))
+    except RemoteStoreError as exc:
+        detail = exc.summary if exc.hint is None else f"{exc.summary} — {exc.hint}"
+        return [CheckResult(name="captures.store", status="fail", detail=detail)]
+    try:
+        next(iter(store.list("captures/")), None)
+    except Exception as exc:
+        return [
+            CheckResult(
+                name="captures.store",
+                status="warn",
+                detail=f"{uri} not reachable: {type(exc).__name__}: {exc}",
+            )
+        ]
+    return [CheckResult(name="captures.store", status="ok", detail=f"{uri} reachable")]
 
 
 def _named_suite_paths(cwd: Path, cfg: EvalShiftConfig) -> list[tuple[str, Path]]:
@@ -485,14 +526,18 @@ def source_conformance_check(records: Sequence[EvalRecord]) -> CheckResult | Non
 
 
 def render_results(results: list[CheckResult], console: Console) -> None:
-    """Render the check results as a Rich table."""
+    """Render the check results as a Rich table.
+
+    Names and details are plain text, escaped so a bracketed value -- an install hint such as
+    ``pip install "evalshift[gcs]"`` or a user-written store URI -- is shown, not parsed as markup.
+    """
     table = Table(show_header=False, box=None, padding=(0, 1))
     table.add_column("status", no_wrap=True)
     table.add_column("name", style="bold")
     table.add_column("detail", overflow="fold")
     for r in results:
         glyph, style = _GLYPHS[r.status]
-        table.add_row(f"[{style}]{glyph}[/{style}]", r.name, r.detail)
+        table.add_row(f"[{style}]{glyph}[/{style}]", escape(r.name), escape(r.detail))
     console.print(table)
 
 
