@@ -19,6 +19,8 @@ from pathlib import Path
 import pytest
 
 import evalshift_cli
+from evalshift_cli.cli.commands._agents import AGENT_INSTRUCTIONS
+from evalshift_cli.cli.commands.capture import capture_app
 from evalshift_cli.cli.commands.init import PROVIDERS
 from evalshift_cli.models.registry import PROVIDER_ENV_VARS
 
@@ -227,3 +229,27 @@ def _whitespace_normalized(name: str) -> str:
 def test_copy_does_not_describe_the_retired_hosted_plans(term: str) -> None:
     offenders = [name for name in _PLAN_COPY_FILES if term in _whitespace_normalized(name)]
     assert offenders == [], f"{term!r} still appears in {offenders}"
+
+
+def _registered_capture_subcommands() -> list[str]:
+    """Every subcommand `evalshift capture --help` lists, straight from the Typer group."""
+    return sorted(str(cmd.name) for cmd in capture_app.registered_commands)
+
+
+@pytest.mark.parametrize("name", _registered_capture_subcommands())
+def test_scaffolded_agent_guide_names_every_capture_subcommand(name: str) -> None:
+    """`init` writes EVALSHIFT.md into user repos, and its `evalshift capture ...`
+    row is the one place a coding agent learns which subcommands exist.
+
+    `capture fetch` shipped in 1.3.0 without being added to that row, so every
+    scaffolded guide told agents the group had five subcommands. The row is
+    matched by its leading cell so a bare word like `list` elsewhere in the
+    guide cannot satisfy the check.
+    """
+    row = next(
+        line
+        for line in AGENT_INSTRUCTIONS.splitlines()
+        if line.startswith("| `evalshift capture ...`")
+    )
+
+    assert f"`{name}`" in row, f"EVALSHIFT.md's capture row does not name `{name}`"

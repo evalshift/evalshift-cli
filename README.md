@@ -47,8 +47,9 @@ Four pieces, released and documented independently:
 | **GitHub Action** — `evalshift/evalshift-action@v0` | Runs the pipeline on pull requests, pushes the run, posts one PR comment, sets the `evalshift/regression` status. | [docs/github-action.md](docs/github-action.md) |
 | **Hosted server** — `api.evalshift.dev`, web app at `evalshift.dev` | Optional. Stores pushed run bundles, diffs them across branches, drives PR comments and gating. | [docs/hosted.md](docs/hosted.md) |
 
-The SDK and the CLI never call each other — the interface is files under
-`.evalshift/captures/`, so either works without the other. The CLI (import
+The SDK and the CLI never call each other — the interface is the capture layout
+under `.evalshift/captures/`, on disk or mirrored from a bucket you own
+(`captures.store`), so either works without the other. The CLI (import
 package `evalshift_cli`) depends on the SDK (import name `evalshift`), so one
 environment holds both: `pip install evalshift` brings the SDK with it, and a
 production agent that only records captures installs `evalshift-sdk` alone.

@@ -152,7 +152,7 @@ to `evalshift compare` — you do **not** need to write case inputs, edit the
 | `evalshift report` | Render the single-file HTML report. |
 | `evalshift compare` | Run doctor -> run -> evaluate -> analyze -> report end to end on one suite (formerly `all`). |
 | `evalshift inspect` | Inspect a run / artifact. |
-| `evalshift capture ...` | `list` / `promote` / `clean` / `diff` / `sync` captures into suites. |
+| `evalshift capture ...` | `list` / `fetch` / `promote` / `clean` / `diff` / `sync` captures into suites. |
 | `evalshift diff case` | Diff a single case between runs. |
 | `evalshift replay case` | Replay a single case. |
 | `evalshift traces import` | Import external traces. |
