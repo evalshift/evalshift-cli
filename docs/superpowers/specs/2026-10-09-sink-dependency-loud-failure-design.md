@@ -48,7 +48,10 @@ so a misconfigured `EVALSHIFT_SINK` is **recorded, not swallowed**: `_Config` ga
 used while an error is recorded — see "Hot path"). Nothing is raised at import. The current
 `WARNING` lines go away; the error carries the same text.
 
-A blank or unset `EVALSHIFT_SINK` records nothing (unchanged).
+A blank or unset `EVALSHIFT_SINK` records nothing (unchanged). Recording is independent of the
+gate (as building the env sink is today), but **nothing below happens unless `EVALSHIFT_CAPTURE`
+is truthy**: with capture off, a broken `EVALSHIFT_SINK` never raises, never logs, never changes
+behaviour.
 
 ### Touch points that raise
 
@@ -141,9 +144,9 @@ Every surface that says "extra", "`[s3]`" or "falls back to local disk" changes.
 - **action:** nothing (its docs never mention the extras; the troubleshooting entry in PR #27 is
   about pin skew and stays true).
 
-Open PRs: **sdk #14** (README extras) is superseded — close it and fold the README rewrite into
-the 0.6.0 PR. **client #55** documents what is live today (0.5.0 / 1.3.0) and merges as is; the
-site follows the releases with the follow-up above.
+The 2026-10-09 docs PRs (sdk #14, cli #42, action #27, server #36, client #55) are merged and
+describe the extras-based install story of 0.5.0 / 1.3.0 accurately; the 0.6.0 and 1.3.1 PRs
+rewrite those passages on top, and the site follows the releases with the follow-up above.
 
 ## Release order
 
