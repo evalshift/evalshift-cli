@@ -1072,8 +1072,9 @@ def capture_sync(
             help=(
                 "Rebuild the inputs and history of promoted cases an earlier sync built from "
                 "stringified message blocks (or left with empty inputs), re-fetching their "
-                "captures from captures.store even though they are promoted. Every other "
-                "field of those cases is kept; other promoted cases are untouched."
+                "captures from captures.store even though they are promoted; every other "
+                "field of those cases is kept, and other promoted cases are untouched unless "
+                "--force is also given."
             ),
         ),
     ] = False,

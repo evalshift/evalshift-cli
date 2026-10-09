@@ -158,19 +158,30 @@ def repaired_case(
     strategies, generation config, any hand edits -- is kept: the stringification bug only
     ever corrupted those two fields.
 
+    When the stored and the rebuilt ``inputs`` each have exactly one key, the stored key is
+    kept with the rebuilt value: a messages-list capture always rebuilds under this sync's
+    ``--input-var``, and the case may have been promoted (or hand-edited) under another name.
+    Any other shape -- stored ``{}``, several keys on either side -- takes ``rebuilt.inputs``.
+
     Args:
         case: The stored case.
         rebuilt: The example promotion builds from the case's capture today.
         promoted_at: Timestamp for the rewritten case.
 
     Returns:
-        The rewritten case, or ``None`` when ``inputs`` and ``history`` already match.
+        The rewritten case, or ``None`` when its ``inputs`` (after keeping the stored key)
+        and ``history`` already match.
     """
     current = case.example
-    if rebuilt.inputs == current.inputs and rebuilt.history == current.history:
+    inputs = rebuilt.inputs
+    if len(current.inputs) == 1 and len(rebuilt.inputs) == 1:
+        (stored_key,) = current.inputs
+        (rebuilt_value,) = rebuilt.inputs.values()
+        inputs = {stored_key: rebuilt_value}
+    if inputs == current.inputs and rebuilt.history == current.history:
         return None
     payload = current.model_dump()
-    payload["inputs"] = rebuilt.inputs
+    payload["inputs"] = inputs
     payload["history"] = (
         None if rebuilt.history is None else [m.model_dump() for m in rebuilt.history]
     )

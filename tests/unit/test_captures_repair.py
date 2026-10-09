@@ -212,3 +212,51 @@ def test_repaired_case_rebuilds_history_when_inputs_already_match() -> None:
 def test_repaired_case_is_none_when_nothing_changed() -> None:
     stored = _case("c", example=_example(id_="c", inputs={}))
     assert repaired_case(stored, _example(id_="other", inputs={}), promoted_at="t") is None
+
+
+def test_repaired_case_keeps_a_single_stored_input_key() -> None:
+    stored = _case("c", example=_example(id_="c", inputs={"question": REPR_BLOCKS}))
+    rebuilt = _example(id_="c", inputs={"input": "And the price?"})
+    fixed = repaired_case(stored, rebuilt, promoted_at="t")
+    assert fixed is not None
+    assert fixed.example.inputs == {"question": "And the price?"}
+
+
+def test_repaired_case_keeps_the_input_key_while_rebuilding_history() -> None:
+    stored = _case(
+        "c",
+        example=_example(
+            id_="c",
+            inputs={"question": "And the price?"},
+            history=[
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": REPR_BLOCKS},
+            ],
+        ),
+    )
+    rebuilt = _example(
+        id_="c",
+        inputs={"input": "And the price?"},
+        history=[{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}],
+    )
+    fixed = repaired_case(stored, rebuilt, promoted_at="t")
+    assert fixed is not None
+    assert fixed.example.inputs == {"question": "And the price?"}
+    assert fixed.example.history == rebuilt.history
+
+
+def test_repaired_case_is_none_when_only_the_input_key_differs() -> None:
+    stored = _case("c", example=_example(id_="c", inputs={"question": "And the price?"}))
+    rebuilt = _example(id_="c", inputs={"input": "And the price?"})
+    assert repaired_case(stored, rebuilt, promoted_at="t") is None
+
+
+@pytest.mark.parametrize("stored_inputs", [{}, {"a": "x", "b": REPR_BLOCKS}])
+def test_repaired_case_takes_the_rebuilt_inputs_unless_both_have_one_key(
+    stored_inputs: dict[str, Any],
+) -> None:
+    stored = _case("c", example=_example(id_="c", inputs=stored_inputs))
+    rebuilt = _example(id_="c", inputs={"input": "And the price?"})
+    fixed = repaired_case(stored, rebuilt, promoted_at="t")
+    assert fixed is not None
+    assert fixed.example.inputs == {"input": "And the price?"}

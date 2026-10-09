@@ -490,3 +490,38 @@ def test_repair_warns_once_for_a_pair_it_repaired_both_of(
     assert "alpha: repaired case cap_1 duplicates cap_2" in out
     assert first.is_file()
     assert second.is_file()
+
+
+def test_repair_keeps_a_custom_input_key(tmp_path: Path, store: FakeRemoteStore) -> None:
+    case = _write_case(tmp_path, "cap_1", inputs={"question": "And the price?"})
+    _put(store, "cap_1")
+    result = _sync(tmp_path, "--repair")
+    assert result.exit_code == 0, result.output
+    assert "repaired 1 case(s)" in _out(result)
+    fixed = _stored(case).example
+    assert fixed.inputs == {"question": "And the price?"}
+    assert fixed.history is not None
+    assert [m.role for m in fixed.history] == ["system", "user", "assistant", "tool", "assistant"]
+
+
+def test_repair_with_force_still_only_rebuilds_a_candidates_inputs_and_history(
+    tmp_path: Path, store: FakeRemoteStore
+) -> None:
+    case = _write_case(
+        tmp_path,
+        "cap_1",
+        tags=["captured", "billing"],
+        expected_tools=[{"tool_name": "search", "arguments": {"q": "evalshift"}}],
+    )
+    _put(store, "cap_1")
+    result = _sync(tmp_path, "--repair", "--force")
+    assert result.exit_code == 0, result.output
+    assert "repaired 1 case(s)" in _out(result)
+    fixed = _stored(case).example
+    assert fixed.tags == ["captured", "billing"]
+    assert fixed.expected_tools is not None
+    assert [(t.tool_name, t.arguments) for t in fixed.expected_tools] == [
+        ("search", {"q": "evalshift"})
+    ]
+    assert fixed.history is not None
+    assert fixed.history[3].role == "tool"
