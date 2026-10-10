@@ -2779,6 +2779,36 @@ def test_an_assistant_message_without_a_content_key_still_recovers_inputs() -> N
     assert [m.role for m in built.example.history] == ["user", "assistant", "tool"]
 
 
+def test_normalizer_warnings_reach_the_built_example() -> None:
+    messages = [
+        {"role": "user", "content": "q1"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "not json"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "res"},
+        {"role": "user", "content": "q2"},
+    ]
+    events = [_messages_call(0, messages=messages), _final("done", 1)]
+    built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+    assert built.blocked is None
+    assert (
+        "recorded message 2: tool call `search` (call_1) had arguments that are not a JSON "
+        "object; replayed with {}"
+    ) in built.warnings
+    assert built.example.history is not None
+    assert built.example.history[1].tool_calls == [
+        HistoryToolCall(id="call_1", name="search", arguments={})
+    ]
+
+
 def test_langchain_roles_recover_inputs() -> None:
     messages = [{"role": "system", "content": "sys"}, {"role": "human", "content": "hi"}]
     events = [_messages_call(0, messages=messages), _final("done", 1)]
