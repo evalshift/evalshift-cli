@@ -1128,6 +1128,7 @@ def capture_sync(
     skipped_no_toolset = 0
     skipped_multi_toolset = 0
     skipped_unreplayable = 0
+    skipped_invalid = 0
     repaired = 0
     left_for_repair = 0
     backed_by = selection.cases_by_capture()
@@ -1223,15 +1224,18 @@ def capture_sync(
                 # Routed by *why* it was blocked, not lumped under one counter:
                 # --allow-errored rescues an errored turn but can never rescue
                 # a capture with no usable recorded toolset, one that switched
-                # toolsets mid-run, or one whose messages carry content a text
-                # replay can't carry (unreplayable_content), so the summary
-                # below must not offer that as a fix for any of them.
+                # toolsets mid-run, one whose messages carry content a text
+                # replay can't carry (unreplayable_content), or one no valid case
+                # can be built from (invalid_case), so the summary below must not
+                # offer that as a fix for any of them.
                 if built.blocked_reason == "no_toolset":
                     skipped_no_toolset += 1
                 elif built.blocked_reason == "multi_toolset":
                     skipped_multi_toolset += 1
                 elif built.blocked_reason == "unreplayable_content":
                     skipped_unreplayable += 1
+                elif built.blocked_reason == "invalid_case":
+                    skipped_invalid += 1
                 else:
                     skipped_errored += 1
                 continue
@@ -1319,6 +1323,11 @@ def capture_sync(
         summary += (
             f", skipped {skipped_unreplayable} capture(s) with non-text content a text replay "
             "can't carry (--allow-errored does not apply)"
+        )
+    if skipped_invalid:
+        summary += (
+            f", skipped {skipped_invalid} capture(s) that could not form a valid case "
+            "(--allow-errored does not apply)"
         )
     if repair:
         summary += f", repaired {repaired} case(s)"

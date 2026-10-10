@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ from evalshift_cli.captures.promote import (
     write_promoted_case,
 )
 from evalshift_cli.captures.reader import CaptureRecord
+from evalshift_cli.captures.toolset import EMPTY_TOOLSET_FINGERPRINT
 from evalshift_cli.suite.loader import load_jsonl
 from evalshift_cli.suite.models import HistoryToolCall
 
@@ -2818,3 +2820,152 @@ def test_history_message_refuses_non_string_content() -> None:
         _history_message(
             {"role": "assistant", "content": [{"type": "text", "text": "x"}]}, "assistant"
         )
+
+
+# ---------------------------------------------------------------------------
+# system and developer messages: one leading system prompt per replay
+# ---------------------------------------------------------------------------
+
+_LATE_SYSTEM_WARNING = (
+    "dropped 1 system message(s) after the first turn — a replay carries one leading system prompt"
+)
+
+
+def test_a_developer_message_merges_into_the_leading_system_prompt() -> None:
+    """An OpenAI Responses call with ``instructions=`` plus a developer input."""
+    messages = [
+        {"role": "system", "content": "instructions text"},
+        {"role": "developer", "content": "Format answers as JSON."},
+        {"role": "user", "content": "And the price?"},
+    ]
+    events = [_messages_call(0, messages=messages), _final("done", 1)]
+    built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+    assert built.blocked is None
+    assert built.example.inputs == {"input": "And the price?"}
+    assert built.example.history is not None
+    assert [(m.role, m.content) for m in built.example.history] == [
+        ("system", "instructions text\nFormat answers as JSON.")
+    ]
+    assert not any("system message(s)" in w for w in built.warnings)
+
+
+def test_a_developer_message_after_the_first_turn_is_dropped_with_a_warning() -> None:
+    messages = [
+        {"role": "user", "content": "What is evalshift?"},
+        {"role": "assistant", "content": "A regression tool."},
+        {"role": "developer", "content": "Answer in one sentence from now on."},
+        {"role": "user", "content": "And the price?"},
+    ]
+    events = [_messages_call(0, messages=messages), _final("done", 1)]
+    built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+    assert built.blocked is None
+    assert built.example.history is not None
+    assert [(m.role, m.content) for m in built.example.history] == [
+        ("user", "What is evalshift?"),
+        ("assistant", "A regression tool."),
+    ]
+    assert _LATE_SYSTEM_WARNING in built.warnings
+
+
+def test_a_langchain_system_message_after_the_first_turn_is_dropped_with_a_warning() -> None:
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "human", "content": "q1"},
+        {"role": "ai", "content": "a1"},
+        {"role": "system", "content": "be brief"},
+        {"role": "human", "content": "q2"},
+    ]
+    events = [_messages_call(0, messages=messages), _final("done", 1)]
+    built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+    assert built.blocked is None
+    assert built.example.inputs == {"input": "q2"}
+    assert built.example.history is not None
+    assert [(m.role, m.content) for m in built.example.history] == [
+        ("system", "sys"),
+        ("user", "q1"),
+        ("assistant", "a1"),
+    ]
+    assert built.warnings.count(_LATE_SYSTEM_WARNING) == 1
+
+
+def test_late_system_messages_are_counted_in_one_warning() -> None:
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "q1"},
+        {"role": "developer", "content": "d1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "system", "content": "s2"},
+        {"role": "user", "content": "q2"},
+    ]
+    events = [_messages_call(0, messages=messages), _final("done", 1)]
+    built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+    assert built.example.history is not None
+    assert [m.role for m in built.example.history] == ["system", "user", "assistant"]
+    late = [w for w in built.warnings if "after the first turn" in w]
+    assert late == [
+        "dropped 2 system message(s) after the first turn — a replay carries one leading "
+        "system prompt"
+    ]
+
+
+# ---------------------------------------------------------------------------
+# invalid_case: the safety net under SuiteExample's validators
+# ---------------------------------------------------------------------------
+
+
+def _empty_toolset_envelope_with_a_tool_call() -> CaptureEnvelope:
+    """A capture whose model was offered no tools, yet the app recorded a tool call.
+
+    ``SuiteExample`` rejects tool-call ground truth beside the empty toolset's fingerprint,
+    which no promotion rule anticipates -- the case the safety net exists for.
+    """
+    toolsets = Path(os.environ["EVALSHIFT_DIR"]) / "toolsets"
+    hex_ref = EMPTY_TOOLSET_FINGERPRINT.removeprefix("sha256:")
+    (toolsets / f"{hex_ref}.json").write_text('{"tools": []}', encoding="utf-8")
+    events = [
+        _model_call(0, model_input="hi", toolset_ref=EMPTY_TOOLSET_FINGERPRINT, tools_offered=[]),
+        _tool_call("search_orders", 1),
+        _final("done", 2),
+    ]
+    return _envelope(events=events)
+
+
+def test_a_capture_that_cannot_form_a_valid_case_is_blocked_as_invalid_case() -> None:
+    built = build_example_from_capture(_empty_toolset_envelope_with_a_tool_call(), PromoteOptions())
+    assert built.blocked_reason == "invalid_case"
+    assert built.blocked == (
+        "capture 'cap_abc' could not be turned into a valid case — Value error, "
+        "toolset_ref=<empty toolset> (no tools offered) is incompatible with a non-empty "
+        "expected_tools list. Hand-write the case or report this capture."
+    )
+    placeholder = built.example
+    assert placeholder.id == "cap_abc"
+    assert placeholder.inputs == {}
+    assert placeholder.tags == ["captured", "support_agent"]
+    assert placeholder.tools == []
+    assert placeholder.toolset_ref is None
+    assert placeholder.expected_tools is None
+
+
+def test_allow_errored_does_not_rescue_an_invalid_case() -> None:
+    built = build_example_from_capture(
+        _empty_toolset_envelope_with_a_tool_call(), PromoteOptions(allow_errored=True)
+    )
+    assert built.blocked_reason == "invalid_case"
+
+
+def test_an_invalid_case_in_a_conversation_does_not_seed_later_turns() -> None:
+    bad = _empty_toolset_envelope_with_a_tool_call().model_copy(
+        update={"conversation_id": "conv", "turn_index": 0}
+    )
+    later = _envelope(
+        capture_id="cap_t1",
+        events=[_model_call(0, model_input="q2"), _final("a2", 1)],
+        conversation_id="conv",
+        turn_index=1,
+    )
+    pairs = build_conversation_examples([_record(bad), _record(later)], PromoteOptions())
+    by_id = {record.envelope.capture_id: built for record, built in pairs}
+    assert by_id["cap_abc"].blocked_reason == "invalid_case"
+    assert by_id["cap_t1"].blocked is None
+    assert by_id["cap_t1"].example.history == []

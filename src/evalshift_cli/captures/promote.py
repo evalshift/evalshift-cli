@@ -28,6 +28,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
 from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
 from evalshift_cli.captures.native_messages import normalize_messages
 from evalshift_cli.captures.reader import CaptureRecord, suites_root, toolset_path
@@ -59,7 +61,9 @@ _CONTEXT_LOSS_RATIO = 4
 _CONTEXT_LOSS_MIN_GAP_TOKENS = 300
 
 #: Why :func:`build_example_from_capture` refused a capture -- see :class:`BuiltExample`.
-BlockedReason = Literal["errored", "no_toolset", "multi_toolset", "unreplayable_content"]
+BlockedReason = Literal[
+    "errored", "no_toolset", "multi_toolset", "unreplayable_content", "invalid_case"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,9 +140,12 @@ class BuiltExample:
             ``"unreplayable_content"`` covers a capture whose recorded messages carry
             content a text replay can't carry (an image, a document, a server-tool
             result, an unknown block type) — a replay without it is not ground truth.
-            None of the latter three is rescued by ``--allow-errored``: re-capturing fixes
-            the first, and the second and third reproduce identically unless the app
-            changes what it records. ``None`` when ``blocked`` is ``None``.
+            ``"invalid_case"`` is the safety net: the mapped case failed
+            ``SuiteExample``'s own validation in a way no rule above anticipated, so
+            ``example`` is an inert placeholder and ``blocked`` names pydantic's first error.
+            None of the latter four is rescued by ``--allow-errored``: re-capturing fixes
+            the first, and the others reproduce identically unless the app changes what
+            it records. ``None`` when ``blocked`` is ``None``.
         promotion_source: Which yardstick the tool-call ground truth came
             from — ``"requested"`` when the capture recorded the calls the
             model itself asked for, ``"executed"`` when it fell back to the
@@ -467,25 +474,36 @@ def build_example_from_capture(
     # drop any ground truth here too to stay genuinely inert. A blocked
     # capture's .example is never scored, so nothing of substance is lost.
     no_real_toolset = toolset_ref is None
-    example = SuiteExample(
-        id=opts.name or envelope.capture_id,
-        inputs=recovered.inputs,
-        tags=tags,
-        expected=expected,
-        expected_tools=None if no_real_toolset else expected_tools,
-        expected_tool_rounds=None if no_real_toolset else expected_tool_rounds,
-        tool_result_fixtures=None if no_real_toolset else tool_result_fixtures,
-        expected_tool_count=(
-            None if no_real_toolset else (counted_calls if opts.tool_count else None)
-        ),
-        expected_no_tools=expected_no_tools,
-        history=recovered.history,
-        conversation_id=envelope.conversation_id,
-        turn_index=envelope.turn_index,
-        generation_config=generation_config,
-        toolset_ref=toolset_ref,
-        tools=[] if no_real_toolset else None,
-    )
+    try:
+        example = SuiteExample(
+            id=opts.name or envelope.capture_id,
+            inputs=recovered.inputs,
+            tags=tags,
+            expected=expected,
+            expected_tools=None if no_real_toolset else expected_tools,
+            expected_tool_rounds=None if no_real_toolset else expected_tool_rounds,
+            tool_result_fixtures=None if no_real_toolset else tool_result_fixtures,
+            expected_tool_count=(
+                None if no_real_toolset else (counted_calls if opts.tool_count else None)
+            ),
+            expected_no_tools=expected_no_tools,
+            history=recovered.history,
+            conversation_id=envelope.conversation_id,
+            turn_index=envelope.turn_index,
+            generation_config=generation_config,
+            toolset_ref=toolset_ref,
+            tools=[] if no_real_toolset else None,
+        )
+    except ValidationError as exc:
+        # The safety net under every rule above: a capture none of them anticipated must
+        # skip with a reason, never abort the whole sync with a raw ValidationError. The
+        # placeholder is the inert one the no-toolset refusal builds.
+        blocked = (
+            f"capture {envelope.capture_id!r} could not be turned into a valid case — "
+            f"{exc.errors()[0]['msg']}. Hand-write the case or report this capture."
+        )
+        blocked_reason = "invalid_case"
+        example = SuiteExample(id=opts.name or envelope.capture_id, inputs={}, tags=tags, tools=[])
     cost_usd, cost_source = _capture_cost(events)
     return BuiltExample(
         example=example,
@@ -939,7 +957,9 @@ def _recover_inputs(
       split: the last ``user`` message becomes the current-turn ``inputs``, and
       everything before it becomes ``history``. Unrecognised roles are dropped
       with an aggregated warning; content a text replay can't carry lands in
-      ``unreplayable``.
+      ``unreplayable``. A replay carries one leading system prompt: the run of
+      system (or ``developer``) messages opening the history merges into it, and
+      one after the first turn is dropped with an aggregated warning.
     * A non-empty string is wrapped as ``{input_var: string}`` (no history).
     * Anything else yields empty ``inputs`` with a warning.
     """
@@ -1072,6 +1092,7 @@ def _recover_inputs_from_messages(
     history: list[ChatMessage] = []
     dropped_roles: set[str] = set()
     dropped_count = 0
+    late_system = 0
     paired_by_order = 0
     unpaired_tool_results = 0
     # Call ids of the latest assistant turn that no tool result has answered
@@ -1084,6 +1105,16 @@ def _recover_inputs_from_messages(
         if role is None:
             dropped_count += 1
             dropped_roles.add(str(msg.get("role")))
+            continue
+        if role == "system" and history:
+            # A replay carries one system prompt, first (SuiteExample enforces it). The leading
+            # run -- e.g. Responses `instructions=` folded in front of a `developer` input --
+            # merges into it; a system message after the first turn has nowhere to go.
+            if len(history) == 1 and history[0].role == "system":
+                merged = f"{history[0].content}\n{_text_content(msg)}"
+                history[0] = ChatMessage(role="system", content=merged)
+            else:
+                late_system += 1
             continue
         if role == "assistant":
             msg, open_call_ids = _assistant_with_call_ids(msg, position)
@@ -1109,6 +1140,11 @@ def _recover_inputs_from_messages(
         roles = ", ".join(sorted(dropped_roles))
         warnings.append(
             f"dropped {dropped_count} history message(s) with unrecognised role(s) {{{roles}}}",
+        )
+    if late_system:
+        warnings.append(
+            f"dropped {late_system} system message(s) after the first turn — a replay carries "
+            "one leading system prompt",
         )
     if paired_by_order:
         warnings.append(
