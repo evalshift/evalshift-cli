@@ -14,7 +14,7 @@ dense LLM reference at <https://www.evalshift.dev/sdk-llms-full.txt>.
 
 ```
 your agent (evalshift-sdk)  →  .evalshift/captures/<suite>/cap_<hex>.json
-                            →  or, EVALSHIFT_SINK=s3://… : <prefix>/captures/<suite>/cap_<hex>.json
+                            →  or, EVALSHIFT_CAPTURE_STORE=s3://… : <prefix>/captures/<suite>/cap_<hex>.json
                             →  evalshift capture sync       (fetches from captures.store first)
                             →  .evalshift/suites/<suite>/golden.jsonl + evalshift.yaml
 ```
@@ -30,9 +30,10 @@ your agent (evalshift-sdk)  →  .evalshift/captures/<suite>/cap_<hex>.json
   `evalshift-sdk` alone.
 - **Off by default.** Nothing is recorded unless `EVALSHIFT_CAPTURE=1` is set,
   so the instrumentation is safe to leave in production code permanently.
-- **No network by default.** The SDK writes local files unless `EVALSHIFT_SINK` names a bucket
-  you own (`s3://`, `gs://`, `az://`, SDK 0.5.0+), and then it writes only there — never to
-  EvalShift. Python 3.10+, stdlib-only; the cloud clients are optional extras.
+- **No network by default.** The SDK writes local files unless `EVALSHIFT_CAPTURE_STORE` names a
+  bucket you own (`s3://`, `gs://`, `az://`; SDK 0.6.0+, or `EVALSHIFT_SINK` on SDK 0.5.0), and
+  then it writes only there — never to EvalShift. Python 3.10+, stdlib-only; a bucket's client
+  library is a separate package you install only if you use one.
 
 ## 1. Instrument the agent
 
@@ -110,7 +111,7 @@ the SDK, in your agent's process.
 
 ```bash
 # on a host whose disk does not outlive it (Fargate, Lambda, pods):
-EVALSHIFT_CAPTURE=1 EVALSHIFT_SINK=s3://acme-evals/support-agent python your_agent.py
+EVALSHIFT_CAPTURE=1 EVALSHIFT_CAPTURE_STORE=s3://acme-evals/support-agent python your_agent.py
 ```
 
 The SDK ships each capture (and its toolset sidecar) to the bucket on a background thread,
@@ -121,9 +122,9 @@ lifecycle rule; `EVALSHIFT_MAX_CAPTURES` applies to local disk only.
 
 Run the CLI from the directory holding `.evalshift/` (or set `EVALSHIFT_DIR`).
 If the captures live in a bucket, name it once in `evalshift.yaml`
-(`captures: {store: s3://acme-evals/support-agent}`) and install `evalshift[s3]` (or `[gcs]` /
-`[azure]`); `list` and `sync` then fetch new captures first. `evalshift capture fetch` does
-only that step.
+(`captures: {store: s3://acme-evals/support-agent}`) and install the provider's client library
+(`pip install boto3`, `google-cloud-storage` or `azure-storage-blob azure-identity`); `list` and
+`sync` then fetch new captures first. `evalshift capture fetch` does only that step.
 
 ```bash
 evalshift capture list                  # what was recorded (--json for machine output)

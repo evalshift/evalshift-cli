@@ -1021,8 +1021,8 @@ entirely for the default: captures are read from `.evalshift/captures/` (or `EVA
 on local disk and nothing here is needed.
 
 Production agents on Fargate, Lambda or Kubernetes lose their disk when they stop, so the
-SDK can ship captures to an object store you own instead (`EVALSHIFT_SINK=<uri>` in the
-agent's environment — see [Capture SDK](sdk.md)). Name the same store here and the CLI
+SDK can ship captures to an object store you own instead (`EVALSHIFT_CAPTURE_STORE=<uri>` in the
+agent's environment, `EVALSHIFT_SINK` on SDK 0.5.0 — see [Capture SDK](sdk.md)). Name the same store here and the CLI
 pulls new captures down before it promotes them, with no flags to remember:
 
 ```yaml
@@ -1041,9 +1041,9 @@ Accepted URI forms — the same grammar the SDK uses:
 
 | Form | Store | Install | Credentials |
 | --- | --- | --- | --- |
-| `s3://<bucket>/<prefix>` | Amazon S3; MinIO, Cloudflare R2, Backblaze B2 via boto3's `AWS_ENDPOINT_URL` | `pip install "evalshift[s3]"` | IAM role in CI (OIDC), `aws sso login` locally |
-| `gs://<bucket>/<prefix>` | Google Cloud Storage | `pip install "evalshift[gcs]"` | Workload Identity in CI, `gcloud auth application-default login` locally |
-| `az://<account>/<container>/<prefix>` | Azure Blob Storage | `pip install "evalshift[azure]"` | Managed Identity / federated credential in CI, `az login` locally |
+| `s3://<bucket>/<prefix>` | Amazon S3; MinIO, Cloudflare R2, Backblaze B2 via boto3's `AWS_ENDPOINT_URL` | `pip install boto3` | IAM role in CI (OIDC), `aws sso login` locally |
+| `gs://<bucket>/<prefix>` | Google Cloud Storage | `pip install google-cloud-storage` | Workload Identity in CI, `gcloud auth application-default login` locally |
+| `az://<account>/<container>/<prefix>` | Azure Blob Storage | `pip install azure-storage-blob azure-identity` | Managed Identity / federated credential in CI, `az login` locally |
 
 `<prefix>` is optional. Credentials never go in the URI: a value containing `@` or `?` fails
 to load, naming the accepted forms. A rejected value is never echoed back (it may be a pasted
