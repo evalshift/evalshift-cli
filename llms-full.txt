@@ -220,7 +220,8 @@ evalshift login [--token es_...] [--host URL] [--no-browser] [--timeout SECS=900
   Device-code browser flow, or --token (verified via GET /me). Credentials stored at
   ~/.evalshift/credentials (owner-only perms). Without --token, a still-valid stored token for
   the host is reused (no new token minted; "already logged in as <email>"); a 401/403 falls
-  through to the browser flow. To switch accounts: `evalshift logout`, then `login`.
+  through to the browser flow, except a suspended account (403 account_suspended), which exits 1
+  with the server's message. To switch accounts: `evalshift logout`, then `login`.
   Issues a PERSONAL token: tied to your membership, dies with it. Correct for a workstation,
   wrong for CI. For CI mint a SERVICE ACCOUNT KEY in the hosted web app (Settings -> API
   tokens -> Service accounts): org-owned machine identity, never owner-equivalent (role is
@@ -1494,5 +1495,10 @@ Hosted 401 -> check evalshift whoami; precedence flags > env > credentials file;
 start with es_; a key past its rotation grace window authenticates as nobody.
 Hosted 403 `Permission denied: <key>` -> the token authenticated but its scopes (or its
 principal's role) don't cover that permission. Widen the scope or mint a key that holds it.
+Hosted 403 "Your account has been suspended" (code account_suspended) -> the user behind a
+personal token was suspended; whoami/push print that message and exit 1. login with a stored
+token does too, instead of starting a browser sign-in; a fresh login waits until --timeout (a
+suspended user cannot approve it). Re-login cannot fix it: contact support@evalshift.dev.
+Service account keys are unaffected.
 Owner-only keys a service account can never hold: project:create (auto-create -> use
 --no-create-project on a pre-created project).
