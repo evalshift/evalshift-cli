@@ -6,6 +6,7 @@ list went through ``str()``. The store fixture plays S3; ``--base`` plays a fres
 
 from __future__ import annotations
 
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -546,3 +547,53 @@ def test_a_fresh_clone_sync_skips_the_duplicate_of_a_stringified_case(
         assert "captures/alpha/cap_1.json" not in store.gets
     suite_dir = tmp_path / "suites" / "alpha"
     assert sorted(p.name for p in suite_dir.iterdir()) == ["cap_1.json", "golden.jsonl"]
+
+
+def test_repair_keeps_a_reconstructed_history_whose_sibling_turn_is_gone(
+    tmp_path: Path, store: FakeRemoteStore
+) -> None:
+    """t1 recorded no messages list, so its history came from t0 -- whose capture expired."""
+    _put(store, "cap_t0", model_input="What is evalshift?", conversation_id="conv", turn_index=0)
+    _put(store, "cap_t1", model_input={}, conversation_id="conv", turn_index=1)
+    first = _sync(tmp_path)
+    assert first.exit_code == 0, first.output
+    t1 = tmp_path / "suites" / "alpha" / "cap_t1.json"
+    assert _stored(t1).example.history  # reconstructed from t0
+    before = t1.read_bytes()
+    del store.objects["captures/alpha/cap_t0.json"]  # the store's lifecycle rule expired it
+    shutil.rmtree(tmp_path / "captures")  # a fresh clone
+
+    result = _sync(tmp_path, "--repair")
+
+    assert result.exit_code == 0, result.output
+    out = _out(result)
+    assert (
+        "can't repair cap_t1: conversation turn(s) cap_t0 are no longer local or in the store, "
+        "so its history can't be rebuilt"
+    ) in out
+    assert "repaired 0 case(s)" in out
+    assert t1.read_bytes() == before
+
+
+def test_repair_rebuilds_a_turn_that_recorded_its_messages_even_with_a_sibling_gone(
+    tmp_path: Path, store: FakeRemoteStore
+) -> None:
+    _write_case(
+        tmp_path,
+        "cap_t0",
+        inputs={"input": "What is evalshift?"},
+        history=[],
+        conversation_id="conv",
+    )
+    broken = _write_case(tmp_path, "cap_t1", conversation_id="conv")
+    _put(store, "cap_t1", conversation_id="conv", turn_index=1)  # cap_t0's capture is gone
+
+    result = _sync(tmp_path, "--repair")
+
+    assert result.exit_code == 0, result.output
+    out = _out(result)
+    assert "repaired 1 case(s)" in out
+    assert "can't repair cap_t1" not in out
+    history = _stored(broken).example.history
+    assert history is not None
+    assert [m.role for m in history] == ["system", "user", "assistant", "tool", "assistant"]

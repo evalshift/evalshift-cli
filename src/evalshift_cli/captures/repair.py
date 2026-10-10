@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import ast
 import warnings
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Collection, Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from evalshift_cli.captures.models import PromotedCase
@@ -151,10 +151,13 @@ class RepairSelection:
         refetch_ids: Capture ids ``--repair`` needs local: every candidate's, plus every
             promoted case sharing a ``(suite, conversation_id)`` with one -- a turn whose
             history is reconstructed from sibling turns needs them.
+        conversations: ``(suite, conversation_id) -> from_capture`` of every promoted case in
+            that conversation, for each conversation holding a candidate.
     """
 
     candidates: tuple[RepairCandidate, ...] = ()
     refetch_ids: frozenset[str] = frozenset()
+    conversations: Mapping[tuple[str, str], frozenset[str]] = field(default_factory=dict)
 
     def cases_by_capture(self) -> dict[str, list[PromotedCase]]:
         """Candidate cases keyed by the capture they were promoted from."""
@@ -162,6 +165,21 @@ class RepairSelection:
         for candidate in self.candidates:
             by_capture.setdefault(candidate.case.from_capture, []).append(candidate.case)
         return by_capture
+
+    def missing_turns(self, case: PromotedCase, available: Collection[str]) -> list[str]:
+        """The captures of ``case``'s conversation turns that are not in ``available``, sorted.
+
+        Args:
+            case: A promoted case.
+            available: The capture ids at hand (local, or fetched from the store).
+
+        Returns:
+            The missing capture ids; empty for a case outside any conversation.
+        """
+        if case.conversation_id is None:
+            return []
+        turns = self.conversations.get((case.suite, case.conversation_id), frozenset())
+        return sorted(turns.difference(available))
 
 
 def select_repairs(cases: Iterable[PromotedCase]) -> RepairSelection:
@@ -184,13 +202,17 @@ def select_repairs(cases: Iterable[PromotedCase]) -> RepairSelection:
         for c in candidates
         if c.case.conversation_id is not None
     }
+    members: dict[tuple[str, str], set[str]] = {}
+    for case in all_cases:
+        if case.conversation_id is not None and (case.suite, case.conversation_id) in conversations:
+            members.setdefault((case.suite, case.conversation_id), set()).add(case.from_capture)
     refetch = {c.case.from_capture for c in candidates}
-    refetch.update(
-        case.from_capture
-        for case in all_cases
-        if case.conversation_id is not None and (case.suite, case.conversation_id) in conversations
+    refetch.update(*members.values())
+    return RepairSelection(
+        candidates=candidates,
+        refetch_ids=frozenset(refetch),
+        conversations={key: frozenset(ids) for key, ids in members.items()},
     )
-    return RepairSelection(candidates=candidates, refetch_ids=frozenset(refetch))
 
 
 def stringified_warnings(selection: RepairSelection) -> list[str]:

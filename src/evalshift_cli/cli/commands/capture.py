@@ -29,6 +29,7 @@ from rich.table import Table
 
 from evalshift_cli import __version__
 from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
+from evalshift_cli.captures.native_messages import normalize_messages
 from evalshift_cli.captures.promote import (
     PromoteOptions,
     build_conversation_examples,
@@ -82,7 +83,7 @@ from evalshift_cli.config.loader import ConfigError, load_config
 from evalshift_cli.config.models import SuiteEvaluatorsOverride
 from evalshift_cli.suite.loader import SuiteError, load_jsonl
 from evalshift_cli.traces.diff import diff_traces
-from evalshift_cli.traces.models import ToolCallEvent
+from evalshift_cli.traces.models import ModelCallEvent, ToolCallEvent
 from evalshift_cli.utils.ci_pin import check_ci_pin
 
 capture_app = typer.Typer(
@@ -283,6 +284,12 @@ def _warn_repaired_duplicates(
                 f"[yellow]⚠[/yellow] {escape(suite)}: repaired case {escape(name)} duplicates "
                 f"{escape(other)} — delete one (duplicate examples inflate n)",
             )
+
+
+def _recorded_messages_list(envelope: CaptureEnvelope) -> bool:
+    """Whether the capture's first ``model_call`` recorded a messages list (its own history)."""
+    first = next((e for e in envelope.trace.events if isinstance(e, ModelCallEvent)), None)
+    return first is not None and normalize_messages(first.input) is not None
 
 
 def _warn_unrepairable(
@@ -1162,6 +1169,7 @@ def capture_sync(
         ):
             console.print(f"[yellow]⚠[/yellow] {suite_name}: {warning}")
         built_pairs = build_conversation_examples(records_by_suite[suite_name], opts, base=base)
+        local_ids = {r.envelope.capture_id for r in records_by_suite[suite_name]}
         # Re-exercising an agent on the same data records duplicate captures.
         # Promoting both would duplicate the example, double n, and inflate
         # every downstream p-value/effect size. Dedup keys on the *built
@@ -1183,7 +1191,6 @@ def capture_sync(
             # clean`) is rebuilt offline instead: a capture an earlier sync de-duplicated
             # against it was never promoted, and its correct rebuild no longer matches the
             # stringified content on disk. When the capture is local, its rebuild above wins.
-            local_ids = {r.envelope.capture_id for r in records_by_suite[suite_name]}
             for candidate in selection.candidates:
                 case = candidate.case
                 if (
@@ -1229,7 +1236,21 @@ def capture_sync(
                                 f"[cyan]{escape(case.name)}[/cyan]: {escape(built.blocked)}",
                             )
                     else:
+                        # A turn that recorded no messages list got its history from its
+                        # sibling turns; with one of them gone, the rebuild would drop it.
+                        own_messages = _recorded_messages_list(envelope)
                         for case in to_repair:
+                            missing = (
+                                [] if own_messages else selection.missing_turns(case, local_ids)
+                            )
+                            if missing:
+                                console.print(
+                                    f"[yellow]⚠[/yellow] can't repair "
+                                    f"[cyan]{escape(case.name)}[/cyan]: conversation turn(s) "
+                                    f"{escape(', '.join(missing))} are no longer local or in the "
+                                    "store, so its history can't be rebuilt",
+                                )
+                                continue
                             write_promoted_case(case, base=base, force=True)
                             repaired_here.append(case.name)
                     continue

@@ -136,6 +136,15 @@ def test_select_repairs_collects_candidates_and_their_conversation_siblings() ->
     assert [c.stringified for c in selection.candidates] == ["history message 2", None]
     assert selection.refetch_ids == {"cap_t1", "cap_t0", "cap_empty"}
     assert selection.cases_by_capture() == {"cap_t1": [broken], "cap_empty": [empty]}
+    assert selection.conversations == {("alpha", "conv"): {"cap_t1", "cap_t0"}}
+
+
+def test_missing_turns_names_the_conversation_captures_not_at_hand() -> None:
+    broken = _broken("cap_t1", conversation_id="conv")
+    selection = select_repairs([broken, _case("cap_t0", conversation_id="conv"), _case("cap_t2")])
+    assert selection.missing_turns(broken, {"cap_t1"}) == ["cap_t0"]
+    assert selection.missing_turns(broken, {"cap_t0", "cap_t1"}) == []
+    assert selection.missing_turns(_broken("solo"), set()) == []
 
 
 def test_stringified_warnings_count_per_suite_and_skip_input_less_cases() -> None:
