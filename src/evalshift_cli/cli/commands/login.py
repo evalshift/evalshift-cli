@@ -10,7 +10,12 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from evalshift_cli.hosted.client import HostedClient, HostedError, HostedHTTPError
+from evalshift_cli.hosted.client import (
+    HostedAccountSuspendedError,
+    HostedClient,
+    HostedError,
+    HostedHTTPError,
+)
 from evalshift_cli.hosted.credentials import (
     CredentialsError,
     is_insecure_host,
@@ -96,8 +101,8 @@ def _reuse_stored_credentials(*, host: str, console: Console) -> bool:
     Every browser approval mints a fresh personal token on the server, and the CLI can
     only hold one at a time, so re-running ``login`` with a working credential would
     strand the previous token. A rejected token (revoked, or for another account) falls
-    through to the browser flow; any other failure is reported as-is because the browser
-    flow would hit the same wall.
+    through to the browser flow. A suspended account is reported and stops here. Any other
+    failure is reported as-is because the browser flow would hit the same wall.
     """
     try:
         stored = load_credentials()
@@ -107,6 +112,10 @@ def _reuse_stored_credentials(*, host: str, console: Console) -> bool:
         return False
     try:
         me = HostedClient(host=host, token=stored.token).me()
+    except HostedAccountSuspendedError as exc:
+        # A 403 like the rejected-token case below, but a fresh sign-in cannot fix it.
+        console.print(f"[red]✗[/red] {exc}")
+        raise typer.Exit(code=1) from exc
     except HostedHTTPError as exc:
         if exc.status_code in (401, 403):
             console.print("[yellow]![/yellow] stored token is no longer valid; signing in again")

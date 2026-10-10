@@ -320,25 +320,25 @@ def test_list_json_output_is_not_polluted_by_fetch_line(
 
 
 @pytest.fixture
-def missing_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+def missing_library(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make every store URI fail to open as if its pip extra were not installed."""
 
     def _open(parsed: StoreURI) -> RemoteStore:
         raise RemoteStoreUnavailable(
-            "s3:// captures store needs the optional dependency 'boto3'",
-            hint='install it with: pip install "evalshift[s3]"',
+            "s3:// captures store needs boto3, which is not installed",
+            hint="install it: pip install boto3",
         )
 
     monkeypatch.setattr(capture_module, "open_store", _open)
 
 
 @pytest.mark.parametrize("command", ["fetch", "sync", "list"])
-def test_missing_extra_exits_1_naming_the_pip_extra(
-    tmp_path: Path, missing_extra: None, command: str
+def test_missing_library_exits_1_naming_the_package(
+    tmp_path: Path, missing_library: None, command: str
 ) -> None:
     config = _write_config(tmp_path / "evalshift.yaml")
     result = _invoke([command, "--config", str(config)], tmp_path)
     assert result.exit_code == 1
     assert "Remote capture store" in result.stdout
-    assert 'pip install "evalshift[s3]"' in result.stdout
+    assert "pip install boto3" in result.stdout
     assert not (tmp_path / "suites").exists()

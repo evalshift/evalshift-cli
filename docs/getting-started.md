@@ -126,9 +126,10 @@ EVALSHIFT_CAPTURE=1 python your_agent.py   # writes .evalshift/captures/
 ```
 
 Running on Fargate, Lambda or Kubernetes, where the disk does not outlive the task? Add
-`EVALSHIFT_SINK=s3://<bucket>/<prefix>` (or `gs://…` / `az://…`) next to it and put the same
-URI under `captures: {store: …}` in `evalshift.yaml`; step 6 then fetches from the bucket
-first. See [`captures`](configuration.md#captures).
+`EVALSHIFT_CAPTURE_STORE=s3://<bucket>/<prefix>` (or `gs://…` / `az://…`; SDK 0.6.0+, or
+`EVALSHIFT_SINK` on SDK 0.5.0) next to it and put the same URI under `captures: {store: …}` in
+`evalshift.yaml`; step 6 then fetches from the bucket first. See
+[`captures`](configuration.md#captures).
 
 Captures are off unless `EVALSHIFT_CAPTURE=1` is set, so the decorator can
 stay in production code. If the agent calls OpenAI, Anthropic or Google GenAI

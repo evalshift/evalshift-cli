@@ -204,16 +204,21 @@ def test_open_store_dispatches_without_building_a_client() -> None:
     assert isinstance(open_store(parse_store_uri("az://a/c/p")), AzureBlobStore)
 
 
-def test_open_store_missing_extra_names_pip_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_open_store_missing_library_names_the_package(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(remote_module, "_installed", lambda module: False)
     with pytest.raises(RemoteStoreUnavailable) as info:
         open_store(parse_store_uri("gs://b/p"))
-    assert info.value.hint == 'install it with: pip install "evalshift[gcs]"'
+    assert info.value.summary == (
+        "gs:// captures store needs google-cloud-storage, which is not installed"
+    )
+    assert info.value.hint == "install it: pip install google-cloud-storage"
 
 
-def test_open_store_azure_needs_identity_too(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_open_store_azure_names_both_packages_when_identity_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(remote_module, "_installed", lambda module: module != "azure.identity")
     with pytest.raises(RemoteStoreUnavailable) as info:
         open_store(parse_store_uri("az://a/c/p"))
-    assert "'azure.identity'" in info.value.summary
-    assert info.value.hint == 'install it with: pip install "evalshift[azure]"'
+    assert info.value.summary == "az:// captures store needs azure-identity, which is not installed"
+    assert info.value.hint == "install it: pip install azure-storage-blob azure-identity"

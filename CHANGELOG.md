@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CI that was green can turn red on upgrade. The bare `text-embedding-3-small`
   default is checked for the first time. Export the key, or set
   `blocking: false` to have it skipped with a warning.
+- Docs: the SDK's object-store variable is `EVALSHIFT_CAPTURE_STORE` from SDK 0.6.0, matching
+  `captures.store` here; SDK 0.5.0 reads the same value from `EVALSHIFT_SINK`, which keeps
+  working on newer SDKs too.
+- Every store message names the package to install instead of a pip extra: `pip install boto3`,
+  `google-cloud-storage`, `azure-storage-blob azure-identity` (both Azure packages in one
+  command). The `[s3]` / `[gcs]` / `[azure]` extras still exist but are no longer documented.
 
 ### Fixed
 
@@ -44,6 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pair: it is skipped (advisory) or refused (blocking) before any call.
 - The bare `text-embedding-3-small` default now resolves to OpenAI, so its key
   is checked.
+- `doctor`'s `captures.store` row no longer fails the command — and with it `compare` and
+  every GitHub Action run — when the store's client library is not installed; it warns, naming
+  the package to install. A run on a committed suite never reads the bucket; `capture fetch`,
+  `list` and `sync`, which do, still exit 1.
+- A suspended account is named as such. When the server refuses a token with
+  `account_suspended`, the CLI prints its message — "Your account has been suspended.
+  Contact support@evalshift.dev." `evalshift login` with a stored token for that account
+  exits 1 with it instead of calling the token no longer valid and starting a browser
+  sign-in, and push auto-create shows it without the token-access hint. Service account
+  keys are not affected by a user's suspension.
 
 ## [1.3.0] - 2026-10-09
 

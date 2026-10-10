@@ -39,7 +39,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from evalshift_cli.captures.reader import captures_root, toolsets_root
-from evalshift_cli.captures.store_uri import StoreURI
+from evalshift_cli.captures.store_uri import StoreURI, package_for_module
 
 #: Largest object a fetch will download. Captures are kilobytes; this is a safety stop.
 MAX_OBJECT_BYTES = 32 * 1024 * 1024
@@ -162,14 +162,16 @@ def open_store(parsed: StoreURI) -> RemoteStore:
         The scheme's adapter; its client is built on the first ``list`` or ``get``.
 
     Raises:
-        RemoteStoreUnavailable: when a module the scheme's extra provides is not installed.
-            The summary names the first missing module; the hint names the pip extra.
+        RemoteStoreUnavailable: when a client module the scheme needs is not installed. The
+            summary names the package that provides the first missing module; the hint names
+            the pip command that installs everything the scheme needs.
     """
     for module in _REQUIRED_MODULES[parsed.scheme]:
         if not _installed(module):
             raise RemoteStoreUnavailable(
-                f"{parsed.scheme}:// captures store needs the optional dependency {module!r}",
-                hint=f'install it with: pip install "evalshift[{parsed.extra}]"',
+                f"{parsed.scheme}:// captures store needs {package_for_module(module)}, "
+                "which is not installed",
+                hint=f"install it: pip install {parsed.packages}",
             )
     if parsed.scheme == "s3":
         from evalshift_cli.captures.stores.s3 import S3Store

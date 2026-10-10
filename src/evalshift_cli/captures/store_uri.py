@@ -29,6 +29,28 @@ STORE_URI_FORMS = (
 
 _EXTRA_FOR_SCHEME: dict[str, str] = {"s3": "s3", "gs": "gcs", "az": "azure"}
 
+#: The pip distribution that provides each client module. Shared verbatim with the SDK.
+_PACKAGE_FOR_MODULE: dict[str, str] = {
+    "boto3": "boto3",
+    "google.cloud.storage": "google-cloud-storage",
+    "azure.storage.blob": "azure-storage-blob",
+    "azure.identity": "azure-identity",
+}
+
+#: The ``pip install`` argument that installs everything a scheme needs, in one command.
+#: Named in every message instead of the extras: a user who installed the CLI the normal way
+#: has no reason to know what an extra is. Shared verbatim with the SDK.
+_PACKAGES_FOR_SCHEME: dict[str, str] = {
+    "s3": "boto3",
+    "gs": "google-cloud-storage",
+    "az": "azure-storage-blob azure-identity",
+}
+
+
+def package_for_module(module: str) -> str:
+    """The pip distribution that provides ``module`` (one of the client modules above)."""
+    return _PACKAGE_FOR_MODULE[module]
+
 
 @dataclass(frozen=True, slots=True)
 class StoreURI:
@@ -50,6 +72,11 @@ class StoreURI:
     def extra(self) -> str:
         """The pip extra (``evalshift[<extra>]``) that installs this scheme's client."""
         return _EXTRA_FOR_SCHEME[self.scheme]
+
+    @property
+    def packages(self) -> str:
+        """The ``pip install`` argument that installs this scheme's client library (or libraries)."""
+        return _PACKAGES_FOR_SCHEME[self.scheme]
 
 
 def parse_store_uri(uri: str) -> StoreURI:
@@ -94,4 +121,4 @@ def parse_store_uri(uri: str) -> StoreURI:
     return StoreURI(scheme, parts.netloc, None, path)
 
 
-__all__ = ["STORE_URI_FORMS", "Scheme", "StoreURI", "parse_store_uri"]
+__all__ = ["STORE_URI_FORMS", "Scheme", "StoreURI", "package_for_module", "parse_store_uri"]

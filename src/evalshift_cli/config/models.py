@@ -821,7 +821,7 @@ class CapturesConfig(_StrictModel):
 
     By default captures are read from ``<base>/captures/`` on this machine and nothing here
     is needed. Production hosts whose disk does not outlive them (Fargate, Lambda, pods) can
-    ship captures to an object store instead (``EVALSHIFT_SINK`` on the SDK side); naming the
+    ship captures to an object store instead (``EVALSHIFT_CAPTURE_STORE`` on the SDK side); naming the
     same store here makes ``capture sync`` and ``capture list`` mirror new captures into the
     local directory first, with no flags.
 
