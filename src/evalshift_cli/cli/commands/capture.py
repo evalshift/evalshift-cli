@@ -29,7 +29,6 @@ from rich.table import Table
 
 from evalshift_cli import __version__
 from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
-from evalshift_cli.captures.native_messages import normalize_messages
 from evalshift_cli.captures.promote import (
     PromoteOptions,
     build_conversation_examples,
@@ -39,6 +38,7 @@ from evalshift_cli.captures.promote import (
     iter_promoted_cases,
     promoted_suite_dir,
     rebuild_golden_jsonl,
+    recover_from_messages,
     write_promoted_case,
 )
 from evalshift_cli.captures.reader import (
@@ -286,10 +286,17 @@ def _warn_repaired_duplicates(
             )
 
 
-def _recorded_messages_list(envelope: CaptureEnvelope) -> bool:
-    """Whether the capture's first ``model_call`` recorded a messages list (its own history)."""
+def _records_own_history(envelope: CaptureEnvelope) -> bool:
+    """Whether the capture's first ``model_call`` yields a history of its own when promoted.
+
+    A turn whose capture doesn't -- no messages list at all, or one with no user turn to split
+    on -- gets its history reconstructed from its sibling turns instead.
+    """
     first = next((e for e in envelope.trace.events if isinstance(e, ModelCallEvent)), None)
-    return first is not None and normalize_messages(first.input) is not None
+    if first is None:
+        return False
+    recovered = recover_from_messages(first.input, input_var="input", warnings=[])
+    return recovered is not None and recovered.history is not None
 
 
 def _warn_unrepairable(
@@ -1236,12 +1243,12 @@ def capture_sync(
                                 f"[cyan]{escape(case.name)}[/cyan]: {escape(built.blocked)}",
                             )
                     else:
-                        # A turn that recorded no messages list got its history from its
-                        # sibling turns; with one of them gone, the rebuild would drop it.
-                        own_messages = _recorded_messages_list(envelope)
+                        # A turn whose own capture yields no history got it from its sibling
+                        # turns; with one of them gone, the rebuild would drop it.
+                        own_history = _records_own_history(envelope)
                         for case in to_repair:
                             missing = (
-                                [] if own_messages else selection.missing_turns(case, local_ids)
+                                [] if own_history else selection.missing_turns(case, local_ids)
                             )
                             if missing:
                                 console.print(

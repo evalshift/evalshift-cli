@@ -357,11 +357,12 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   captures exactly like a plain sync, so pass the flags you normally sync with (--input-var,
   --tag, --strict-args, ...).
   --repair takes inputs + history from the capture, so it REPLACES hand edits to those two
-  fields (e.g. a redaction): review the diff before committing. A turn that recorded no
-  messages list (history reconstructed from sibling turns) is left as is when any other
+  fields (e.g. a redaction): review the diff before committing. A turn whose capture yields
+  no history of its own (no messages list, or one with no user turn; history reconstructed
+  from sibling turns) is left as is when any other
   promoted turn of its conversation has a capture neither local nor in the store: "can't
   repair <case>: conversation turn(s) <ids> are no longer local or in the store, so its
-  history can't be rebuilt". Turns that recorded their own messages list are unaffected.
+  history can't be rebuilt". Turns whose own messages list yields a history are unaffected.
   A repaired case whose replayed content now equals another promoted case's warns
   "<suite>: repaired case <a> duplicates <b> — delete one (duplicate examples inflate n)" and
   deletes nothing: delete one yourself.

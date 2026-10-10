@@ -164,8 +164,9 @@ refused — its turn carries an image, say — is named too
 (`can't repair <case>: …`) and left as it is; a case left with empty `inputs`
 whose rebuild is refused is left as it is too, but reported like any other
 refused capture (`skipped <capture>: …`, counted in the summary). A turn
-whose capture recorded no messages list has its `history` reconstructed from
-its sibling turns (see [Promotion](#promotion-capture-sync)); when any other
+whose capture recorded no messages list, or one with no user turn to split
+on, has its `history` reconstructed from its sibling turns (see
+[Promotion](#promotion-capture-sync)); when any other
 promoted turn of its conversation has a capture that is gone from both
 places, `--repair` leaves the case as it is rather than rebuild it with a
 shorter history, and names the missing turns:

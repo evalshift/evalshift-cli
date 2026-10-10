@@ -549,12 +549,21 @@ def test_a_fresh_clone_sync_skips_the_duplicate_of_a_stringified_case(
     assert sorted(p.name for p in suite_dir.iterdir()) == ["cap_1.json", "golden.jsonl"]
 
 
+@pytest.mark.parametrize(
+    "t1_input",
+    [{}, [{"role": "system", "content": "sys"}]],
+    ids=["no-messages-list", "messages-list-without-a-user-turn"],
+)
 def test_repair_keeps_a_reconstructed_history_whose_sibling_turn_is_gone(
-    tmp_path: Path, store: FakeRemoteStore
+    tmp_path: Path, store: FakeRemoteStore, t1_input: Any
 ) -> None:
-    """t1 recorded no messages list, so its history came from t0 -- whose capture expired."""
+    """t1's own capture yields no history, so it came from t0 -- whose capture expired.
+
+    Either t1 recorded no messages list at all, or one with no user turn to split on: both
+    leave promotion to reconstruct t1's history from its sibling turns.
+    """
     _put(store, "cap_t0", model_input="What is evalshift?", conversation_id="conv", turn_index=0)
-    _put(store, "cap_t1", model_input={}, conversation_id="conv", turn_index=1)
+    _put(store, "cap_t1", model_input=t1_input, conversation_id="conv", turn_index=1)
     first = _sync(tmp_path)
     assert first.exit_code == 0, first.output
     t1 = tmp_path / "suites" / "alpha" / "cap_t1.json"
