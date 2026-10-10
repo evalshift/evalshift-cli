@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every GitHub Action run — when the store's client library is not installed; it warns, naming
   the package to install. A run on a committed suite never reads the bucket; `capture fetch`,
   `list` and `sync`, which do, still exit 1.
+- A suspended account is named as such. When the server refuses a token with
+  `account_suspended`, the CLI prints its message — "Your account has been suspended.
+  Contact support@evalshift.dev." `evalshift login` with a stored token for that account
+  exits 1 with it instead of calling the token no longer valid and starting a browser
+  sign-in, and push auto-create shows it without the token-access hint. Service account
+  keys are not affected by a user's suspension.
 
 ### Changed
 
