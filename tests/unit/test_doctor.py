@@ -24,6 +24,7 @@ from evalshift_cli.captures.toolset import fingerprint_tools
 from evalshift_cli.cli.commands import doctor as doctor_module
 from evalshift_cli.cli.commands.doctor import (
     CONFIG_FILENAME,
+    EVALUATOR_KEYS_CHECK,
     JUDGE_FAMILY_CHECK,
     PROVIDER_KEYS,
     SDK_DISTRIBUTION,
@@ -751,6 +752,7 @@ class TestJudgeFamilyCheck:
     ) -> None:
         _write_judge_config(tmp_path)
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0, result.stdout
         assert "self-preference" in result.stdout
@@ -786,6 +788,59 @@ class TestJudgeFamilyCheck:
         assert _judge_rows(run_checks(cwd=tmp_path, env=_empty_env())) == []
 
 
+def _key_rows(results: list[CheckResult]) -> list[CheckResult]:
+    return [r for r in results if r.name == EVALUATOR_KEYS_CHECK]
+
+
+class TestEvaluatorKeysCheck:
+    def test_blocking_keyless_judge_fails(self, tmp_path: Path) -> None:
+        _write_judge_config(tmp_path, judges=("openai/gpt-4.1-mini",))
+        (row,) = _key_rows(run_checks(cwd=tmp_path, env=_empty_env()))
+        assert row.status == "fail"
+        assert "openai/gpt-4.1-mini" in row.detail
+        assert "OPENAI_API_KEY" in row.detail
+
+    def test_advisory_keyless_judge_warns(self, tmp_path: Path) -> None:
+        _write_judge_config(tmp_path, judges=("openai/gpt-4.1-mini",))
+        path = tmp_path / CONFIG_FILENAME
+        path.write_text(
+            path.read_text(encoding="utf-8") + "      blocking: false\n", encoding="utf-8"
+        )
+        (row,) = _key_rows(run_checks(cwd=tmp_path, env=_empty_env()))
+        assert row.status == "warn"
+        assert "skipped until then" in row.detail
+
+    def test_tool_arguments_forced_gate_names_the_entry(self, tmp_path: Path) -> None:
+        (tmp_path / CONFIG_FILENAME).write_text(
+            "prompts:\n  - {id: a, detection: manual, content: hi}\n"
+            "evaluators:\n"
+            "  semantic:\n"
+            "    embedding_model: openai/text-embedding-3-small\n"
+            "    blocking: false\n"
+            "  tool_arguments:\n"
+            "    - name: args\n"
+            "      default_strategy: semantic\n"
+            "      blocking: true\n",
+            encoding="utf-8",
+        )
+        (row,) = _key_rows(run_checks(cwd=tmp_path, env=_empty_env()))
+        assert row.status == "fail"
+        assert "blocking because tool_arguments `args` uses the semantic strategy" in row.detail
+        assert "blocking: false" not in row.detail
+
+    def test_ok_when_every_key_is_set(self, tmp_path: Path) -> None:
+        _write_judge_config(tmp_path, judges=("openai/gpt-4.1-mini",))
+        (row,) = _key_rows(run_checks(cwd=tmp_path, env={"OPENAI_API_KEY": "k"}))
+        assert row.status == "ok"
+
+    def test_silent_without_judge_or_semantic(self, tmp_path: Path) -> None:
+        _write_judge_config(tmp_path, judges=())
+        assert _key_rows(run_checks(cwd=tmp_path, env=_empty_env())) == []
+
+    def test_silent_without_config(self, tmp_path: Path) -> None:
+        assert _key_rows(run_checks(cwd=tmp_path, env=_empty_env())) == []
+
+
 class TestCapturesStoreCheck:
     def _config(self, tmp_path: Path, store: str | None) -> None:
         text = "prompts:\n  - id: p\n    detection: manual\n    content: hi\n"
@@ -807,18 +862,26 @@ class TestCapturesStoreCheck:
         assert row.status == "ok"
         assert "s3://acme-evals/p" in row.detail
 
-    def test_missing_extra_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_missing_library_warns_without_failing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A run on a committed suite never touches the bucket (the GitHub Action installs the
+        # bare package), so a missing client library must not fail doctor -- or compare, which
+        # exits on any doctor failure. The capture commands that do need it exit 1 themselves.
         self._config(tmp_path, "gs://b/p")
 
         def _raise(parsed: object) -> object:
             raise RemoteStoreUnavailable(
-                "gs:// needs google-cloud-storage", hint='pip install "evalshift[gcs]"'
+                "gs:// captures store needs google-cloud-storage, which is not installed",
+                hint="install it: pip install google-cloud-storage",
             )
 
         monkeypatch.setattr(doctor_module, "open_store", _raise)
-        row = _by_name(run_checks(cwd=tmp_path, env=_empty_env()), "captures.store")
-        assert row.status == "fail"
-        assert 'pip install "evalshift[gcs]"' in row.detail
+        results = run_checks(cwd=tmp_path, env=_empty_env())
+        row = _by_name(results, "captures.store")
+        assert row.status == "warn"
+        assert "pip install google-cloud-storage" in row.detail
+        assert not any(r.status == "fail" for r in results)
 
     def test_unreachable_store_warns(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from tests.unit.fake_remote_store import FakeRemoteStore
@@ -852,5 +915,5 @@ class TestCapturesStoreCheck:
         monkeypatch.setattr(doctor_module, "open_store", _raise)
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["doctor"], env={"COLUMNS": "200"})
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert 'pip install "evalshift[gcs]"' in result.stdout

@@ -22,6 +22,7 @@ import asyncio
 import logging
 import os
 import webbrowser
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
@@ -48,23 +49,26 @@ from evalshift_cli.cli.commands.analyze import (
 )
 from evalshift_cli.cli.commands.doctor import (
     CONFIG_FILENAME,
+    EVALUATOR_KEYS_CHECK,
     render_results,
     run_checks,
 )
 from evalshift_cli.cli.commands.evaluate import (
     NoEvaluatorsError,
     NoPairsError,
+    preflight_evaluator_keys,
     run_evaluate,
 )
 from evalshift_cli.cli.commands.report import run_report
 from evalshift_cli.config.loader import ConfigError, load_config
 from evalshift_cli.config.models import EvaluatorsConfig
+from evalshift_cli.evaluators.keys import LLM_JUDGE_KIND, SEMANTIC_EVALUATOR_NAME, EvaluatorKeyGap
 from evalshift_cli.evaluators.tool_loader import ToolLoaderError
 from evalshift_cli.hosted.push import PushError, push_local_run
 from evalshift_cli.models.client import deferred_console_warnings
 from evalshift_cli.models.registry import (
-    PROVIDER_ENV_VARS,
     Provider,
+    missing_api_keys,
     resolve_model,
 )
 from evalshift_cli.parsers.base import PromptParseError
@@ -230,20 +234,30 @@ def _detail_line(c: ComparisonResult) -> Text:
 # ---------------------------------------------------------------------------
 
 
-def _evaluator_family_summary(evaluators: EvaluatorsConfig) -> str:
+def _evaluator_family_summary(
+    evaluators: EvaluatorsConfig,
+    skipped: Sequence[EvaluatorKeyGap] = (),
+) -> str:
     """Name the evaluator families in an already-resolved set.
 
     Takes the resolved set rather than the whole config so the pipeline row
     names what *this* suite is scored with — on a heterogeneous project the
-    top-level block is not what runs.
+    top-level block is not what runs. A family whose model has no key is
+    marked ``(no key)``: listed as configured, never as having scored.
     """
+    skipped_names = {gap.evaluator_name for gap in skipped}
     families: list[str] = []
     if evaluators.structural:
         families.append("structural")
     if evaluators.semantic is not None:
-        families.append("semantic")
+        families.append(
+            "semantic (no key)" if SEMANTIC_EVALUATOR_NAME in skipped_names else "semantic"
+        )
     if evaluators.llm_judge:
-        families.append("judge")
+        all_skipped = all(
+            f"{LLM_JUDGE_KIND}.{j.criterion_name}" in skipped_names for j in evaluators.llm_judge
+        )
+        families.append("judge (no key)" if all_skipped else "judge")
     if evaluators.tool_selection or evaluators.tool_arguments or evaluators.tool_trace_structure:
         families.append("tool-call")
     return " · ".join(families) if families else "(none)"
@@ -259,12 +273,9 @@ def _missing_keys(
         if m in seen:
             continue
         seen.add(m)
-        provider = resolve_model(m).provider
-        keys = PROVIDER_ENV_VARS.get(provider, ())
-        if not keys:
-            continue
-        if not any(env.get(k) for k in keys):
-            missing.append((m, provider, keys))
+        keys = missing_api_keys(m, env)
+        if keys:
+            missing.append((m, resolve_model(m).provider, keys))
     return missing
 
 
@@ -499,6 +510,10 @@ def compare_command(
             )
         raise typer.Exit(code=1)
 
+    # The judge and embedding models make calls of their own; check them now,
+    # before the doctor stage and long before the first arm call is paid for.
+    skipped_gaps = preflight_evaluator_keys(console, cfg.evaluators_for(suite_name), os.environ)
+
     rows = [
         StageRow(label="doctor"),
         StageRow(label="max cost"),
@@ -519,7 +534,12 @@ def compare_command(
     # render them as already-completed rows once Live opens, which keeps
     # the entire pipeline inside a single Live region (no double-render).
     check_results = run_checks(Path.cwd(), os.environ)
-    failed_checks = [r for r in check_results if r.status == "fail"]
+    # doctor's evaluator-key rows cover every named suite; this run's own
+    # suite-scoped preflight_evaluator_keys has already run and is the
+    # authority here, so another suite's keyless judge must not stop it.
+    failed_checks = [
+        r for r in check_results if r.status == "fail" and r.name != EVALUATOR_KEYS_CHECK
+    ]
     if failed_checks:
         first = failed_checks[0]
         extra = f" (+{len(failed_checks) - 1} more)" if len(failed_checks) > 1 else ""
@@ -619,7 +639,9 @@ def compare_command(
 
                 # Stage 4: evaluate.
                 rows[3].status = "running"
-                rows[3].payload = _evaluator_family_summary(cfg.evaluators_for(suite_name))
+                rows[3].payload = _evaluator_family_summary(
+                    cfg.evaluators_for(suite_name), skipped_gaps
+                )
                 update(live)
                 try:
                     evaluate_result = run_evaluate(
@@ -632,6 +654,14 @@ def compare_command(
                 except (NoEvaluatorsError, NoPairsError) as exc:
                     rows[3].status = "failed"
                     rows[3].payload = str(exc)
+                    update(live)
+                    raise typer.Exit(code=1) from exc
+                except ConfigError as exc:
+                    # The preflight above makes this unreachable with the same
+                    # environment; kept so a config edited mid-run fails the
+                    # row instead of escaping the Live region.
+                    rows[3].status = "failed"
+                    rows[3].payload = exc.summary
                     update(live)
                     raise typer.Exit(code=1) from exc
                 rows[3].status = "done"

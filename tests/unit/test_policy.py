@@ -29,7 +29,7 @@ from evalshift_cli.evaluators.failures import (
 )
 from evalshift_cli.evaluators.tool_arguments import KIND as KIND_ARGUMENTS
 from evalshift_cli.evaluators.tool_selection import KIND_CONFORMANCE, KIND_DIVERGENCE
-from evalshift_cli.runner.models import Call
+from evalshift_cli.runner.models import Call, SkippedEvaluator
 
 
 def _comparison(
@@ -40,12 +40,14 @@ def _comparison(
     prompt_id: str = "p",
     delta_avg_score: float = -0.1,
     notes: list[str] | None = None,
+    n: int = 30,
+    kind: str = "",
 ) -> ComparisonResult:
     return ComparisonResult(
         prompt_id=prompt_id,
         evaluator_name=evaluator_name,
         slice_name=slice_name,
-        n=30,
+        n=n,
         test="paired_t",
         statistic=1.0,
         p_value=0.01,
@@ -56,6 +58,7 @@ def _comparison(
         delta_avg_score=delta_avg_score,
         severity=severity,  # type: ignore[arg-type]
         notes=notes or [],
+        kind=kind,
     )
 
 
@@ -3006,3 +3009,158 @@ class TestInvariantFailureCategory:
             [_invariant_record("e1", 1.0, 0.0, blocking=False), _invariant_record("e2", 1.0, 1.0)],
         )
         assert INVARIANT_VIOLATION not in {c.category for c in decision.failure_categories}
+
+
+_SKIPPED_SEMANTIC = SkippedEvaluator(
+    evaluator_name="semantic.cosine",
+    kind="semantic",
+    label="semantic",
+    model="openai/text-embedding-3-small",
+    env_vars=["OPENAI_API_KEY"],
+)
+_SKIPPED_LINE = (
+    "semantic was skipped: no API key for openai/text-embedding-3-small. "
+    "Export OPENAI_API_KEY to enable it."
+)
+
+
+def _judge(prompt_id: str, n: int) -> ComparisonResult:
+    return _comparison(
+        severity="none",
+        evaluator_name="llm_judge.equivalence",
+        kind="llm_judge",
+        prompt_id=prompt_id,
+        n=n,
+    )
+
+
+def _advisory_judge_records() -> list[EvalRecord]:
+    return [
+        _record(
+            example_id=f"a{i}", delta=0.0, evaluator_name="llm_judge.equivalence", blocking=False
+        )
+        for i in range(3)
+    ]
+
+
+def _advise(
+    comparisons: list[ComparisonResult],
+    records: list[EvalRecord],
+    skipped: tuple[SkippedEvaluator, ...] = (),
+) -> MigrationDecision:
+    return evaluate_migration_policy(
+        run_id="r1",
+        source_model="src",
+        target_model="tgt",
+        policy=MigrationPolicy(),
+        comparisons=comparisons,
+        records=records,
+        calls=[],
+        skipped_evaluators=skipped,
+    )
+
+
+class TestPromotionAdvice:
+    def test_ready_judge_is_named_with_its_smallest_n(self) -> None:
+        decision = _advise(
+            [_judge("summarize", 24), _judge("classify", 31)], _advisory_judge_records()
+        )
+        assert decision.recommendations == [
+            "The equivalence judge scored at least 24 pairs on every prompt — enough to "
+            "gate. Set blocking: true on it in evalshift.yaml to get a pass/fail verdict.",
+        ]
+
+    def test_small_judge_names_the_smallest_prompt(self) -> None:
+        decision = _advise(
+            [_judge("summarize", 8), _judge("classify", 31)], _advisory_judge_records()
+        )
+        assert decision.recommendations == [
+            "The equivalence judge is advisory, so it does not gate this run. It becomes "
+            "reliable at 20 pairs per prompt; summarize has 8. Collect more examples, then "
+            "set blocking: true on it.",
+        ]
+
+    def test_single_prompt_wording(self) -> None:
+        decision = _advise([_judge("p", 8)], _advisory_judge_records())
+        assert "this run has 8" in decision.recommendations[0]
+
+    def test_judge_that_measured_nothing_is_not_told_to_collect_more(self) -> None:
+        # Every judge call errored: analysis synthesizes an n=0 comparison.
+        # More examples would error the same way.
+        dead = _comparison(
+            severity="none",
+            evaluator_name="llm_judge.equivalence",
+            kind="llm_judge",
+            prompt_id="summarize",
+            n=0,
+            notes=[f"{UNMEASURED_NOTE_PREFIX} this evaluator scored no comparable pair"],
+        )
+        decision = _advise([dead], _advisory_judge_records())
+        assert decision.recommendations == [
+            "The equivalence judge measured nothing on this run, so more examples will not "
+            "help: find out why its calls produced no verdict before relying on it.",
+        ]
+
+    def test_judge_unmeasured_on_one_prompt_names_that_prompt(self) -> None:
+        decision = _advise(
+            [_judge("summarize", 0), _judge("classify", 31)], _advisory_judge_records()
+        )
+        assert decision.recommendations == [
+            "The equivalence judge measured nothing on summarize, so more examples will not "
+            "help: find out why its calls produced no verdict before relying on it.",
+        ]
+
+    def test_no_advice_once_something_gates(self) -> None:
+        decision = _advise(
+            [_judge("p", 8), _comparison(severity="none", delta_avg_score=0.0)],
+            [*_advisory_judge_records(), _record(example_id="b1", delta=0.0)],
+        )
+        assert not any("judge" in r for r in decision.recommendations)
+
+    def test_only_semantic_advisory_keeps_the_generic_line(self) -> None:
+        decision = _advise(
+            [_comparison(severity="none", evaluator_name="semantic.cosine", kind="semantic")],
+            [_record(example_id="a1", delta=0.0, evaluator_name="semantic.cosine", blocking=False)],
+        )
+        assert decision.recommendations == [
+            "Set blocking: true on at least one trusted evaluator in "
+            "evalshift.yaml to get a pass/fail verdict.",
+        ]
+
+
+class TestSkippedEvaluatorLines:
+    def test_inconclusive(self) -> None:
+        decision = _advise([_judge("p", 8)], _advisory_judge_records(), (_SKIPPED_SEMANTIC,))
+        assert decision.verdict == "inconclusive"
+        assert decision.recommendations[-1] == _SKIPPED_LINE
+
+    def test_pass(self) -> None:
+        decision = _advise(
+            [_comparison(severity="none", delta_avg_score=0.0)],
+            [_record(example_id=f"b{i}", delta=0.0) for i in range(5)],
+            (_SKIPPED_SEMANTIC,),
+        )
+        assert decision.verdict == "pass"
+        assert decision.recommendations[0] == "Safe to migrate under the configured policy."
+        assert decision.recommendations[-1] == _SKIPPED_LINE
+
+    def test_fail(self) -> None:
+        decision = _advise(
+            [_comparison(severity="critical")],
+            [_record(example_id=f"b{i}", delta=-0.5) for i in range(5)],
+            (_SKIPPED_SEMANTIC,),
+        )
+        assert decision.verdict == "fail"
+        assert _SKIPPED_LINE in decision.recommendations
+
+    def test_no_policy_decision_carries_them(self) -> None:
+        decision = inconclusive_decision(
+            run_id="r1",
+            source_model="src",
+            target_model="tgt",
+            comparisons=[],
+            records=[],
+            calls=[],
+            skipped_evaluators=(_SKIPPED_SEMANTIC,),
+        )
+        assert _SKIPPED_LINE in decision.recommendations

@@ -19,6 +19,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cases; without `--repair`, sync leaves both kinds untouched. A repaired case that now
   duplicates another promoted case is named
   (`repaired case <a> duplicates <b>`) and nothing is deleted.
+- `evalshift init` writes the `semantic` evaluator active for every provider.
+  Anthropic and DeepSeek have no embeddings endpoint, so the scaffold borrows
+  OpenAI's or Gemini's — whichever key you already have — and `init --ci`
+  wires that key as a second secret.
+- `compare`, `run` and `evaluate` check every judge and embedding model's API
+  key before the first call. An advisory evaluator without one is skipped with
+  a line naming the env var to export; a blocking one stops the run, and so
+  does a config whose every evaluator would be skipped. A `semantic` that is a
+  gate only because a blocking `tool_arguments` entry uses its embedder is
+  reported as such, naming that entry. The skip
+  is recorded in `state.json` (`skipped_evaluators`) and repeated in the
+  verdict's recommendations, the HTML report and the bundle.
+- `doctor` gains an `evaluator keys` row.
+- When nothing gates the verdict, the recommendation now names the advisory
+  judge and says, from its own sample size, whether it is ready for
+  `blocking: true` (20 pairs per prompt) or how many examples it still needs.
+  A judge that measured nothing (every call errored) is said to have measured
+  nothing rather than told to collect more examples.
+
+### Changed
+
+- A `semantic`/`llm_judge` entry without `blocking: false` is a gate (the
+  library default). If its model has no API key, `compare`, `run`, `evaluate`
+  and `doctor` now exit 1 before any call — previously the run completed with
+  an unmeasured axis, landed on `inconclusive` and passed `--policy-gate`, so
+  CI that was green can turn red on upgrade. The bare `text-embedding-3-small`
+  default is checked for the first time. Export the key, or set
+  `blocking: false` to have it skipped with a warning.
+- Docs: the SDK's object-store variable is `EVALSHIFT_CAPTURE_STORE` from SDK 0.6.0, matching
+  `captures.store` here; SDK 0.5.0 reads the same value from `EVALSHIFT_SINK`, which keeps
+  working on newer SDKs too.
+- Every store message names the package to install instead of a pip extra: `pip install boto3`,
+  `google-cloud-storage`, `azure-storage-blob azure-identity` (both Azure packages in one
+  command). The `[s3]` / `[gcs]` / `[azure]` extras still exist but are no longer documented.
 
 ### Fixed
 
@@ -43,6 +77,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A capture no valid case can be built from is skipped with the reason
   (`capture promote` refuses it) instead of aborting the whole `capture sync`
   with a validation traceback; `--allow-errored` does not apply.
+- A judge or embedding model with no API key no longer fails silently on every
+  pair: it is skipped (advisory) or refused (blocking) before any call.
+- The bare `text-embedding-3-small` default now resolves to OpenAI, so its key
+  is checked.
+- `doctor`'s `captures.store` row no longer fails the command — and with it `compare` and
+  every GitHub Action run — when the store's client library is not installed; it warns, naming
+  the package to install. A run on a committed suite never reads the bucket; `capture fetch`,
+  `list` and `sync`, which do, still exit 1.
+- A suspended account is named as such. When the server refuses a token with
+  `account_suspended`, the CLI prints its message — "Your account has been suspended.
+  Contact support@evalshift.dev." `evalshift login` with a stored token for that account
+  exits 1 with it instead of calling the token no longer valid and starting a browser
+  sign-in, and push auto-create shows it without the token-access hint. Service account
+  keys are not affected by a user's suspension.
 
 ## [1.3.0] - 2026-10-09
 

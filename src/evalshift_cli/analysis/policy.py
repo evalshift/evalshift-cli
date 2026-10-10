@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from evalshift_cli.analysis.statistics import (
     ADVISORY_NOTE_PREFIX,
+    MIN_N_RELIABLE,
     UNMEASURED_NOTE_PREFIX,
     ComparisonResult,
 )
@@ -26,7 +27,8 @@ from evalshift_cli.evaluators.failures import (
     SEMANTIC_REGRESSION,
     TOOL_GROUND_TRUTH_MISS,
 )
-from evalshift_cli.runner.models import Call
+from evalshift_cli.evaluators.keys import LLM_JUDGE_KIND, skip_recommendation
+from evalshift_cli.runner.models import Call, SkippedEvaluator
 
 MigrationVerdict = Literal["pass", "conditional_pass", "fail", "inconclusive"]
 
@@ -376,6 +378,7 @@ def evaluate_migration_policy(
     records: list[EvalRecord],
     calls: list[Call],
     dropped_params: Mapping[str, Sequence[str]] | None = None,
+    skipped_evaluators: Sequence[SkippedEvaluator] = (),
 ) -> MigrationDecision:
     """Evaluate a run against the configured migration policy.
 
@@ -388,6 +391,9 @@ def evaluate_migration_policy(
             ``policy.fail_on_dropped_params`` is set. Optional and defaulted
             because run directories written before the field existed have no
             such record — and "we do not know" must not become "it failed".
+        skipped_evaluators: ``state.json``'s advisory evaluators the evaluate
+            stage skipped for a missing API key; each gets one
+            ``recommendations`` line naming the env var, whatever the verdict.
     """
     blocking_records = [r for r in records if r.blocking]
     advisory_records = [r for r in records if not r.blocking]
@@ -574,6 +580,7 @@ def evaluate_migration_policy(
                 # …and when it did, "collect more examples" is the one piece of
                 # advice that cannot work: the extra rows are excluded too.
                 shared_ground_truth_only=overall.n_records == 0 and bool(shared_miss_notes),
+                promotion=_promotion_advice(advisory_comparisons),
             ),
             # Which slice budget blocked. The overall rows can be green in a
             # run this fails, so without this line the verdict names no
@@ -593,6 +600,9 @@ def evaluate_migration_policy(
             *shared_miss_notes,
             # ...and this, what it counted but could not independently check.
             *source_derived_notes,
+            # Config gaps the user can fix in one export — appended under
+            # every verdict, never substituted for the verdict's own advice.
+            *_skipped_notes(skipped_evaluators),
         ],
         reason=reason,
         advisory=advisory,
@@ -610,6 +620,7 @@ def inconclusive_decision(
     records: list[EvalRecord],
     calls: list[Call],
     reason: str = "no migration_policy configured",
+    skipped_evaluators: Sequence[SkippedEvaluator] = (),
 ) -> MigrationDecision:
     """Build an ``inconclusive`` decision when no migration policy is configured.
 
@@ -632,6 +643,7 @@ def inconclusive_decision(
             # True of the suite, not of the gate: a run with no policy still
             # renders these scores, so it owes the same disclosure.
             *_source_derived_ground_truth_warnings(records),
+            *_skipped_notes(skipped_evaluators),
         ],
         reason=reason,
     )
@@ -1585,6 +1597,7 @@ def _recommendations(
     no_blocking_records: bool = False,
     unmeasured: list[str] | None = None,
     shared_ground_truth_only: bool = False,
+    promotion: list[str] | None = None,
 ) -> list[str]:
     safe = sorted(name for name, decision in slices.items() if decision.verdict == "pass")
     unsafe = sorted(name for name, decision in slices.items() if decision.verdict == "fail")
@@ -1631,7 +1644,7 @@ def _recommendations(
         if out:
             return out
         if no_blocking_records:
-            return [enable_blocking]
+            return promotion or [enable_blocking]
         return ["Collect more examples before making a migration decision."]
     if safe and unsafe:
         primary = (
@@ -1647,8 +1660,67 @@ def _recommendations(
     if unmeasured:
         out.append(nothing_measured)
     if no_blocking_records:
-        out.append(enable_blocking)
+        out.extend(promotion or [enable_blocking])
     return out
+
+
+def _promotion_advice(advisory_comparisons: Sequence[ComparisonResult]) -> list[str]:
+    """Say, from each advisory judge's own ``n``, whether it is ready to gate.
+
+    Only consulted when nothing gates (see :func:`_recommendations`), so a
+    judge deliberately kept advisory beside a real gate is never nagged.
+    Reads the overall (``all``) slice: one comparison per prompt, and the
+    smallest ``n`` decides, because a gate is only as reliable as its
+    thinnest prompt. ``semantic`` is never suggested: it measures drift, not
+    correctness. A prompt on which the judge measured nothing (``n == 0`` —
+    every call errored, say) gets no "collect more": more examples would
+    measure nothing the same way, so the line says so instead.
+    """
+    by_judge: dict[str, list[ComparisonResult]] = {}
+    for c in advisory_comparisons:
+        is_judge = c.kind == LLM_JUDGE_KIND or (
+            not c.kind and c.evaluator_name.startswith(f"{LLM_JUDGE_KIND}.")
+        )
+        if is_judge and c.slice_name == "all":
+            by_judge.setdefault(c.evaluator_name, []).append(c)
+    out: list[str] = []
+    for name in sorted(by_judge):
+        rows = by_judge[name]
+        criterion = name.removeprefix(f"{LLM_JUDGE_KIND}.")
+        unmeasured = sorted(c.prompt_id for c in rows if c.n == 0)
+        if unmeasured:
+            on = "this run" if len(unmeasured) == len(rows) else ", ".join(unmeasured)
+            out.append(
+                f"The {criterion} judge measured nothing on {on}, so more examples will not "
+                "help: find out why its calls produced no verdict before relying on it."
+            )
+            continue
+        smallest = min(rows, key=lambda c: (c.n, c.prompt_id))
+        if smallest.n >= MIN_N_RELIABLE:
+            out.append(
+                f"The {criterion} judge scored at least {smallest.n} pairs on every prompt "
+                "— enough to gate. Set blocking: true on it in evalshift.yaml to get a "
+                "pass/fail verdict."
+            )
+            continue
+        where = (
+            f"{smallest.prompt_id} has {smallest.n}"
+            if len({c.prompt_id for c in rows}) > 1
+            else f"this run has {smallest.n}"
+        )
+        out.append(
+            f"The {criterion} judge is advisory, so it does not gate this run. It becomes "
+            f"reliable at {MIN_N_RELIABLE} pairs per prompt; {where}. Collect more "
+            "examples, then set blocking: true on it."
+        )
+    return out
+
+
+def _skipped_notes(skipped: Sequence[SkippedEvaluator]) -> list[str]:
+    return [
+        skip_recommendation(label=s.label, model=s.model, env_vars=s.env_vars, note=s.note)
+        for s in skipped
+    ]
 
 
 def _rate(count: int, total: int) -> float:

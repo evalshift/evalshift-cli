@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 
 from evalshift_cli.cli.main import app
 from evalshift_cli.hosted.bundle import BUNDLE_FILENAME, BundleError, build_bundle
-from evalshift_cli.hosted.client import HostedNetworkError
+from evalshift_cli.hosted.client import HostedAccountSuspendedError, HostedNetworkError
 from evalshift_cli.hosted.credentials import (
     CredentialsError,
     load_credentials,
@@ -36,6 +36,8 @@ from tests.conftest import write_completed_run as _write_completed_run
 from tests.conftest import write_project_files as _write_project_files
 
 runner = CliRunner()
+
+SUSPENDED_MESSAGE = "Your account has been suspended. Contact support@evalshift.dev."
 
 
 def _read_bundle(path: Path) -> dict[str, Any]:
@@ -382,6 +384,30 @@ def test_login_reauthenticates_when_stored_token_is_rejected(
     stored = load_credentials(path=credentials_path)
     assert stored is not None
     assert stored.token == "es_device_plaintext"
+
+
+def test_login_reports_a_suspended_account_instead_of_signing_in_again(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials_path = tmp_path / "credentials"
+    monkeypatch.setenv("EVALSHIFT_CREDENTIALS_PATH", str(credentials_path))
+    save_credentials("https://api.evalshift.test", "es_suspended", path=credentials_path)
+    fake_client, calls = _device_flow_client(
+        me_for_stored=HostedAccountSuspendedError(403, SUSPENDED_MESSAGE, code="account_suspended"),
+    )
+    monkeypatch.setattr("evalshift_cli.cli.commands.login.HostedClient", fake_client)
+    monkeypatch.setattr(
+        "evalshift_cli.cli.commands.login.webbrowser.open",
+        lambda _url: pytest.fail("a suspended account must not start a browser sign-in"),
+    )
+
+    result = runner.invoke(app, ["login", "--host", "https://api.evalshift.test"])
+
+    assert result.exit_code == 1
+    assert calls == []
+    assert SUSPENDED_MESSAGE in result.output
+    assert "no longer valid" not in result.output
 
 
 def test_login_ignores_stored_credentials_for_a_different_host(
@@ -1045,6 +1071,28 @@ def test_auto_create_failure_names_the_host_and_the_servers_answer(
     assert "http://localhost:8080" in text
     assert "403" in text
     assert "forbidden: org not visible to this token" in text
+
+
+def test_auto_create_repeats_a_suspension_without_the_permission_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = _build_bundle_for_push(tmp_path, monkeypatch)
+    fake = _fake_client(
+        responses=[{"raise_404": True}],
+        list_projects_error=HostedAccountSuspendedError(
+            403, SUSPENDED_MESSAGE, code="account_suspended"
+        ),
+        host="http://localhost:8080",
+    )
+    monkeypatch.setenv("EVALSHIFT_HOST", "http://localhost:8080")
+    monkeypatch.setenv("EVALSHIFT_TOKEN", "es_secret")
+    monkeypatch.setattr("evalshift_cli.hosted.push.HostedClient", lambda **_: fake)
+
+    with pytest.raises(PushError) as excinfo:
+        _push(bundle_path, tmp_path, create_project=True)
+
+    assert str(excinfo.value) == SUSPENDED_MESSAGE
 
 
 def test_create_project_failure_names_the_host_and_the_servers_answer(

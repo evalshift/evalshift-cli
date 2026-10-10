@@ -17,9 +17,10 @@ Three failure modes are normalised into ``ConfigError``:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 import yaml
 from pydantic import ValidationError
@@ -30,7 +31,13 @@ from rich.text import Text
 
 from evalshift_cli.config.models import EvalShiftConfig
 
-ConfigErrorKind = Literal["missing", "not_a_file", "yaml_parse", "not_a_mapping", "schema"]
+ConfigErrorKind = Literal[
+    "missing", "not_a_file", "yaml_parse", "not_a_mapping", "schema", "missing_key"
+]
+
+
+#: Panel titles for the kinds that are not a problem with the file itself.
+_TITLES: Final[Mapping[ConfigErrorKind, str]] = {"missing_key": "Missing API key"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +86,11 @@ class ConfigError(Exception):
         return "\n".join(lines)
 
     def format_rich(self) -> RenderableType:
-        """Render this error inside a Rich :class:`Panel` for terminal output."""
+        """Render this error inside a Rich :class:`Panel` for terminal output.
+
+        The panel is titled by kind: a ``missing_key`` error is raised over a
+        valid config, so it reads "Missing API key", not "Invalid config".
+        """
         body: list[RenderableType] = [Text(self.summary, style="bold red")]
         if self.details:
             body.append(Text(""))
@@ -92,7 +103,7 @@ class ConfigError(Exception):
                 body.append(line)
         return Panel(
             Group(*body),
-            title=f"[red]Invalid config[/red]: {self.path}",
+            title=f"[red]{_TITLES.get(self.kind, 'Invalid config')}[/red]: {self.path}",
             title_align="left",
             border_style="red",
         )

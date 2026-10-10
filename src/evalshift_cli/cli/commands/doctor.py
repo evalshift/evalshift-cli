@@ -8,8 +8,8 @@ Exit codes:
     * **0** — every check passed, or any failures were merely informational
       (e.g. an unset API key, or no config in this directory yet).
     * **1** — at least one **hard** failure was reported (currently: an
-      ``evalshift.yaml`` exists in the cwd but doesn't validate, or its
-      ``captures.store`` needs a client extra that isn't installed).
+      ``evalshift.yaml`` exists in the cwd but doesn't validate, or a
+      blocking ``semantic`` / ``llm_judge`` model has no API key).
 
 Soft failures (missing API keys, no config yet) are surfaced visually with
 a yellow ``✗`` so users see them, but they never fail the command — this
@@ -50,6 +50,7 @@ from evalshift_cli.config.models import EvalShiftConfig
 from evalshift_cli.evaluators import tool_selection
 from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.evaluators.failures import BROKEN_HARNESS_CAUSES
+from evalshift_cli.evaluators.keys import EvaluatorKeyGap, evaluator_key_gaps, gap_detail
 from evalshift_cli.models.family import (
     configured_judge_models,
     describe_overlap,
@@ -64,6 +65,8 @@ CheckStatus = Literal["ok", "warn", "fail"]
 CONFIG_FILENAME: Final = "evalshift.yaml"
 # Row name for the judge-family check (one row per overlapping judge).
 JUDGE_FAMILY_CHECK: Final = "judge family"
+# Row name for the judge / embedding key check (one row per keyless model).
+EVALUATOR_KEYS_CHECK: Final = "evaluator keys"
 # The capture SDK: a declared dependency of this package, and the owner of the
 # import name ``evalshift`` (this package imports as ``evalshift_cli``).
 SDK_DISTRIBUTION: Final = "evalshift-sdk"
@@ -122,6 +125,7 @@ def run_checks(cwd: Path, env: Mapping[str, str]) -> list[CheckResult]:
     results.extend(_captures_store_check(cwd))
     results.extend(_tool_consistency_checks(cwd))
     results.extend(_judge_family_checks(cwd))
+    results.extend(_evaluator_key_checks(cwd, env))
     results.extend(_ci_pin_check(cwd))
     return results
 
@@ -250,12 +254,14 @@ def _config_check(cwd: Path) -> CheckResult:
 
 
 def _captures_store_check(cwd: Path) -> list[CheckResult]:
-    """One row for ``captures.store`` when the config names one: extra installed, bucket listable.
+    """One row for ``captures.store`` when the config names one: library installed, bucket listable.
 
     No config, an invalid config (the ``evalshift.yaml`` row already reports that) or no
-    ``captures.store`` produce no row. A missing client extra is a ``fail`` -- it is a local,
-    deterministic problem with a one-line fix. A listing that raises is a ``warn``: doctor runs
-    on laptops without cloud credentials, and that must not fail the command.
+    ``captures.store`` produce no row. A missing client library is a ``warn`` naming the package
+    to install: a run on a committed suite never touches the bucket (CI installs the bare
+    package, and ``compare`` exits on any doctor failure), and the capture commands that do
+    need it exit 1 themselves. A listing that raises is a ``warn`` too: doctor runs on laptops
+    without cloud credentials, and that must not fail the command.
     """
     cfg_path = cwd / CONFIG_FILENAME
     if not cfg_path.exists():
@@ -271,7 +277,7 @@ def _captures_store_check(cwd: Path) -> list[CheckResult]:
         store = open_store(parse_store_uri(uri))
     except RemoteStoreError as exc:
         detail = exc.summary if exc.hint is None else f"{exc.summary} — {exc.hint}"
-        return [CheckResult(name="captures.store", status="fail", detail=detail)]
+        return [CheckResult(name="captures.store", status="warn", detail=detail)]
     try:
         next(iter(store.list("captures/")), None)
     except Exception as exc:
@@ -438,6 +444,50 @@ def _judge_family_checks(cwd: Path) -> list[CheckResult]:
     ]
 
 
+def _evaluator_key_checks(cwd: Path, env: Mapping[str, str]) -> list[CheckResult]:
+    """Report every judge / embedding model that has no API key.
+
+    Checks the top-level evaluator set and every named suite's resolved set,
+    since a suite can bring its own judge. ``fail`` for a blocking evaluator
+    (``evaluate`` refuses it), ``warn`` for an advisory one (``evaluate``
+    skips it), one ``ok`` row when every such model has a key. Silent with
+    no loadable config, or with no ``semantic`` / ``llm_judge`` anywhere.
+    """
+    cfg_path = cwd / CONFIG_FILENAME
+    if not cfg_path.exists():
+        return []
+    try:
+        cfg = load_config(cfg_path)
+    except ConfigError:
+        return []
+    sets = [cfg.evaluators, *(cfg.evaluators_for(name) for name in cfg.suites)]
+    if not any(s.semantic is not None or s.llm_judge for s in sets):
+        return []
+    gaps: dict[tuple[str, str], EvaluatorKeyGap] = {}
+    for evaluators in sets:
+        for gap in evaluator_key_gaps(evaluators, env):
+            key = (gap.evaluator_name, gap.model)
+            prior = gaps.get(key)
+            if prior is None or (gap.blocking and not prior.blocking):
+                gaps[key] = gap
+    if not gaps:
+        return [
+            CheckResult(
+                name=EVALUATOR_KEYS_CHECK,
+                status="ok",
+                detail="judge and embedding models have API keys",
+            ),
+        ]
+    return [
+        CheckResult(
+            name=EVALUATOR_KEYS_CHECK,
+            status="fail" if gap.blocking else "warn",
+            detail=gap_detail(gap),
+        )
+        for gap in gaps.values()
+    ]
+
+
 def _ci_pin_check(cwd: Path) -> list[CheckResult]:
     """Report whether CI installs a CLI at least as new as this one.
 
@@ -528,8 +578,8 @@ def source_conformance_check(records: Sequence[EvalRecord]) -> CheckResult | Non
 def render_results(results: list[CheckResult], console: Console) -> None:
     """Render the check results as a Rich table.
 
-    Names and details are plain text, escaped so a bracketed value -- an install hint such as
-    ``pip install "evalshift[gcs]"`` or a user-written store URI -- is shown, not parsed as markup.
+    Names and details are plain text, escaped so an install hint such as ``pip install google-cloud-storage``
+    or a user-written store URI is shown, not parsed as markup.
     """
     table = Table(show_header=False, box=None, padding=(0, 1))
     table.add_column("status", no_wrap=True)
@@ -554,6 +604,7 @@ __all__ = [
     "BROKEN_HARNESS_MIN_ROWS",
     "BROKEN_HARNESS_RATE",
     "CONFIG_FILENAME",
+    "EVALUATOR_KEYS_CHECK",
     "JUDGE_FAMILY_CHECK",
     "PROVIDER_KEYS",
     "SDK_DISTRIBUTION",
