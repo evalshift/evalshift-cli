@@ -13,8 +13,10 @@ import ast
 import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from evalshift_cli.captures.models import PromotedCase
+from evalshift_cli.captures.promote import example_content_key, recover_from_messages
 from evalshift_cli.suite.models import SuiteExample
 
 #: How Python's repr opens a list of dicts with string keys. JSON opens with ``[{"``,
@@ -52,9 +54,14 @@ def is_repair_candidate(example: SuiteExample) -> bool:
 
 
 def _is_stringified_blocks(text: str) -> bool:
+    return _stringified_blocks(text) is not None
+
+
+def _stringified_blocks(text: str) -> list[dict[str, Any]] | None:
+    """The block list ``text`` is the Python repr of, or ``None`` when it is not one."""
     stripped = text.lstrip()
     if not stripped.startswith(_REPR_OPENING):
-        return False
+        return None
     try:
         # An invalid escape (a lone ``\d``) only warns -- DeprecationWarning on 3.11,
         # SyntaxWarning from 3.12 -- and str() of a block list never writes one, so treat it as
@@ -63,12 +70,62 @@ def _is_stringified_blocks(text: str) -> bool:
             warnings.simplefilter("error")
             value = ast.literal_eval(stripped)
     except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
-        return False
-    return (
+        return None
+    if (
         isinstance(value, list)
         and bool(value)
         and all(isinstance(item, dict) and isinstance(item.get("type"), str) for item in value)
-    )
+    ):
+        return value
+    return None
+
+
+def _unstringified(text: str) -> str | list[dict[str, Any]]:
+    """``text`` as the block list it was stringified from, or unchanged when it was not."""
+    blocks = _stringified_blocks(text)
+    return text if blocks is None else blocks
+
+
+def reconstructed_content_key(case: PromotedCase) -> str | None:
+    """The content key ``case``'s capture rebuilds to today, worked out without the capture.
+
+    Stringifying is reversible: each stringified ``content`` evaluates back to its block list,
+    so the recorded messages list -- the stored history, then the current turn as a ``user``
+    message under the case's single ``inputs`` key -- goes through promotion's own
+    messages-list recovery. ``capture sync`` claims the result for ``case`` when its capture
+    is not local, so a capture an earlier sync de-duplicated against it is still a duplicate.
+
+    Args:
+        case: A promoted case.
+
+    Returns:
+        The :func:`~evalshift_cli.captures.promote.example_content_key` of the rebuild, or
+        ``None`` when ``case`` is not stringified, its ``inputs`` are not exactly one string
+        value, or the rebuild fails or carries content a text replay can't.
+    """
+    example = case.example
+    if stringified_content(example) is None or len(example.inputs) != 1:
+        return None
+    ((input_var, current),) = example.inputs.items()
+    if not isinstance(current, str):
+        return None
+    native: list[dict[str, Any]] = []
+    for message in example.history or []:
+        entry: dict[str, Any] = {"role": message.role, "content": _unstringified(message.content)}
+        if message.tool_calls is not None:
+            entry["tool_calls"] = [call.model_dump() for call in message.tool_calls]
+        if message.tool_call_id is not None:
+            entry["tool_call_id"] = message.tool_call_id
+        native.append(entry)
+    native.append({"role": "user", "content": _unstringified(current)})
+    try:
+        recovered = recover_from_messages(native, input_var=input_var, warnings=[])
+    except (TypeError, ValueError):  # pydantic's ValidationError is a ValueError
+        return None
+    if recovered is None or recovered.unreplayable:
+        return None
+    rebuilt = example.model_copy(update={"inputs": recovered.inputs, "history": recovered.history})
+    return example_content_key(rebuilt)
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +250,7 @@ __all__ = [
     "RepairCandidate",
     "RepairSelection",
     "is_repair_candidate",
+    "reconstructed_content_key",
     "repaired_case",
     "select_repairs",
     "stringified_content",

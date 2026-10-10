@@ -63,6 +63,7 @@ from evalshift_cli.captures.remote import (
 )
 from evalshift_cli.captures.repair import (
     RepairSelection,
+    reconstructed_content_key,
     repaired_case,
     select_repairs,
     stringified_content,
@@ -1178,6 +1179,22 @@ def capture_sync(
                     seen_examples.setdefault(
                         (suite_name, example_content_key(built.example)), backed[0].name
                     )
+            # A stringified candidate whose capture is not local (a fresh clone, `capture
+            # clean`) is rebuilt offline instead: a capture an earlier sync de-duplicated
+            # against it was never promoted, and its correct rebuild no longer matches the
+            # stringified content on disk. When the capture is local, its rebuild above wins.
+            local_ids = {r.envelope.capture_id for r in records_by_suite[suite_name]}
+            for candidate in selection.candidates:
+                case = candidate.case
+                if (
+                    case.suite != suite_name
+                    or candidate.stringified is None
+                    or case.from_capture in local_ids
+                ):
+                    continue
+                key = reconstructed_content_key(case)
+                if key is not None:
+                    seen_examples.setdefault((suite_name, key), case.name)
         repaired_here: list[str] = []
         for record, built in built_pairs:
             envelope = record.envelope

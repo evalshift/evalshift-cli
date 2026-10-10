@@ -4,19 +4,28 @@ from __future__ import annotations
 
 import json
 import warnings
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from evalshift_cli.captures.models import PromotedCase
+from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
+from evalshift_cli.captures.promote import (
+    PromoteOptions,
+    build_example_from_capture,
+    example_content_key,
+)
 from evalshift_cli.captures.repair import (
     is_repair_candidate,
+    reconstructed_content_key,
     repaired_case,
     select_repairs,
     stringified_content,
     stringified_warnings,
 )
 from evalshift_cli.suite.models import SuiteExample
+from tests.unit.fake_remote_store import TOOLSET_HEX, TOOLSET_PAYLOAD, capture_payload
+from tests.unit.test_cli_capture_repair import BROKEN_HISTORY, CLAUDE_INPUT
 
 TOOLSET_REF = "sha256:" + "ab" * 32
 #: What str() of a Claude block list looks like -- the bug's signature.
@@ -260,3 +269,98 @@ def test_repaired_case_takes_the_rebuilt_inputs_unless_both_have_one_key(
     fixed = repaired_case(stored, rebuilt, promoted_at="t")
     assert fixed is not None
     assert fixed.example.inputs == {"input": "And the price?"}
+
+
+# --- the offline reconstruction ----------------------------------------------------------------
+
+
+def _rebuilt_key(tmp_path: Path, model_input: Any, *, input_var: str = "input") -> str:
+    """The content key promotion gives a capture recording ``model_input`` today."""
+    toolsets = tmp_path / "toolsets"
+    toolsets.mkdir(exist_ok=True)
+    (toolsets / f"{TOOLSET_HEX}.json").write_bytes(TOOLSET_PAYLOAD)
+    envelope = CaptureEnvelope.model_validate_json(
+        capture_payload("cap_x", model_input=model_input)
+    )
+    built = build_example_from_capture(envelope, PromoteOptions(input_var=input_var), base=tmp_path)
+    assert built.blocked is None, built.blocked
+    return example_content_key(built.example)
+
+
+def test_reconstructed_key_matches_the_real_rebuild(tmp_path: Path) -> None:
+    case = _case(
+        "cap_1",
+        example=_example(id_="cap_1", inputs={"input": "And the price?"}, history=BROKEN_HISTORY),
+    )
+    assert reconstructed_content_key(case) == _rebuilt_key(tmp_path, CLAUDE_INPUT)
+
+
+def test_reconstructed_key_uses_the_stored_input_key(tmp_path: Path) -> None:
+    case = _case(
+        "cap_1",
+        example=_example(
+            id_="cap_1", inputs={"question": "And the price?"}, history=BROKEN_HISTORY
+        ),
+    )
+    assert reconstructed_content_key(case) == _rebuilt_key(
+        tmp_path, CLAUDE_INPUT, input_var="question"
+    )
+
+
+def test_reconstructed_key_evaluates_a_stringified_current_turn(tmp_path: Path) -> None:
+    """A first Claude turn whose user content was text blocks: only ``inputs`` was stringified."""
+    blocks = [{"type": "text", "text": "What is evalshift?"}]
+    case = _case(
+        "cap_1",
+        example=_example(
+            id_="cap_1",
+            inputs={"input": str(blocks)},
+            history=[{"role": "system", "content": "sys"}],
+        ),
+    )
+    native = [{"role": "system", "content": "sys"}, {"role": "user", "content": blocks}]
+    assert reconstructed_content_key(case) == _rebuilt_key(tmp_path, native)
+
+
+def test_reconstructed_key_keeps_recorded_tool_fields(tmp_path: Path) -> None:
+    """A stringified case whose earlier rounds were already canonical keeps their pairing."""
+    history = [
+        {"role": "user", "content": "q1"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_1", "name": "search", "arguments": {"q": "x"}}],
+        },
+        {"role": "tool", "content": "res", "tool_call_id": "call_1"},
+        {"role": "assistant", "content": str([{"type": "text", "text": "a1"}])},
+    ]
+    case = _case("cap_1", example=_example(id_="cap_1", inputs={"input": "q2"}, history=history))
+    native = [
+        *history[:3],
+        {"role": "assistant", "content": [{"type": "text", "text": "a1"}]},
+        {"role": "user", "content": "q2"},
+    ]
+    assert reconstructed_content_key(case) == _rebuilt_key(tmp_path, native)
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [{}, {"a": "x", "b": "y"}, {"input": {"nested": "dict"}}],
+    ids=["no-key", "two-keys", "not-a-string"],
+)
+def test_reconstructed_key_is_none_without_one_string_input(inputs: dict[str, Any]) -> None:
+    case = _case("cap_1", example=_example(id_="cap_1", inputs=inputs, history=BROKEN_HISTORY))
+    assert reconstructed_content_key(case) is None
+
+
+def test_reconstructed_key_is_none_for_a_case_that_is_not_stringified() -> None:
+    history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+    case = _case("cap_1", example=_example(id_="cap_1", history=history))
+    assert reconstructed_content_key(case) is None
+
+
+def test_reconstructed_key_is_none_when_the_content_is_unreplayable() -> None:
+    image = str([{"type": "image", "source": {"type": "base64", "data": "x"}}])
+    history = [{"role": "user", "content": image}, {"role": "assistant", "content": "a cat"}]
+    case = _case("cap_1", example=_example(id_="cap_1", history=history))
+    assert reconstructed_content_key(case) is None

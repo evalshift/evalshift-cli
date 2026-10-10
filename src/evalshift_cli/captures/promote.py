@@ -972,14 +972,9 @@ def _recover_inputs(
 
     value = first_model_call.input
 
-    if isinstance(value, list):
-        normalized = normalize_messages(value)
-        if normalized is not None:
-            warnings.extend(normalized.warnings)
-            recovered = _recover_inputs_from_messages(
-                normalized.messages, input_var=input_var, warnings=warnings
-            )
-            return replace(recovered, unreplayable=list(normalized.unreplayable))
+    recovered = recover_from_messages(value, input_var=input_var, warnings=warnings)
+    if recovered is not None:
+        return recovered
 
     if isinstance(value, dict):
         return RecoveredInput(inputs=dict(value))
@@ -992,6 +987,34 @@ def _recover_inputs(
         "inputs left empty; edit the case before running.",
     )
     return RecoveredInput(inputs={})
+
+
+def recover_from_messages(
+    raw: Any, *, input_var: str, warnings: list[str]
+) -> RecoveredInput | None:
+    """Recover ``inputs`` and ``history`` from a recorded messages list, as promotion does.
+
+    The messages-list half of :func:`_recover_inputs`, public so ``captures/repair.py`` can
+    rebuild a case's content key offline through the very same path.
+
+    Args:
+        raw: A recorded ``model_call.input``.
+        input_var: The ``inputs`` key the current turn's text goes under.
+        warnings: Non-fatal notes are appended here.
+
+    Returns:
+        The recovered input, its ``unreplayable`` lines included, or ``None`` when ``raw`` is
+        not a messages list
+        (see :func:`~evalshift_cli.captures.native_messages.normalize_messages`).
+    """
+    normalized = normalize_messages(raw)
+    if normalized is None:
+        return None
+    warnings.extend(normalized.warnings)
+    recovered = _recover_inputs_from_messages(
+        normalized.messages, input_var=input_var, warnings=warnings
+    )
+    return replace(recovered, unreplayable=list(normalized.unreplayable))
 
 
 def _history_message(
@@ -1580,5 +1603,6 @@ __all__ = [
     "iter_promoted_cases",
     "promoted_suite_dir",
     "rebuild_golden_jsonl",
+    "recover_from_messages",
     "write_promoted_case",
 ]

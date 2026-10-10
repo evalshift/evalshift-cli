@@ -525,3 +525,24 @@ def test_repair_with_force_still_only_rebuilds_a_candidates_inputs_and_history(
     ]
     assert fixed.history is not None
     assert fixed.history[3].role == "tool"
+
+
+@pytest.mark.parametrize("flags", [(), ("--repair",)])
+def test_a_fresh_clone_sync_skips_the_duplicate_of_a_stringified_case(
+    tmp_path: Path, store: FakeRemoteStore, flags: tuple[str, ...]
+) -> None:
+    """cap_dup was de-duplicated against cap_1 when CLI 1.3.0 promoted it, so it never was.
+
+    A plain sync never fetches cap_1 (it is promoted), so only the offline reconstruction of
+    cap_1's stringified case can tell that cap_dup's correct rebuild is the same turn.
+    """
+    _write_case(tmp_path, "cap_1")
+    _put(store, "cap_1")
+    _put(store, "cap_dup")
+    result = _sync(tmp_path, *flags)
+    assert result.exit_code == 0, result.output
+    assert "skipped 1 duplicate capture(s)" in _out(result)
+    if not flags:
+        assert "captures/alpha/cap_1.json" not in store.gets
+    suite_dir = tmp_path / "suites" / "alpha"
+    assert sorted(p.name for p in suite_dir.iterdir()) == ["cap_1.json", "golden.jsonl"]
