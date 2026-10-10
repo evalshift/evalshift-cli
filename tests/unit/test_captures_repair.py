@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from evalshift_cli.captures import repair as repair_module
 from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
 from evalshift_cli.captures.promote import (
     PromoteOptions,
@@ -372,4 +373,16 @@ def test_reconstructed_key_is_none_when_the_content_is_unreplayable() -> None:
     image = str([{"type": "image", "source": {"type": "base64", "data": "x"}}])
     history = [{"role": "user", "content": image}, {"role": "assistant", "content": "a cat"}]
     case = _case("cap_1", example=_example(id_="cap_1", history=history))
+    assert reconstructed_content_key(case) is None
+
+
+def test_reconstructed_key_is_none_when_the_rebuild_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise(*_args: Any, **_kwargs: Any) -> None:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(repair_module, "recover_from_messages", _raise)
+    case = _case(
+        "cap_1",
+        example=_example(id_="cap_1", inputs={"input": "And the price?"}, history=BROKEN_HISTORY),
+    )
     assert reconstructed_content_key(case) is None
