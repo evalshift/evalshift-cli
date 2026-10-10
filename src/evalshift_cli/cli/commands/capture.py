@@ -38,6 +38,7 @@ from evalshift_cli.captures.promote import (
     iter_promoted_cases,
     promoted_suite_dir,
     rebuild_golden_jsonl,
+    recover_from_messages,
     write_promoted_case,
 )
 from evalshift_cli.captures.reader import (
@@ -50,6 +51,7 @@ from evalshift_cli.captures.reader import (
     load_toolset,
     promoted_capture_ids,
     promoted_toolset_refs,
+    suites_root,
     toolsets_root,
 )
 from evalshift_cli.captures.remote import (
@@ -59,6 +61,14 @@ from evalshift_cli.captures.remote import (
     fetch_captures,
     open_store,
     parse_since,
+)
+from evalshift_cli.captures.repair import (
+    RepairSelection,
+    reconstructed_content_key,
+    repaired_case,
+    select_repairs,
+    stringified_content,
+    stringified_warnings,
 )
 from evalshift_cli.captures.store_uri import parse_store_uri
 from evalshift_cli.cli.commands._suites import (
@@ -73,7 +83,7 @@ from evalshift_cli.config.loader import ConfigError, load_config
 from evalshift_cli.config.models import SuiteEvaluatorsOverride
 from evalshift_cli.suite.loader import SuiteError, load_jsonl
 from evalshift_cli.traces.diff import diff_traces
-from evalshift_cli.traces.models import ToolCallEvent
+from evalshift_cli.traces.models import ModelCallEvent, ToolCallEvent
 from evalshift_cli.utils.ci_pin import check_ci_pin
 
 capture_app = typer.Typer(
@@ -219,6 +229,91 @@ def _promoted_content_owners(
     return owners
 
 
+def _repair_selection(*, base: Path | None, suite: str | None, console: Console) -> RepairSelection:
+    """The promoted cases ``capture sync`` treats as repair candidates (``captures/repair.py``).
+
+    Never raises: a suite holding an unreadable case file is warned about and skipped, the
+    same degradation :func:`_promoted_content_owners` applies.
+    """
+    root = suites_root(base)
+    if suite is not None:
+        suite_dirs = [promoted_suite_dir(suite, base=base)]
+    elif root.is_dir():
+        suite_dirs = sorted(p for p in root.iterdir() if p.is_dir())
+    else:
+        suite_dirs = []
+    cases: list[PromotedCase] = []
+    for suite_dir in suite_dirs:
+        if not suite_dir.is_dir():
+            continue
+        try:
+            cases.extend(iter_promoted_cases(suite_dir))
+        except ValueError as exc:  # pydantic ValidationError subclasses ValueError
+            console.print(
+                f"[yellow]⚠[/yellow] could not read promoted cases in "
+                f"[cyan]{escape(str(suite_dir))}[/cyan] to check for repairs: "
+                f"{type(exc).__name__}",
+            )
+    return select_repairs(cases)
+
+
+def _warn_repaired_duplicates(
+    suite: str, repaired: list[str], *, base: Path | None, console: Console
+) -> None:
+    """Name each pair a case ``--repair`` just rewrote forms with a case of the same content.
+
+    A plain sync from a fresh clone cannot see a candidate's rebuilt content, so it may already
+    have promoted a capture that duplicates it. Which copy to keep is the user's call: this
+    only warns, and never deletes or modifies anything.
+    """
+    try:
+        cases = iter_promoted_cases(promoted_suite_dir(suite, base=base))
+    except ValueError:  # the golden.jsonl rebuild that follows fails on it anyway
+        return
+    keyed = [(case.name, example_content_key(case.example)) for case in cases]
+    warned: set[frozenset[str]] = set()
+    for name, key in keyed:
+        if name not in repaired:
+            continue
+        for other, other_key in keyed:
+            pair = frozenset((name, other))
+            if other == name or other_key != key or pair in warned:
+                continue
+            warned.add(pair)
+            console.print(
+                f"[yellow]⚠[/yellow] {escape(suite)}: repaired case {escape(name)} duplicates "
+                f"{escape(other)} — delete one (duplicate examples inflate n)",
+            )
+
+
+def _records_own_history(envelope: CaptureEnvelope) -> bool:
+    """Whether the capture's first ``model_call`` yields a history of its own when promoted.
+
+    A turn whose capture doesn't -- no messages list at all, or one with no user turn to split
+    on -- gets its history reconstructed from its sibling turns instead.
+    """
+    first = next((e for e in envelope.trace.events if isinstance(e, ModelCallEvent)), None)
+    if first is None:
+        return False
+    recovered = recover_from_messages(first.input, input_var="input", warnings=[])
+    return recovered is not None and recovered.history is not None
+
+
+def _warn_unrepairable(
+    selection: RepairSelection, records: list[CaptureRecord], *, console: Console
+) -> None:
+    """Name the repair candidates whose capture is neither local nor fetched from the store."""
+    available = {r.envelope.capture_id for r in records}
+    missing = [c.case.name for c in selection.candidates if c.case.from_capture not in available]
+    if not missing:
+        return
+    shown = ", ".join(missing[:3]) + (", …" if len(missing) > 3 else "")
+    console.print(
+        f"[yellow]⚠[/yellow] can't repair {len(missing)} case(s) — their capture is no longer "
+        f"local or in the store ({escape(shown)}): delete the case file or re-capture.",
+    )
+
+
 #: A top-level ``captures:`` key: at column 0, so neither a comment nor a nested key matches.
 _TOP_LEVEL_CAPTURES_KEY = re.compile(rb"^captures\s*:", re.MULTILINE)
 
@@ -301,11 +396,18 @@ def _fetch_into_base(
     suite: str | None,
     since: datetime | None,
     console: Console,
+    force_ids: frozenset[str] = frozenset(),
 ) -> FetchSummary:
-    """Mirror ``store`` into ``base`` and print the one-line summary; exit 1 on failure."""
+    """Mirror ``store`` into ``base`` and print the one-line summary; exit 1 on failure.
+
+    ``force_ids`` are fetched even when promoted or older than ``since`` -- the captures
+    ``capture sync --repair`` needs to rebuild promoted cases.
+    """
     skip_ids = _promoted_capture_ids_or_warn(base=base, console=console)
     try:
-        summary = fetch_captures(store, base=base, suite=suite, since=since, skip_ids=skip_ids)
+        summary = fetch_captures(
+            store, base=base, suite=suite, since=since, skip_ids=skip_ids, force_ids=force_ids
+        )
     except RemoteStoreError as exc:
         console.print(exc.format_rich())
         raise typer.Exit(code=1) from exc
@@ -323,6 +425,7 @@ def _maybe_fetch(
     suite: str | None,
     base: Path | None,
     console: Console,
+    force_ids: frozenset[str] = frozenset(),
 ) -> None:
     """The automatic fetch step ``sync`` and ``list`` run before reading the local mirror."""
     since_dt = _resolve_since(since)
@@ -335,7 +438,9 @@ def _maybe_fetch(
             )
             raise typer.Exit(code=1)
         return
-    _fetch_into_base(store, base=base, suite=suite, since=since_dt, console=console)
+    _fetch_into_base(
+        store, base=base, suite=suite, since=since_dt, console=console, force_ids=force_ids
+    )
 
 
 @capture_app.command(name="list")
@@ -975,6 +1080,19 @@ def capture_sync(
             ),
         ),
     ] = False,
+    repair: Annotated[
+        bool,
+        typer.Option(
+            "--repair",
+            help=(
+                "Rebuild the inputs and history of promoted cases an earlier sync built from "
+                "stringified message blocks (or left with empty inputs), re-fetching their "
+                "captures from captures.store even though they are promoted; every other "
+                "field of those cases is kept, and other promoted cases are untouched unless "
+                "--force is also given."
+            ),
+        ),
+    ] = False,
     since: _SinceOption = None,
     offline: _OfflineOption = False,
     base: _BaseOption = None,
@@ -982,6 +1100,7 @@ def capture_sync(
     """Promote every capture into a suite and wire the suites: block into evalshift.yaml."""
     console = Console()
     _check_rounds(rounds)
+    selection = _repair_selection(base=base, suite=suite, console=console)
     _maybe_fetch(
         config_path=config_path,
         offline=offline,
@@ -989,8 +1108,16 @@ def capture_sync(
         suite=suite,
         base=base,
         console=console,
+        force_ids=selection.refetch_ids if repair else frozenset(),
     )
+    if not repair:
+        for line in stringified_warnings(selection):
+            console.print(f"[yellow]⚠[/yellow] {escape(line)}")
+    elif not selection.candidates:
+        console.print("[dim]no promoted cases need repair.[/dim]")
     records = iter_captures(suite=suite, base=base, on_error=_warn_unreadable(console))
+    if repair:
+        _warn_unrepairable(selection, records, console=console)
     if not records:
         where = f" for suite {suite!r}" if suite else ""
         console.print(f"[dim]no captures found{where} under .evalshift/captures/.[/dim]")
@@ -1015,6 +1142,11 @@ def capture_sync(
     skipped_errored = 0
     skipped_no_toolset = 0
     skipped_multi_toolset = 0
+    skipped_unreplayable = 0
+    skipped_invalid = 0
+    repaired = 0
+    left_for_repair = 0
+    backed_by = selection.cases_by_capture()
     suites_seen: set[str] = set()
     # (suite, content key) -> the name of the case that owns that content,
     # promoted either by an earlier run (seeded from disk below) or by this one
@@ -1043,6 +1175,8 @@ def capture_sync(
             [r.envelope for r in records_by_suite[suite_name]],
         ):
             console.print(f"[yellow]⚠[/yellow] {suite_name}: {warning}")
+        built_pairs = build_conversation_examples(records_by_suite[suite_name], opts, base=base)
+        local_ids = {r.envelope.capture_id for r in records_by_suite[suite_name]}
         # Re-exercising an agent on the same data records duplicate captures.
         # Promoting both would duplicate the example, double n, and inflate
         # every downstream p-value/effect size. Dedup keys on the *built
@@ -1051,10 +1185,82 @@ def capture_sync(
         # seeded from the cases already on disk so it spans sync runs.
         if not keep_duplicates:
             seen_examples.update(_promoted_content_owners(suite_name, base=base, console=console))
-        for record, built in build_conversation_examples(
-            records_by_suite[suite_name], opts, base=base
-        ):
+            # A repair candidate's rebuilt content belongs to the candidate, whichever capture
+            # is built first: the disk seed above only holds its stringified content, so
+            # without this claim a capture replaying the same turn would promote as a new case.
+            for record, built in built_pairs:
+                backed = backed_by.get(record.envelope.capture_id)
+                if backed is not None and built.blocked is None:
+                    seen_examples.setdefault(
+                        (suite_name, example_content_key(built.example)), backed[0].name
+                    )
+            # A stringified candidate whose capture is not local (a fresh clone, `capture
+            # clean`) is rebuilt offline instead: a capture an earlier sync de-duplicated
+            # against it was never promoted, and its correct rebuild no longer matches the
+            # stringified content on disk. When the capture is local, its rebuild above wins.
+            for candidate in selection.candidates:
+                case = candidate.case
+                if (
+                    case.suite != suite_name
+                    or candidate.stringified is None
+                    or case.from_capture in local_ids
+                ):
+                    continue
+                key = reconstructed_content_key(case)
+                if key is not None:
+                    seen_examples.setdefault((suite_name, key), case.name)
+        repaired_here: list[str] = []
+        for record, built in built_pairs:
             envelope = record.envelope
+            backed = backed_by.get(envelope.capture_id)
+            if backed is not None:
+                # A capture behind a repair candidate is only ever written by --repair, and
+                # then only the case's inputs and history -- never as a new case (a custom
+                # `--as` name would otherwise get a second copy next to the broken one).
+                # A rebuild that changes nothing is no repair (a genuinely input-less case),
+                # nor is a blocked one of a case that was never stringified: both take the
+                # normal path below, `--force` and the blocked counters included.
+                if built.blocked is None:
+                    promoted_at = _now_iso()
+                    to_repair = [
+                        fixed
+                        for case in backed
+                        if (fixed := repaired_case(case, built.example, promoted_at=promoted_at))
+                        is not None
+                    ]
+                else:
+                    to_repair = [c for c in backed if stringified_content(c.example) is not None]
+                if to_repair:
+                    if not repair:
+                        left_for_repair += len(to_repair)
+                        continue
+                    for warning in built.warnings:
+                        console.print(f"[yellow]⚠[/yellow] {envelope.capture_id}: {warning}")
+                    if built.blocked is not None:
+                        for case in to_repair:
+                            console.print(
+                                f"[yellow]⚠[/yellow] can't repair "
+                                f"[cyan]{escape(case.name)}[/cyan]: {escape(built.blocked)}",
+                            )
+                    else:
+                        # A turn whose own capture yields no history got it from its sibling
+                        # turns; with one of them gone, the rebuild would drop it.
+                        own_history = _records_own_history(envelope)
+                        for case in to_repair:
+                            missing = (
+                                [] if own_history else selection.missing_turns(case, local_ids)
+                            )
+                            if missing:
+                                console.print(
+                                    f"[yellow]⚠[/yellow] can't repair "
+                                    f"[cyan]{escape(case.name)}[/cyan]: conversation turn(s) "
+                                    f"{escape(', '.join(missing))} are no longer local or in the "
+                                    "store, so its history can't be rebuilt",
+                                )
+                                continue
+                            write_promoted_case(case, base=base, force=True)
+                            repaired_here.append(case.name)
+                    continue
             if built.blocked is not None:
                 console.print(
                     f"[yellow]⚠[/yellow] skipped [cyan]{envelope.capture_id}[/cyan]: "
@@ -1062,13 +1268,19 @@ def capture_sync(
                 )
                 # Routed by *why* it was blocked, not lumped under one counter:
                 # --allow-errored rescues an errored turn but can never rescue
-                # a capture with no usable recorded toolset or one that
-                # switched toolsets mid-run, so the summary below must not
-                # offer that as a fix for either.
+                # a capture with no usable recorded toolset, one that switched
+                # toolsets mid-run, one whose messages carry content a text
+                # replay can't carry (unreplayable_content), or one no valid case
+                # can be built from (invalid_case), so the summary below must not
+                # offer that as a fix for any of them.
                 if built.blocked_reason == "no_toolset":
                     skipped_no_toolset += 1
                 elif built.blocked_reason == "multi_toolset":
                     skipped_multi_toolset += 1
+                elif built.blocked_reason == "unreplayable_content":
+                    skipped_unreplayable += 1
+                elif built.blocked_reason == "invalid_case":
+                    skipped_invalid += 1
                 else:
                     skipped_errored += 1
                 continue
@@ -1104,6 +1316,9 @@ def capture_sync(
                     wired_generation += 1
             except FileExistsError:
                 skipped_existing += 1
+        if repaired_here:
+            repaired += len(repaired_here)
+            _warn_repaired_duplicates(suite_name, repaired_here, base=base, console=console)
 
     suite_paths: dict[str, Path] = {}
     suite_evaluators: dict[str, SuiteEvaluatorsOverride | None] = {}
@@ -1149,6 +1364,20 @@ def capture_sync(
             f", skipped {skipped_multi_toolset} capture(s) that switched toolsets mid-run "
             "(not yet promotable as a single case; --allow-errored does not apply)"
         )
+    if skipped_unreplayable:
+        summary += (
+            f", skipped {skipped_unreplayable} capture(s) with non-text content a text replay "
+            "can't carry (--allow-errored does not apply)"
+        )
+    if skipped_invalid:
+        summary += (
+            f", skipped {skipped_invalid} capture(s) that could not form a valid case "
+            "(--allow-errored does not apply)"
+        )
+    if repair:
+        summary += f", repaired {repaired} case(s)"
+    if left_for_repair:
+        summary += f", left {left_for_repair} case(s) for --repair"
     console.print(summary + ".")
 
     if not suite_paths:

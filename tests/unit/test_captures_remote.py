@@ -360,3 +360,29 @@ def test_parse_since_rejects_garbage(text: str) -> None:
 def test_parse_since_rejects_out_of_range_durations(text: str) -> None:
     with pytest.raises(ValueError, match="--since expects"):
         parse_since(text)
+
+
+def test_force_ids_bypass_the_promoted_skip_and_since(tmp_path: Path) -> None:
+    now = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
+    store = populated_store("cap_forced", "cap_old", "cap_promoted")
+    store.modified["captures/alpha/cap_forced.json"] = now - timedelta(days=30)
+    store.modified["captures/alpha/cap_old.json"] = now - timedelta(days=30)
+    summary = fetch_captures(
+        store,
+        base=tmp_path,
+        skip_ids={"cap_forced", "cap_promoted"},
+        force_ids={"cap_forced"},
+        since=now - timedelta(days=1),
+    )
+    assert _local_captures(tmp_path) == {"alpha/cap_forced.json"}
+    assert summary.skipped_promoted == 1  # cap_promoted
+    assert summary.skipped_old == 1  # cap_old
+
+
+def test_force_ids_still_skip_captures_already_local(tmp_path: Path) -> None:
+    store = populated_store("cap_1")
+    fetch_captures(store, base=tmp_path)
+    store.gets.clear()
+    summary = fetch_captures(store, base=tmp_path, force_ids={"cap_1"})
+    assert summary.skipped_existing == 1
+    assert store.gets == []

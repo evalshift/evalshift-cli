@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `capture sync --repair` rebuilds the `inputs` and `history` of cases an
+  earlier sync built from stringified message blocks, keeping every other
+  field and the case's input variable name, and re-downloads exactly the
+  captures it needs from `captures.store` even though they are promoted. It
+  also rebuilds cases an earlier sync promoted with empty `inputs` (OpenAI
+  `exclude_none`, Responses, LangChain), which get no warning.
+  `capture sync` and `validate` warn when a suite still holds stringified
+  cases; without `--repair`, sync leaves both kinds untouched. A repaired case that now
+  duplicates another promoted case is named
+  (`repaired case <a> duplicates <b>`) and nothing is deleted.
 - `evalshift init` writes the `semantic` evaluator active for every provider.
   Anthropic and DeepSeek have no embeddings endpoint, so the scaffold borrows
   OpenAI's or Gemini's — whichever key you already have — and `init --ci`
@@ -46,6 +56,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `capture sync` and `capture promote` now read every wrapped provider's own
+  message shape. Claude follow-up turns no longer get Python-repr strings
+  (`"[{'id': 'toolu_1', … 'type': 'tool_use'}]"`) in their history: `tool_use`
+  blocks become the assistant's `tool_calls`, `tool_result` blocks become `tool`
+  messages, thinking is dropped, and a prompt-cached `system` prompt or a
+  text-block user turn becomes plain text. OpenAI Chat histories with
+  `content: null` no longer abort the whole sync with a traceback, and OpenAI
+  Responses and LangChain captures recover their `inputs` instead of promoting
+  them empty.
+- A turn whose recorded messages carry an image, a document, audio, a
+  server-tool result or an unknown block type is skipped (`capture promote`
+  refuses it) instead of being promoted with that content stringified or lost;
+  `--allow-errored` does not apply.
+- An OpenAI `developer` message is now kept as the system prompt instead of
+  being dropped: it merges with a leading system prompt (a Responses
+  `instructions=` included), and a system or `developer` message after the
+  first turn is dropped with a warning instead of aborting the sync; run
+  `capture sync --force` to refresh cases promoted before.
+- A capture no valid case can be built from is skipped with the reason
+  (`capture promote` refuses it) instead of aborting the whole `capture sync`
+  with a validation traceback; `--allow-errored` does not apply.
 - A judge or embedding model with no API key no longer fails silently on every
   pair: it is skipped (advisory) or refused (blocking) before any call.
 - The bare `text-embedding-3-small` default now resolves to OpenAI, so its key

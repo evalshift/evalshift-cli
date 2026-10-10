@@ -1097,8 +1097,9 @@ key or connection string); the error names at most its scheme. Under the prefix 
 
 What the fetch does: it lists the bucket, downloads only objects missing locally (captures
 are immutable and toolsets content-addressed, so "exists" means "current"), skips captures
-already promoted into a suite (so `capture clean` never causes a re-download), and writes
-each file atomically. `--since 24h` (or `7d`, `30m`, an ISO date) limits a fetch to recently
+already promoted into a suite (so `capture clean` never causes a re-download;
+`capture sync --repair` alone re-fetches the promoted captures its rebuilds need, past `--since`
+too), and writes each file atomically. `--since 24h` (or `7d`, `30m`, an ISO date) limits a fetch to recently
 written captures; `--offline` skips it and works with what is already local. Retention in the bucket
 is yours to set with a lifecycle rule; the SDK's `max_captures` does not apply there.
 
@@ -1154,7 +1155,12 @@ content duplicates an already-promoted case (or an earlier capture in the
 same run) are skipped too — duplicate examples inflate *n* and corrupt the
 paired statistics (`--keep-duplicates` opts out). The dedup set is seeded
 from the cases already in the suite dir, so re-syncing after recording more
-captures can't slip a duplicate past it. Useful flags: `--input-var`
+captures can't slip a duplicate past it. Captures whose messages carry an
+image or other non-text content are skipped too (see
+[Provider message shapes](conversations.md#provider-message-shapes)), as is
+a capture no valid case can be built from, and
+`--repair` rebuilds cases an earlier sync built from stringified message
+blocks. Useful flags: `--input-var`
 (default `input`), `--suite <name>` to filter to one suite, `--tag`,
 `--names-only`, `--tool-count`, `--strict-args`, `--rounds first|all`
 (`first`, the default, scores single-shot replay against round 1; `all`

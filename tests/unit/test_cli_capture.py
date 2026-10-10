@@ -2132,3 +2132,157 @@ def test_sync_round_trips_hand_written_trace_invariants_through_the_config(
     settled = config.read_text(encoding="utf-8")
     assert _invoke(["sync", "--config", str(config)], tmp_path).exit_code == 0
     assert config.read_text(encoding="utf-8") == settled
+
+
+_IMAGE_TURN: list[dict[str, Any]] = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "x"}},
+            {"type": "text", "text": "What is in this screenshot?"},
+        ],
+    }
+]
+
+
+def test_promote_unreplayable_refusal_does_not_suggest_allow_errored(tmp_path: Path) -> None:
+    _write_capture(
+        tmp_path, capture_id="cap_img", suite="alpha", events=_messages_events(_IMAGE_TURN)
+    )
+    result = _invoke(["promote", "cap_img"], tmp_path)
+    out = " ".join(result.stdout.split())
+    assert result.exit_code == 1
+    assert "carries a `image` block" in out
+    assert "--allow-errored" not in out
+    assert not (tmp_path / "suites" / "alpha" / "cap_img.json").exists()
+
+
+def test_sync_counts_unreplayable_captures_under_their_own_reason(tmp_path: Path) -> None:
+    _write_capture(
+        tmp_path, capture_id="cap_img", suite="alpha", events=_messages_events(_IMAGE_TURN)
+    )
+    _write_capture(tmp_path, capture_id="cap_ok", suite="alpha")
+    result = _invoke(["sync", "--print", "--config", str(tmp_path / "evalshift.yaml")], tmp_path)
+    out = " ".join(result.stdout.split())
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "skipped 1 capture(s) with non-text content a text replay can't carry "
+        "(--allow-errored does not apply)"
+    ) in out
+    assert "errored capture(s)" not in out
+
+
+# ---------------------------------------------------------------------------
+# system / developer messages and the invalid_case safety net
+# ---------------------------------------------------------------------------
+
+#: The reviewer's probe inputs (an OpenAI chat with a mid-conversation developer message; an
+#: OpenAI Responses call with ``instructions=`` folded in front of a developer input). Both
+#: aborted the whole sync with a raw ValidationError before the leading-system-prompt rule.
+_DEVELOPER_PROBES: dict[str, list[dict[str, Any]]] = {
+    "mid_developer": [
+        {"role": "system", "content": "You are a support agent."},
+        {"role": "user", "content": "What is evalshift?"},
+        {"role": "assistant", "content": "A regression tool."},
+        {"role": "developer", "content": "Answer in one sentence from now on."},
+        {"role": "user", "content": "And the price?"},
+    ],
+    "instructions_plus_developer": [
+        {"role": "system", "content": "instructions text"},
+        {"role": "developer", "content": "Format answers as JSON."},
+        {"role": "user", "content": "And the price?"},
+    ],
+}
+
+
+@pytest.mark.parametrize("probe", sorted(_DEVELOPER_PROBES))
+def test_sync_promotes_captures_with_developer_messages(tmp_path: Path, probe: str) -> None:
+    _write_capture(
+        tmp_path,
+        capture_id="cap_dev",
+        suite="alpha",
+        events=_messages_events(_DEVELOPER_PROBES[probe]),
+    )
+    result = _invoke(
+        ["sync", "--offline", "--print", "--config", str(tmp_path / "nope.yaml")], tmp_path
+    )
+    assert result.exit_code == 0, result.output
+    assert "promoted 1 capture(s)" in " ".join(result.stdout.split())
+    (example,) = load_jsonl(tmp_path / "suites" / "alpha" / "golden.jsonl").examples
+    assert example.inputs == {"input": "And the price?"}
+    assert example.history is not None
+    assert [m.role for m in example.history].count("system") == 1
+
+
+def test_sync_keeps_a_developer_message_as_part_of_the_system_prompt(tmp_path: Path) -> None:
+    _write_capture(
+        tmp_path,
+        capture_id="cap_dev",
+        suite="alpha",
+        events=_messages_events(_DEVELOPER_PROBES["instructions_plus_developer"]),
+    )
+    result = _invoke(["sync", "--print", "--config", str(tmp_path / "nope.yaml")], tmp_path)
+    assert result.exit_code == 0, result.output
+    (example,) = load_jsonl(tmp_path / "suites" / "alpha" / "golden.jsonl").examples
+    assert example.history is not None
+    assert [(m.role, m.content) for m in example.history] == [
+        ("system", "instructions text\nFormat answers as JSON.")
+    ]
+
+
+def test_sync_drops_a_mid_conversation_developer_message_with_a_warning(tmp_path: Path) -> None:
+    _write_capture(
+        tmp_path,
+        capture_id="cap_dev",
+        suite="alpha",
+        events=_messages_events(_DEVELOPER_PROBES["mid_developer"]),
+    )
+    result = _invoke(["sync", "--print", "--config", str(tmp_path / "nope.yaml")], tmp_path)
+    assert result.exit_code == 0, result.output
+    assert (
+        "cap_dev: dropped 1 system message(s) after the first turn — a replay carries one "
+        "leading system prompt"
+    ) in " ".join(result.stdout.split())
+    (example,) = load_jsonl(tmp_path / "suites" / "alpha" / "golden.jsonl").examples
+    assert example.history is not None
+    assert [m.role for m in example.history] == ["system", "user", "assistant"]
+
+
+def _write_invalid_case_capture(base: Path, *, capture_id: str, suite: str) -> None:
+    """A capture offered no tools whose app still recorded a tool call: no valid case exists."""
+    toolsets_dir = base / "toolsets"
+    toolsets_dir.mkdir(parents=True, exist_ok=True)
+    hex_ref = EMPTY_TOOLSET_FINGERPRINT.removeprefix("sha256:")
+    (toolsets_dir / f"{hex_ref}.json").write_text('{"tools": []}', encoding="utf-8")
+    events = _events(tools=["search_orders"], model_input="hi")
+    events[0]["toolset_ref"] = EMPTY_TOOLSET_FINGERPRINT
+    events[0]["tools_offered"] = []
+    _write_capture(base, capture_id=capture_id, suite=suite, events=events)
+
+
+def test_sync_skips_a_capture_that_cannot_form_a_valid_case(tmp_path: Path) -> None:
+    _write_invalid_case_capture(tmp_path, capture_id="cap_bad", suite="alpha")
+    _write_capture(tmp_path, capture_id="cap_ok", suite="alpha")
+    result = _invoke(["sync", "--print", "--config", str(tmp_path / "nope.yaml")], tmp_path)
+    out = " ".join(result.stdout.split())
+    assert result.exit_code == 0, result.output
+    assert (
+        "skipped cap_bad: capture 'cap_bad' could not be turned into a valid case — "
+        "Value error, toolset_ref=<empty toolset> (no tools offered) is incompatible with a "
+        "non-empty expected_tools list. Hand-write the case or report this capture."
+    ) in out
+    assert (
+        "skipped 1 capture(s) that could not form a valid case (--allow-errored does not apply)"
+    ) in out
+    assert "errored capture(s)" not in out
+    assert load_jsonl(tmp_path / "suites" / "alpha" / "golden.jsonl").ids() == {"cap_ok"}
+
+
+def test_promote_invalid_case_refusal_does_not_suggest_allow_errored(tmp_path: Path) -> None:
+    _write_invalid_case_capture(tmp_path, capture_id="cap_bad", suite="alpha")
+    result = _invoke(["promote", "cap_bad"], tmp_path)
+    out = " ".join(result.stdout.split())
+    assert result.exit_code == 1
+    assert "could not be turned into a valid case" in out
+    assert "--allow-errored" not in out
+    assert not (tmp_path / "suites" / "alpha" / "cap_bad.json").exists()

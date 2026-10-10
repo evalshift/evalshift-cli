@@ -1,0 +1,1 @@
+{"schema_version": "1.0.0", "fingerprint": "sha256:f50f1fbea61210ab4a532d9e55a5344670c259b7546dec8ff82d51849a87026b", "tools": [{"name": "search", "description": "Search the docs", "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}}}]}

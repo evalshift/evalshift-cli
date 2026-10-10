@@ -67,9 +67,12 @@ turn captures — see `capture promote`/`capture sync` below.
 `turn_index`, and builds one `SuiteExample` per turn:
 
 * If a turn's own capture recorded a full messages list (the convention
-  above), its `history` is recovered **verbatim** from that list: everything
-  before the last `user` message becomes `history`, and the last `user`
-  message becomes the current turn's `inputs`.
+  above), its `history` is recovered from that list: everything before the
+  last `user` message becomes `history`, and the last `user` message becomes
+  the current turn's `inputs`. The list is first translated from the
+  provider's own message shape into the replay shape (see
+  [Provider message shapes](#provider-message-shapes)), so its text and tool
+  calls are kept exactly, in the form `run` replays.
 * If a turn's capture only recorded a bare string or dict (no messages
   list), its `history` is **reconstructed** from the group's prior turns:
   each prior turn contributes a `user` message (its recovered current-turn
@@ -80,13 +83,13 @@ turn captures — see `capture promote`/`capture sync` below.
   one.
 
 Both paths produce a `SuiteExample.history` list that `run` will replay
-ahead of the current turn, but they are not equivalent: verbatim recovery
-reproduces exactly what the model saw, while reconstruction is an
-approximation stitched from sibling captures — assistant replies come from
-recorded final outputs (intermediate tool exchanges are absent), and the
-system prompt is only recovered when at least one turn in the conversation
-recorded a full messages list. Prefer the messages-list convention above
-when you can.
+ahead of the current turn, but they are not equivalent: recovery from the
+turn's own messages list reproduces the text and tool calls the model saw,
+while reconstruction is an approximation stitched from sibling captures —
+assistant replies come from recorded final outputs (intermediate tool
+exchanges are absent), and the system prompt is only recovered when at least
+one turn in the conversation recorded a full messages list. Prefer the
+messages-list convention above when you can.
 
 ```bash
 evalshift capture sync                              # promote every capture,
@@ -101,6 +104,100 @@ one capture at a time with `promote` produces examples with gaps in their
 history; use `capture sync` to promote a whole conversation together. If you
 promote a single mid-conversation capture and unpromoted sibling turns exist,
 `capture promote` prints a warning pointing you at `capture sync`.
+
+## Provider message shapes
+
+The SDK's client wrappers record each model call's messages the way that
+provider takes them, and `capture sync` / `capture promote` translate them into
+the replay shape before splitting off `history`:
+
+| Recorded by | What promotion reads |
+| --- | --- |
+| `wrap_anthropic` (Claude Messages) | `text` blocks become the message text; `tool_use` blocks become the assistant's `tool_calls`; each `tool_result` block becomes a `tool` message keyed by its `tool_use_id`; a `system` prompt sent as blocks (prompt caching) becomes its text. |
+| `wrap_openai`, Chat Completions | `tool_calls[].function` becomes `{id, name, arguments}` with the JSON-string arguments parsed; `content: null` or no `content` key is an empty string; `developer` is read as `system` and merges into a leading system prompt, while a system or `developer` message after the first turn is dropped with a warning (a replay carries one leading system prompt); a `refusal` becomes the assistant's text. |
+| `wrap_openai`, Responses | `message` items become messages; `function_call` items become the assistant's `tool_calls`; `function_call_output` items become `tool` messages keyed by `call_id`; `instructions=` and a `developer` message after it merge into one leading system prompt, and a system or `developer` message after the first turn is dropped with a warning. |
+| `wrap_genai` (Gemini) | Already the replay shape. |
+| LangChain callback | `human` / `ai` are read as `user` / `assistant`; block-list content (Claude through LangChain) is read as above. |
+
+Thinking (`thinking`, `redacted_thinking`, Responses `reasoning`) is dropped:
+the Claude API ignores earlier turns' thinking itself, and a signature means
+nothing to a different candidate model.
+
+A turn whose recorded messages carry anything a text replay can't carry — an
+image, a document, audio, a server-tool result such as `web_search_tool_result`,
+or a block or item type promotion doesn't know — is **not promoted**.
+`capture sync` skips it, naming the block, and counts it as
+`non-text content a text replay can't carry`; `capture promote` refuses it.
+`--allow-errored` does not apply: a replay without the image is not ground
+truth.
+
+### Repairing suites promoted before this
+
+Earlier CLI releases passed Claude's blocks through `str()`, so a promoted
+follow-up turn's history held Python-repr strings such as
+`"[{'id': 'toolu_1', … 'type': 'tool_use'}]"`, and OpenAI, Responses and
+LangChain turns could come out with empty `inputs`. `capture sync` and
+`validate` now warn when a suite still holds stringified blocks:
+
+```text
+⚠ support: 4 promoted case(s) carry message blocks an earlier sync stringified (e.g. cap_…); run evalshift capture sync --repair to rebuild them.
+```
+
+`evalshift capture sync --repair` rebuilds those cases, and any promoted case
+left with empty `inputs`, from their captures. It replaces only each affected
+case's `inputs` and `history` — the case's name, tags, `expected_*` and any
+other hand edits stay, and so does the name of its single input variable (a
+case promoted with `--input-var question` stays `question`; a case left with
+empty `inputs` takes this run's `--input-var`) — and leaves every other
+promoted case alone unless you also pass `--force`. Those two fields come back
+exactly as the capture recorded them, so any hand edit you made to a rebuilt
+case's `inputs` or `history` — a redaction, say — is replaced too: review the
+diff before you commit it. `--repair` is a full sync: it also promotes any
+new captures, exactly like a plain sync, so run it
+with the flags you normally sync with (`--input-var`, `--tag`, `--strict-args`,
+…). With `captures.store` set it re-downloads the capture behind each of those
+cases, plus every other promoted turn of the same conversation, even though
+they are promoted and even past `--since`. A case whose capture is gone from
+both `.evalshift/captures/` and the store is named (`can't repair N case(s)`):
+delete it or re-capture. A case with stringified blocks whose rebuild is now
+refused — its turn carries an image, say — is named too
+(`can't repair <case>: …`) and left as it is; a case left with empty `inputs`
+whose rebuild is refused is left as it is too, but reported like any other
+refused capture (`skipped <capture>: …`, counted in the summary). A turn
+whose capture recorded no messages list, or one with no user turn to split
+on, has its `history` reconstructed from its sibling turns (see
+[Promotion](#promotion-capture-sync)); when any other
+promoted turn of its conversation has a capture that is gone from both
+places, `--repair` leaves the case as it is rather than rebuild it with a
+shorter history, and names the missing turns:
+
+```text
+⚠ can't repair cap_t1: conversation turn(s) cap_t0 are no longer local or in the store, so its history can't be rebuilt
+```
+
+Without `--repair`, sync — `--force` included — leaves every case with
+stringified blocks untouched, and every case left with empty `inputs` that a
+rebuild would change (`left N case(s) for --repair`). A case whose capture
+genuinely has no inputs rebuilds unchanged, so it is not a repair: sync treats
+it like any other promoted case, and `--force` refreshes it.
+
+A plain sync still recognises a capture that replays the same turn as a case
+with stringified blocks when that case's own capture is not local (a fresh
+clone, or after `capture clean`): the strings evaluate back to the recorded
+blocks, so sync rebuilds the case's content offline and skips the capture as
+a duplicate. A case left with empty `inputs` has nothing to rebuild from
+without its capture, though, so run `--repair` before a plain sync on such
+suites — otherwise the plain sync may promote a capture that replays the same
+turn as a second case. If a repaired case now replays the same content as
+another promoted case in its suite, `--repair` names the pair and deletes
+nothing; delete one yourself:
+
+```text
+⚠ support: repaired case cap_1 duplicates cap_2 — delete one (duplicate examples inflate n)
+```
+
+Commit the regenerated `golden.jsonl` afterwards; CI reads the committed
+suite.
 
 ## Teacher-forced replay semantics
 
@@ -173,6 +270,15 @@ all) parse and run exactly as before — these fields are purely additive.
   prior replies.
 * **`capture promote` on a single capture doesn't reconstruct cross-capture
   history.** Use `capture sync` (or promote every turn of a conversation in
-  one `capture sync` pass) to get verbatim/reconstructed history spanning
+  one `capture sync` pass) to get recovered/reconstructed history spanning
   multiple capture files. A lone `capture promote` only ever looks at that
   one capture's own recorded messages list.
+* **Responses conversations chained server-side lose their history.** An
+  OpenAI Responses call that continues a conversation through
+  `previous_response_id` or `conversation=` sends only the new input, so that
+  is all the capture holds; the earlier turns can't be recovered.
+* **LangChain over OpenAI loses tool rounds.** The SDK's LangChain callback
+  records each message's role and content but not `tool_calls` or
+  `tool_call_id`, and an OpenAI-backed `AIMessage` keeps its calls only
+  there, so its tool results replay unpaired. LangChain over Claude keeps
+  them: the `tool_use` blocks are in the content.

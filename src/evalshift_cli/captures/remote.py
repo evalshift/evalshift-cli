@@ -251,6 +251,7 @@ def fetch_captures(
     suite: str | None = None,
     since: datetime | None = None,
     skip_ids: Collection[str] = frozenset(),
+    force_ids: Collection[str] = frozenset(),
     workers: int = 8,
 ) -> FetchSummary:
     """Mirror missing toolsets and captures from ``store`` into ``<base>``.
@@ -259,8 +260,10 @@ def fetch_captures(
     remotely. A capture is skipped when its file already exists, when its id is in
     ``skip_ids`` (the promoted ids -- so a capture ``capture clean`` removed is not pulled
     back), when ``since`` is set and the object is older, or when it is over
-    :data:`MAX_OBJECT_BYTES`. Keys that do not match the SDK's layout are counted as
-    malformed and ignored.
+    :data:`MAX_OBJECT_BYTES`. Ids in ``force_ids`` are fetched even when promoted or older
+    than ``since`` -- the captures ``capture sync --repair`` needs to rebuild promoted cases.
+    They still respect the already-local, size-cap and malformed-key rules. Keys that do not
+    match the SDK's layout are counted as malformed and ignored.
 
     Raises:
         RemoteStoreError: when listing or any download fails. Files already written stay, so a
@@ -268,6 +271,7 @@ def fetch_captures(
     """
     summary = FetchSummary(store_uri=store.uri)
     skip = set(skip_ids)
+    force = set(force_ids)
     toolsets_dir = _absolute(toolsets_root(base))
     captures_dir = _absolute(captures_root(base))
 
@@ -312,10 +316,17 @@ def fetch_captures(
         if dest.exists():
             summary.skipped_existing += 1
             continue
-        if name[: -len(".json")] in skip:
+        capture_id = name[: -len(".json")]
+        forced = capture_id in force
+        if not forced and capture_id in skip:
             summary.skipped_promoted += 1
             continue
-        if since is not None and info.last_modified is not None and info.last_modified < since:
+        if (
+            not forced
+            and since is not None
+            and info.last_modified is not None
+            and info.last_modified < since
+        ):
             summary.skipped_old += 1
             continue
         if info.size is not None and info.size > MAX_OBJECT_BYTES:

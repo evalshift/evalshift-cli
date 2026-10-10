@@ -328,7 +328,8 @@ evalshift capture list [SUITE] [--json] [-c CONFIG] [--offline]
 evalshift capture fetch [--suite S] [--since 30m|24h|7d|ISO] [-c CONFIG]
   Mirrors captures.store into <base>: lists toolsets/ then captures/, downloads only objects
   missing locally (captures immutable, toolsets content-addressed -> exists == current), skips
-  capture ids already promoted (clean never causes a re-download), skips captures older than
+  capture ids already promoted (clean never causes a re-download; only sync --repair re-fetches
+  the promoted ids its rebuilds need, past --since too), skips captures older than
   --since and objects over 32 MB, counts keys not shaped like the SDK layout as malformed
   (never written; a key cannot escape <base>; a trailing newline makes a key malformed;
   folder-marker keys ending in '/' are skipped without counting). A suite segment is accepted as the SDK writes
@@ -353,11 +354,44 @@ evalshift capture promote CAPTURE_ID [--as CASE_ID] [--suite S] [--input-var NAM
 evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--strict-args]
     [--names-only] [--tool-count] [--rounds first(default)|all] [--allow-errored] [-c CONFIG] [-f]
     [--write/--print (default write)] [--keep-duplicates] [--since 30m|24h|7d|ISO] [--offline]
+    [--repair]
   With captures.store set, sync runs fetch first (same summary line) unless --offline; a fetch
   failure or missing extra exits 1 before anything is promoted. --since without a store (or
   with --offline) exits 1. An unreadable or invalid evalshift.yaml skips the fetch (warning
   only when the file has a top-level captures: key) and sync/list continue on the local mirror
   as before.
+  --repair rebuilds the inputs + history (only) of promoted cases an earlier sync built from
+  stringified message blocks (or left with empty inputs), re-fetching their captures from
+  captures.store past the promoted-id and --since skips (plus same-conversation siblings).
+  Without --repair, sync (--force included) leaves every stringified case alone, and every
+  empty-inputs case a rebuild would change ("left N case(s) for --repair"), and warns per suite
+  holding stringified blocks; `validate` warns too. A case whose capture genuinely has no
+  inputs rebuilds unchanged, so it is NOT a repair: sync treats it as an ordinary promoted
+  case and --force refreshes it. A candidate whose capture is gone: "can't repair N case(s)".
+  A stringified case whose rebuild is now blocked (e.g. an image): "can't repair <case>:
+  <blocked message>", left as is; an empty-inputs case whose rebuild is blocked is left as is
+  too but gets the ordinary "skipped <capture>: ..." line and skip count. A case's single
+  input key is kept (promoted with --input-var question -> stays question; a case left with
+  empty inputs takes this run's --input-var), every other field too; other promoted cases are
+  untouched unless --force is also given. --repair is a FULL sync: it also promotes new
+  captures exactly like a plain sync, so pass the flags you normally sync with (--input-var,
+  --tag, --strict-args, ...).
+  --repair takes inputs + history from the capture, so it REPLACES hand edits to those two
+  fields (e.g. a redaction): review the diff before committing. A turn whose capture yields
+  no history of its own (no messages list, or one with no user turn; history reconstructed
+  from sibling turns) is left as is when any other
+  promoted turn of its conversation has a capture neither local nor in the store: "can't
+  repair <case>: conversation turn(s) <ids> are no longer local or in the store, so its
+  history can't be rebuilt". Turns whose own messages list yields a history are unaffected.
+  A repaired case whose replayed content now equals another promoted case's warns
+  "<suite>: repaired case <a> duplicates <b> — delete one (duplicate examples inflate n)" and
+  deletes nothing: delete one yourself.
+  A plain sync rebuilds a stringified case's content OFFLINE (the strings literal_eval back to
+  the recorded blocks) when its capture is not local, so a capture an earlier sync
+  de-duplicated against it is still skipped as a duplicate. A case left with empty inputs
+  cannot be rebuilt without its capture: run --repair BEFORE a plain sync on such suites
+  (fresh clone, after capture clean), or a duplicate capture may be promoted -- the duplicate
+  warning after --repair names it.
   Promotes EVERY capture: groups by conversation_id, orders by turn_index, one SuiteExample per
   turn; writes .evalshift/suites/<suite>/golden.jsonl and rewrites the managed suites: block in
   evalshift.yaml (between ">>> evalshift suites" markers). Content-duplicate captures skipped by
@@ -480,7 +514,9 @@ evalshift validate [-s SUITE=golden.jsonl] [-c CONFIG]   (config+suite+prompt cr
     after the success line prints the CI pin drift warning if any -- advisory, exit unchanged,
     no-op in CI where the running CLI is the pin -- and one `⚠` line per llm_judge judge_model
     sharing a provider with defaults.source_model/target_model, same wording as doctor's
-    `judge family` row; advisory, exit unchanged)
+    `judge family` row; advisory, exit unchanged; and "N example(s) carry message blocks an
+    earlier capture sync stringified (e.g. <id>); run evalshift capture sync --repair." when
+    the suite holds them, advisory too)
 evalshift test-call -m/--model MODEL [-p/--prompt TEXT] [-t/--temperature 0..2=0]
     [--max-tokens 1..8192=256] [--tools FILE]   (single live call; --tools prints a ToolTrace)
 
@@ -1315,7 +1351,13 @@ content leaves the machine.
   pseudo-param "tools.strict"), not warned per dispatch -- see "Dropped constraints" above. A
   tool_choice reaching a TOOL-LESS example IS dropped at dispatch with a warning (nothing to
   constrain) and is deliberately not in dropped_params.
-- capture sync recovers history VERBATIM when the capture recorded a full messages list, else
+- capture sync recovers history from the capture's own messages list (translated from Claude
+  blocks / OpenAI Chat / OpenAI Responses / LangChain roles into the replay shape: tool_use ->
+  tool_calls, tool_result -> tool messages, thinking dropped; developer -> system) when one
+  was recorded. ONE leading system prompt per replay: the run of system/developer messages
+  opening the history merges into one (joined by "\n"; Responses instructions= plus a
+  developer input); one after the first turn is dropped with ONE warning "dropped N system
+  message(s) after the first turn — a replay carries one leading system prompt". Else it
   RECONSTRUCTS from sibling turns (approximation; earliest turn's system prompt wins, warns on
   disagreement). capture promote (single) never cross-reconstructs.
 - Promotion hygiene: an `error` event in the trace BLOCKS promotion (promote exits 1, sync
@@ -1333,6 +1375,17 @@ content leaves the machine.
   non-empty AND no tool was called AND the turn did not error -- never when nothing was
   offered, so `tool_selection`'s no-tools scoring (1.0/1.0 whenever both sides call zero
   tools) cannot fire on a row that measured nothing.
+- Promotion ALSO blocks unconditionally when the recorded messages carry content a text
+  replay can't carry (image, document, audio, server-tool result, unknown block or Responses
+  item type): blocked_reason "unreplayable_content"; sync counts it separately; promote exits 1
+  without suggesting --allow-errored.
+- Promotion ALSO blocks (the safety net) when SuiteExample's own validation rejects the mapped
+  case in a way no rule above anticipates: blocked_reason "invalid_case", blocked "capture
+  '<id>' could not be turned into a valid case — <pydantic's first error msg>. Hand-write the
+  case or report this capture.", .example an inert placeholder (inputs {}, tools []). sync
+  counts it separately ("skipped N capture(s) that could not form a valid case
+  (--allow-errored does not apply)") and exits 0; promote exits 1 without suggesting
+  --allow-errored.
 - `evalshift_cli.captures.reader.load_toolset(ref, *, base=None, cache=None) -> list[ToolSpec]`
   resolves a toolset sidecar (<base>/toolsets/<hex>.json) via ToolSpec.from_dict -- NEVER via
   evaluators.tool_loader.load_tools, which rejects an empty list (wrong here: the empty
