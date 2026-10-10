@@ -184,6 +184,10 @@ def _scaffold(tmp_path: Path) -> tuple[Path, Path]:
 @pytest.fixture
 def scored_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     """Run ``evaluate`` over the frozen run. No provider may be touched."""
+    # Both model-backed evaluators are blocking; without their keys evaluate
+    # refuses before scoring. The mocks below still forbid any real call.
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
     async def no_embeddings(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("no embedding provider may be called on a tool-only run")
@@ -464,6 +468,11 @@ class TestTheBrokenHarnessIsAnnounced:
 
     @pytest.fixture
     def evaluated(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, str]:
+        # Both model-backed evaluators are blocking; without their keys
+        # evaluate refuses before scoring.
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
         async def no_embeddings(*_args: Any, **_kwargs: Any) -> Any:
             raise AssertionError("no embedding provider may be called on a tool-only run")
 

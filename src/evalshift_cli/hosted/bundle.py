@@ -143,6 +143,7 @@ def build_bundle(
             records=scores,
             calls=calls,
             dropped_params=state.dropped_params,
+            skipped_evaluators=state.skipped_evaluators,
         )
     else:
         decision = inconclusive_decision(
@@ -152,6 +153,7 @@ def build_bundle(
             comparisons=comparisons,
             records=scores,
             calls=calls,
+            skipped_evaluators=state.skipped_evaluators,
         )
     git = _git_metadata(env or os.environ)
 

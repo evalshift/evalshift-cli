@@ -299,6 +299,20 @@ class TestConfigErrorFormatting:
         assert "Invalid config" in rendered
         assert "prompts" in rendered
 
+    def test_format_rich_titles_a_missing_key_as_such(self, tmp_path: Path) -> None:
+        # The config is valid; only the environment lacks a key.
+        err = ConfigError(
+            path=tmp_path / "evalshift.yaml",
+            kind="missing_key",
+            summary="missing API key for a blocking evaluator",
+            details=[ConfigErrorDetail("evaluators.llm_judge", "export OPENAI_API_KEY")],
+        )
+        console = Console(record=True, width=100)
+        console.print(err.format_rich())
+        rendered = console.export_text()
+        assert "Missing API key" in rendered
+        assert "Invalid config" not in rendered
+
     def test_str_uses_plain_format(self, tmp_path: Path) -> None:
         err = ConfigError(
             path=tmp_path / "x.yaml",

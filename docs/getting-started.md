@@ -71,10 +71,11 @@ The default `model-upgrade` profile scaffolds a `migration_policy` block
 that powers the verdict in `analyze`, `compare`, and `report`.
 
 This writes a single, minimal, capture-first `evalshift.yaml`: a
-passthrough `replay` prompt, an advisory LLM-judge evaluator and — for the
-Gemini and OpenAI scaffolds — an advisory semantic evaluator (the Anthropic
-and DeepSeek scaffolds write it commented out, since neither provider has an
-embedding endpoint), an empty managed `suites:` block for `capture sync` to fill, and the migration
+passthrough `replay` prompt, an advisory LLM-judge evaluator and an
+advisory semantic evaluator (Anthropic and DeepSeek have no embeddings
+endpoint, so their scaffolds borrow OpenAI's or Gemini's, whichever key you
+already have; without it, `compare` skips `semantic` and names the key to
+export), an empty managed `suites:` block for `capture sync` to fill, and the migration
 policy. `init` refuses to clobber an existing `evalshift.yaml`; pass
 `--force` to overwrite, or `--directory my-eval/` to scaffold into a
 different folder.
@@ -90,8 +91,9 @@ You'll see a short table:
 * Green ✓ — check passes.
 * Yellow ✗ — informational warning (e.g. an unset API key, or no
   `evalshift.yaml` here yet). Doctor still exits 0.
-* Red ✗ — hard failure (e.g. an `evalshift.yaml` that doesn't validate;
-  run `evalshift validate` to see each problem). Doctor exits 1.
+* Red ✗ — hard failure (e.g. an `evalshift.yaml` that doesn't validate —
+  run `evalshift validate` to see each problem — or a blocking judge or
+  embedding model with no API key). Doctor exits 1.
 
 The second row, `evalshift-sdk`, confirms that `import evalshift` in this
 environment is the capture SDK — yellow when it is missing or shadowed by an

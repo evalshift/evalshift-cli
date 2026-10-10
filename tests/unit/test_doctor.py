@@ -24,6 +24,7 @@ from evalshift_cli.captures.toolset import fingerprint_tools
 from evalshift_cli.cli.commands import doctor as doctor_module
 from evalshift_cli.cli.commands.doctor import (
     CONFIG_FILENAME,
+    EVALUATOR_KEYS_CHECK,
     JUDGE_FAMILY_CHECK,
     PROVIDER_KEYS,
     SDK_DISTRIBUTION,
@@ -751,6 +752,7 @@ class TestJudgeFamilyCheck:
     ) -> None:
         _write_judge_config(tmp_path)
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0, result.stdout
         assert "self-preference" in result.stdout
@@ -784,6 +786,59 @@ class TestJudgeFamilyCheck:
 
     def test_silent_when_no_config_exists(self, tmp_path: Path) -> None:
         assert _judge_rows(run_checks(cwd=tmp_path, env=_empty_env())) == []
+
+
+def _key_rows(results: list[CheckResult]) -> list[CheckResult]:
+    return [r for r in results if r.name == EVALUATOR_KEYS_CHECK]
+
+
+class TestEvaluatorKeysCheck:
+    def test_blocking_keyless_judge_fails(self, tmp_path: Path) -> None:
+        _write_judge_config(tmp_path, judges=("openai/gpt-4.1-mini",))
+        (row,) = _key_rows(run_checks(cwd=tmp_path, env=_empty_env()))
+        assert row.status == "fail"
+        assert "openai/gpt-4.1-mini" in row.detail
+        assert "OPENAI_API_KEY" in row.detail
+
+    def test_advisory_keyless_judge_warns(self, tmp_path: Path) -> None:
+        _write_judge_config(tmp_path, judges=("openai/gpt-4.1-mini",))
+        path = tmp_path / CONFIG_FILENAME
+        path.write_text(
+            path.read_text(encoding="utf-8") + "      blocking: false\n", encoding="utf-8"
+        )
+        (row,) = _key_rows(run_checks(cwd=tmp_path, env=_empty_env()))
+        assert row.status == "warn"
+        assert "skipped until then" in row.detail
+
+    def test_tool_arguments_forced_gate_names_the_entry(self, tmp_path: Path) -> None:
+        (tmp_path / CONFIG_FILENAME).write_text(
+            "prompts:\n  - {id: a, detection: manual, content: hi}\n"
+            "evaluators:\n"
+            "  semantic:\n"
+            "    embedding_model: openai/text-embedding-3-small\n"
+            "    blocking: false\n"
+            "  tool_arguments:\n"
+            "    - name: args\n"
+            "      default_strategy: semantic\n"
+            "      blocking: true\n",
+            encoding="utf-8",
+        )
+        (row,) = _key_rows(run_checks(cwd=tmp_path, env=_empty_env()))
+        assert row.status == "fail"
+        assert "blocking because tool_arguments `args` uses the semantic strategy" in row.detail
+        assert "blocking: false" not in row.detail
+
+    def test_ok_when_every_key_is_set(self, tmp_path: Path) -> None:
+        _write_judge_config(tmp_path, judges=("openai/gpt-4.1-mini",))
+        (row,) = _key_rows(run_checks(cwd=tmp_path, env={"OPENAI_API_KEY": "k"}))
+        assert row.status == "ok"
+
+    def test_silent_without_judge_or_semantic(self, tmp_path: Path) -> None:
+        _write_judge_config(tmp_path, judges=())
+        assert _key_rows(run_checks(cwd=tmp_path, env=_empty_env())) == []
+
+    def test_silent_without_config(self, tmp_path: Path) -> None:
+        assert _key_rows(run_checks(cwd=tmp_path, env=_empty_env())) == []
 
 
 class TestCapturesStoreCheck:
