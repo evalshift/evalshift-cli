@@ -1021,8 +1021,8 @@ entirely for the default: captures are read from `.evalshift/captures/` (or `EVA
 on local disk and nothing here is needed.
 
 Production agents on Fargate, Lambda or Kubernetes lose their disk when they stop, so the
-SDK can ship captures to an object store you own instead (`EVALSHIFT_SINK=<uri>` in the
-agent's environment — see [Capture SDK](sdk.md)). Name the same store here and the CLI
+SDK can ship captures to an object store you own instead (`EVALSHIFT_CAPTURE_STORE=<uri>` in the
+agent's environment, `EVALSHIFT_SINK` on SDK 0.5.0 — see [Capture SDK](sdk.md)). Name the same store here and the CLI
 pulls new captures down before it promotes them, with no flags to remember:
 
 ```yaml

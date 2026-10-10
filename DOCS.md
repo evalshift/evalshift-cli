@@ -166,7 +166,7 @@ evalshift capture diff cap_ab12 cap_cd34               # compare two tool traces
 evalshift capture clean                # delete promoted capture files + sweep orphaned toolsets
 ```
 
-**Captures that live in a bucket.** Production hosts on Fargate, Lambda or Kubernetes lose their disk when they stop, so the SDK can ship captures to an object store you own instead (`EVALSHIFT_SINK=s3://<bucket>/<prefix>`, `gs://…` or `az://<account>/<container>/…` in the agent's environment, SDK 0.5.0+). Name the same store once in `evalshift.yaml`:
+**Captures that live in a bucket.** Production hosts on Fargate, Lambda or Kubernetes lose their disk when they stop, so the SDK can ship captures to an object store you own instead (`EVALSHIFT_CAPTURE_STORE=s3://<bucket>/<prefix>`, `gs://…` or `az://<account>/<container>/…` in the agent's environment, SDK 0.6.0+; SDK 0.5.0 reads the same value from `EVALSHIFT_SINK`). Name the same store once in `evalshift.yaml`:
 
 ```yaml
 captures:

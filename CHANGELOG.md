@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Docs: the SDK's object-store variable is `EVALSHIFT_CAPTURE_STORE` from SDK 0.6.0, matching
+  `captures.store` here; SDK 0.5.0 reads the same value from `EVALSHIFT_SINK`, which keeps
+  working on newer SDKs too.
 - Every store message names the package to install instead of a pip extra: `pip install boto3`,
   `google-cloud-storage`, `azure-storage-blob azure-identity` (both Azure packages in one
   command). The `[s3]` / `[gcs]` / `[azure]` extras still exist but are no longer documented.

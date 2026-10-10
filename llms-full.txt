@@ -31,7 +31,8 @@ Data flow: SDK captures -> CLI runs and bundles -> server stores/diffs -> web ap
 
 Companion package: evalshift-sdk (separate PyPI package, in-process capture SDK) records
 production agent runs as JSON captures under .evalshift/captures/<suite>/cap_<hex>.json; or,
-with EVALSHIFT_SINK, under the same layout in the user's bucket;
+with EVALSHIFT_CAPTURE_STORE (EVALSHIFT_SINK on SDK 0.5.0), under the same layout in the
+user's bucket;
 this CLI promotes them into golden suites (`evalshift capture sync`). That file layout is the
 only interface between SDK and CLI — they never import or call each other.
 The CLI imports as `evalshift_cli` and depends on evalshift-sdk, so one environment holds
