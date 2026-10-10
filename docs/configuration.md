@@ -1113,7 +1113,8 @@ paired statistics (`--keep-duplicates` opts out). The dedup set is seeded
 from the cases already in the suite dir, so re-syncing after recording more
 captures can't slip a duplicate past it. Captures whose messages carry an
 image or other non-text content are skipped too (see
-[Provider message shapes](conversations.md#provider-message-shapes)), and
+[Provider message shapes](conversations.md#provider-message-shapes)), as is
+a capture no valid case can be built from, and
 `--repair` rebuilds cases an earlier sync built from stringified message
 blocks. Useful flags: `--input-var`
 (default `input`), `--suite <name>` to filter to one suite, `--tag`,

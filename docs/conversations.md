@@ -114,8 +114,8 @@ the replay shape before splitting off `history`:
 | Recorded by | What promotion reads |
 | --- | --- |
 | `wrap_anthropic` (Claude Messages) | `text` blocks become the message text; `tool_use` blocks become the assistant's `tool_calls`; each `tool_result` block becomes a `tool` message keyed by its `tool_use_id`; a `system` prompt sent as blocks (prompt caching) becomes its text. |
-| `wrap_openai`, Chat Completions | `tool_calls[].function` becomes `{id, name, arguments}` with the JSON-string arguments parsed; `content: null` or no `content` key is an empty string; `developer` is read as `system`; a `refusal` becomes the assistant's text. |
-| `wrap_openai`, Responses | `message` items become messages; `function_call` items become the assistant's `tool_calls`; `function_call_output` items become `tool` messages keyed by `call_id`. |
+| `wrap_openai`, Chat Completions | `tool_calls[].function` becomes `{id, name, arguments}` with the JSON-string arguments parsed; `content: null` or no `content` key is an empty string; `developer` is read as `system` and merges into a leading system prompt, while a system or `developer` message after the first turn is dropped with a warning (a replay carries one leading system prompt); a `refusal` becomes the assistant's text. |
+| `wrap_openai`, Responses | `message` items become messages; `function_call` items become the assistant's `tool_calls`; `function_call_output` items become `tool` messages keyed by `call_id`; `instructions=` and a `developer` message after it merge into one leading system prompt, and a system or `developer` message after the first turn is dropped with a warning. |
 | `wrap_genai` (Gemini) | Already the replay shape. |
 | LangChain callback | `human` / `ai` are read as `user` / `assistant`; block-list content (Claude through LangChain) is read as above. |
 
@@ -149,8 +149,11 @@ case's `inputs` and `history` — the case's name, tags, `expected_*` and any
 other hand edits stay, and so does the name of its single input variable (a
 case promoted with `--input-var question` stays `question`; a case left with
 empty `inputs` takes this run's `--input-var`) — and leaves every other
-promoted case alone unless you also pass `--force`. `--repair` is a full
-sync: it also promotes any new captures, exactly like a plain sync, so run it
+promoted case alone unless you also pass `--force`. Those two fields come back
+exactly as the capture recorded them, so any hand edit you made to a rebuilt
+case's `inputs` or `history` — a redaction, say — is replaced too: review the
+diff before you commit it. `--repair` is a full sync: it also promotes any
+new captures, exactly like a plain sync, so run it
 with the flags you normally sync with (`--input-var`, `--tag`, `--strict-args`,
 …). With `captures.store` set it re-downloads the capture behind each of those
 cases, plus every other promoted turn of the same conversation, even though
@@ -160,7 +163,16 @@ delete it or re-capture. A case with stringified blocks whose rebuild is now
 refused — its turn carries an image, say — is named too
 (`can't repair <case>: …`) and left as it is; a case left with empty `inputs`
 whose rebuild is refused is left as it is too, but reported like any other
-refused capture (`skipped <capture>: …`, counted in the summary).
+refused capture (`skipped <capture>: …`, counted in the summary). A turn
+whose capture recorded no messages list has its `history` reconstructed from
+its sibling turns (see [Promotion](#promotion-capture-sync)); when any other
+promoted turn of its conversation has a capture that is gone from both
+places, `--repair` leaves the case as it is rather than rebuild it with a
+shorter history, and names the missing turns:
+
+```text
+⚠ can't repair cap_t1: conversation turn(s) cap_t0 are no longer local or in the store, so its history can't be rebuilt
+```
 
 Without `--repair`, sync — `--force` included — leaves every case with
 stringified blocks untouched, and every case left with empty `inputs` that a
@@ -168,9 +180,16 @@ rebuild would change (`left N case(s) for --repair`). A case whose capture
 genuinely has no inputs rebuilds unchanged, so it is not a repair: sync treats
 it like any other promoted case, and `--force` refreshes it.
 
-If a repaired case now replays the same content as another promoted case in
-its suite — a plain sync from a fresh clone may already have promoted that
-turn again — sync names the pair and deletes nothing; delete one yourself:
+A plain sync still recognises a capture that replays the same turn as a case
+with stringified blocks when that case's own capture is not local (a fresh
+clone, or after `capture clean`): the strings evaluate back to the recorded
+blocks, so sync rebuilds the case's content offline and skips the capture as
+a duplicate. A case left with empty `inputs` has nothing to rebuild from
+without its capture, though, so run `--repair` before a plain sync on such
+suites — otherwise the plain sync may promote a capture that replays the same
+turn as a second case. If a repaired case now replays the same content as
+another promoted case in its suite, `--repair` names the pair and deletes
+nothing; delete one yourself:
 
 ```text
 ⚠ support: repaired case cap_1 duplicates cap_2 — delete one (duplicate examples inflate n)

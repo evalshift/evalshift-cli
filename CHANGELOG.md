@@ -12,9 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `capture sync --repair` rebuilds the `inputs` and `history` of cases an
   earlier sync built from stringified message blocks, keeping every other
   field and the case's input variable name, and re-downloads exactly the
-  captures it needs from `captures.store` even though they are promoted.
-  `capture sync` and `validate` warn when a suite still holds such cases;
-  without `--repair`, sync leaves them untouched. A repaired case that now
+  captures it needs from `captures.store` even though they are promoted. It
+  also rebuilds cases an earlier sync promoted with empty `inputs` (OpenAI
+  `exclude_none`, Responses, LangChain), which get no warning.
+  `capture sync` and `validate` warn when a suite still holds stringified
+  cases; without `--repair`, sync leaves both kinds untouched. A repaired case that now
   duplicates another promoted case is named
   (`repaired case <a> duplicates <b>`) and nothing is deleted.
 
@@ -33,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server-tool result or an unknown block type is skipped (`capture promote`
   refuses it) instead of being promoted with that content stringified or lost;
   `--allow-errored` does not apply.
+- An OpenAI `developer` message is now kept as the system prompt instead of
+  being dropped: it merges with a leading system prompt (a Responses
+  `instructions=` included), and a system or `developer` message after the
+  first turn is dropped with a warning instead of aborting the sync; run
+  `capture sync --force` to refresh cases promoted before.
+- A capture no valid case can be built from is skipped with the reason
+  (`capture promote` refuses it) instead of aborting the whole `capture sync`
+  with a validation traceback; `--allow-errored` does not apply.
 
 ## [1.3.0] - 2026-10-09
 

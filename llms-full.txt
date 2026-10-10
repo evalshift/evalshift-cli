@@ -356,9 +356,21 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   untouched unless --force is also given. --repair is a FULL sync: it also promotes new
   captures exactly like a plain sync, so pass the flags you normally sync with (--input-var,
   --tag, --strict-args, ...).
+  --repair takes inputs + history from the capture, so it REPLACES hand edits to those two
+  fields (e.g. a redaction): review the diff before committing. A turn that recorded no
+  messages list (history reconstructed from sibling turns) is left as is when any other
+  promoted turn of its conversation has a capture neither local nor in the store: "can't
+  repair <case>: conversation turn(s) <ids> are no longer local or in the store, so its
+  history can't be rebuilt". Turns that recorded their own messages list are unaffected.
   A repaired case whose replayed content now equals another promoted case's warns
   "<suite>: repaired case <a> duplicates <b> — delete one (duplicate examples inflate n)" and
   deletes nothing: delete one yourself.
+  A plain sync rebuilds a stringified case's content OFFLINE (the strings literal_eval back to
+  the recorded blocks) when its capture is not local, so a capture an earlier sync
+  de-duplicated against it is still skipped as a duplicate. A case left with empty inputs
+  cannot be rebuilt without its capture: run --repair BEFORE a plain sync on such suites
+  (fresh clone, after capture clean), or a duplicate capture may be promoted -- the duplicate
+  warning after --repair names it.
   Promotes EVERY capture: groups by conversation_id, orders by turn_index, one SuiteExample per
   turn; writes .evalshift/suites/<suite>/golden.jsonl and rewrites the managed suites: block in
   evalshift.yaml (between ">>> evalshift suites" markers). Content-duplicate captures skipped by
@@ -1265,7 +1277,11 @@ content leaves the machine.
   constrain) and is deliberately not in dropped_params.
 - capture sync recovers history from the capture's own messages list (translated from Claude
   blocks / OpenAI Chat / OpenAI Responses / LangChain roles into the replay shape: tool_use ->
-  tool_calls, tool_result -> tool messages, thinking dropped) when one was recorded, else
+  tool_calls, tool_result -> tool messages, thinking dropped; developer -> system) when one
+  was recorded. ONE leading system prompt per replay: the run of system/developer messages
+  opening the history merges into one (joined by "\n"; Responses instructions= plus a
+  developer input); one after the first turn is dropped with ONE warning "dropped N system
+  message(s) after the first turn — a replay carries one leading system prompt". Else it
   RECONSTRUCTS from sibling turns (approximation; earliest turn's system prompt wins, warns on
   disagreement). capture promote (single) never cross-reconstructs.
 - Promotion hygiene: an `error` event in the trace BLOCKS promotion (promote exits 1, sync
@@ -1287,6 +1303,13 @@ content leaves the machine.
   replay can't carry (image, document, audio, server-tool result, unknown block or Responses
   item type): blocked_reason "unreplayable_content"; sync counts it separately; promote exits 1
   without suggesting --allow-errored.
+- Promotion ALSO blocks (the safety net) when SuiteExample's own validation rejects the mapped
+  case in a way no rule above anticipates: blocked_reason "invalid_case", blocked "capture
+  '<id>' could not be turned into a valid case — <pydantic's first error msg>. Hand-write the
+  case or report this capture.", .example an inert placeholder (inputs {}, tools []). sync
+  counts it separately ("skipped N capture(s) that could not form a valid case
+  (--allow-errored does not apply)") and exits 0; promote exits 1 without suggesting
+  --allow-errored.
 - `evalshift_cli.captures.reader.load_toolset(ref, *, base=None, cache=None) -> list[ToolSpec]`
   resolves a toolset sidecar (<base>/toolsets/<hex>.json) via ToolSpec.from_dict -- NEVER via
   evaluators.tool_loader.load_tools, which rejects an empty list (wrong here: the empty
