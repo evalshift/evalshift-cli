@@ -28,10 +28,6 @@ _RECOMMENDATIONS: dict[str, str] = {
         "Regressions were detected but no budget was breached. Review the sampled "
         "regressions and the blocking evaluators before promoting."
     ),
-    "fail": (
-        "Do not migrate under the configured policy — at least one regression budget "
-        "was breached. Address the blocking evaluators, then re-run."
-    ),
     "inconclusive": (
         "The evidence is not conclusive at this sample size. Capture more examples "
         "and re-run before deciding."
@@ -48,20 +44,49 @@ def fallback_insight(facts: Facts) -> Insight:
         verdict_summary=_clamp(_verdict_summary(facts)),
         advisory_summary=_clamp(_advisory_summary(facts)),
         economics_summary=_clamp(_economics_summary(rendered)),
-        recommendation=_clamp(
-            _RECOMMENDATIONS.get(facts.verdict, _RECOMMENDATIONS["inconclusive"]),
-        ),
+        recommendation=_clamp(_recommendation(facts)),
         findings=[],
+    )
+
+
+def _recommendation(facts: Facts) -> str:
+    """The verdict's advice, naming what actually failed the run.
+
+    Keyed on the verdict alone, a ``fail`` once said "at least one regression
+    budget was breached" over a run whose every budget held: the fail came
+    from a blocking evaluator's severity. The facts carry the cause, so the
+    sentence names it.
+    """
+    if facts.verdict != "fail":
+        return _RECOMMENDATIONS.get(facts.verdict, _RECOMMENDATIONS["inconclusive"])
+    if facts.failed_budgets:
+        labels = ", ".join(label[:1].lower() + label[1:] for label in facts.failed_budgets)
+        noun = "budget was" if len(facts.failed_budgets) == 1 else "budgets were"
+        return (
+            f"Do not migrate under the configured policy — the {labels} {noun} breached. "
+            "Address the blocking evaluators, then re-run."
+        )
+    if facts.blocking_evaluators:
+        whose = "its" if len(facts.blocking_evaluators) == 1 else "their"
+        return (
+            "Do not migrate under the configured policy — "
+            f"{', '.join(facts.blocking_evaluators)} regressed at blocking severity "
+            f"although no budget was breached. Review {whose} regressed examples, then re-run."
+        )
+    return (
+        "Do not migrate under the configured policy — see the verdict's reason, "
+        "address it, then re-run."
     )
 
 
 def _verdict_summary(facts: Facts) -> str:
     rendered = facts.rendered
+    blocking = rendered["blocking_regressions"]
+    noun = "regression" if blocking == "1" else "regressions"
     parts = [
         f"{rendered['verdict']} under the configured policy. "
         f"{rendered['budgets_passed']} of {rendered['budgets_total']} budgets passed, "
-        f"with {rendered['blocking_regressions']} blocking and "
-        f"{rendered['critical_regressions']} critical regressions "
+        f"with {blocking} blocking {noun} ({rendered['critical_regressions']} critical) "
         f"across {rendered['n_examples']} examples.",
     ]
     # `budgets_passed` already excludes the gates that measured nothing, so

@@ -428,3 +428,59 @@ def test_the_fallback_is_unchanged_when_every_gate_measured(
     insight = fallback_insight(build_facts(**sample_run))
     assert "6 of 6 budgets passed" in insight.verdict_summary
     assert "measured nothing" not in insight.verdict_summary
+
+
+def _critical_semantic() -> BlockingRegression:
+    return BlockingRegression(
+        prompt_id="replay",
+        evaluator_name="semantic.cosine",
+        slice_name="all",
+        severity="critical",
+        delta_avg_score=-0.05,
+        effect_size=-2.15,
+    )
+
+
+def test_a_severity_fail_never_claims_a_budget_breach(sample_run: dict[str, Any]) -> None:
+    sample_run["decision"] = decision(verdict="fail", blocking=[_critical_semantic()])
+    recommendation = fallback_insight(build_facts(**sample_run)).recommendation
+    assert recommendation == (
+        "Do not migrate under the configured policy — semantic.cosine regressed at "
+        "blocking severity although no budget was breached. Review its regressed "
+        "examples, then re-run."
+    )
+
+
+def test_a_budget_fail_names_the_budget(sample_run: dict[str, Any]) -> None:
+    breached = BudgetResult(
+        name="max_overall_regression_rate",
+        observed=0.5,
+        allowed=0.03,
+        passed=False,
+        conclusive=True,
+        ci_low=0.3,
+        ci_high=0.7,
+    )
+    sample_run["decision"] = decision(
+        verdict="fail",
+        blocking=[_critical_semantic()],
+        budget_results=[breached, *budgets()[1:]],
+    )
+    facts = build_facts(**sample_run)
+    assert facts.failed_budgets == ["Overall regression rate"]
+    assert fallback_insight(facts).recommendation.startswith(
+        "Do not migrate under the configured policy — the overall regression rate "
+        "budget was breached.",
+    )
+
+
+def test_a_fail_with_no_named_cause_points_at_the_reason(sample_run: dict[str, Any]) -> None:
+    sample_run["decision"] = decision(verdict="fail")
+    assert "see the verdict's reason" in fallback_insight(build_facts(**sample_run)).recommendation
+
+
+def test_the_critical_count_reads_the_blocking_regressions(sample_run: dict[str, Any]) -> None:
+    sample_run["decision"] = decision(verdict="fail", blocking=[_critical_semantic()])
+    facts = build_facts(**sample_run)
+    assert facts.rendered["critical_regressions"] == "1"
+    assert "1 blocking regression (1 critical)" in fallback_insight(facts).verdict_summary

@@ -142,6 +142,11 @@ class Facts:
     #: as :attr:`rates_basis`: a name without a reason is a fact the model will
     #: explain for itself.
     coverage_basis: str = ""
+    #: Display names of the budgets whose breach the sample confirmed. Empty on
+    #: a fail that came from comparison severity alone — which is how the
+    #: templated advice tells the two causes apart instead of claiming a
+    #: breach the budget table contradicts.
+    failed_budgets: list[str] = field(default_factory=list)
 
 
 def build_facts(
@@ -201,6 +206,11 @@ def build_facts(
     coverage_basis = (
         _COVERAGE_BASIS_UNMEASURED if (unmeasured_budgets or unmeasured_evaluators) else ""
     )
+    failed_budgets = [
+        BUDGET_LABELS.get(b.name, b.name)
+        for b in decision.budget_results
+        if not b.passed and b.conclusive
+    ]
 
     rendered: dict[str, str] = {
         "verdict": decision.verdict.replace("_", " ").upper(),
@@ -212,7 +222,12 @@ def build_facts(
         "budgets_total": str(len(decision.budget_results)),
         "budgets_unmeasured": str(len(unmeasured_budgets)),
         "blocking_regressions": str(len(decision.blocking_regressions)),
-        "critical_regressions": str(decision.overall.critical_regressions),
+        # Counted from the blocking comparisons themselves. The policy metric
+        # of the same name reads a per-record severity no evaluator writes,
+        # so it is always 0 and once sat beside a critical blocking item.
+        "critical_regressions": str(
+            sum(1 for r in decision.blocking_regressions if r.severity == "critical"),
+        ),
         "n_examples": str(len(examples)),
         "n_calls": str(source.calls + target.calls),
         "cost_source_usd": _usd(source.total_cost_usd),
@@ -278,6 +293,7 @@ def build_facts(
         unmeasured_budgets=unmeasured_budgets,
         unmeasured_evaluators=unmeasured_evaluators,
         coverage_basis=coverage_basis,
+        failed_budgets=failed_budgets,
     )
 
 
