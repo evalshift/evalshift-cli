@@ -30,6 +30,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from evalshift_cli.analysis.tolerance import within_tolerance
 from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.runner.models import EvaluatorCoverage
 from evalshift_cli.suite.models import Suite, SuiteExample
@@ -63,6 +64,12 @@ class SlicedScore:
     #: before slugs existed carries none, and because it is only ever a
     #: grouping key — an empty one groups with its own kind, as it should.
     kind: str = ""
+    #: The row's drop is inside its evaluator's own threshold — a semantic row
+    #: above ``min_similarity`` — so the paired test reads it as no change,
+    #: exactly as the policy budgets count it (see
+    #: :mod:`evalshift_cli.analysis.tolerance`). ``delta`` stays raw for the
+    #: aggregates. Defaulted for the same reason as ``kind``.
+    within_tolerance: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +124,7 @@ def build_slices(
             target_score=rec.target_score,
             delta=rec.delta,
             kind=rec.kind,
+            within_tolerance=within_tolerance(rec),
         )
         for slice_name in _slices_of(rec.example_id, by_id):
             out[slice_name].append(sliced)
