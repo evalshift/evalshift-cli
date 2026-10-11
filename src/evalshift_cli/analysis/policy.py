@@ -532,11 +532,15 @@ def evaluate_migration_policy(
             s.verdict in {"fail", "conditional_pass"} for s in slice_decisions.values()
         ):
             verdict = "conditional_pass"
-        reason = (
-            _inconclusive_reason(gating_budgets, n=overall.n_records)
-            if verdict == "inconclusive"
-            else None
-        )
+        if verdict == "inconclusive":
+            reason = _inconclusive_reason(gating_budgets, n=overall.n_records)
+        elif verdict == "fail":
+            # A budget breach is named by the budget table and the hero's
+            # "N of M" line; a fail on severity alone has neither, and read
+            # "7 of 7 budgets within policy" under FAIL.
+            reason = _severity_reason(overall_comparisons, gating_budgets)
+        else:
+            reason = None
 
     invariant_breaches = _invariant_breaches(gating_budgets)
     if invariant_breaches:
@@ -1357,6 +1361,33 @@ def _invariant_reason(breaches: list[BudgetResult]) -> str:
         f"{worst.denominator} examples{where}, over the {int(worst.allowed)} allowed by "
         "migration_policy.max_invariant_violations. Trace rules are assertions, so no "
         "sample size softens them."
+    )
+
+
+def _severity_reason(
+    comparisons: list[ComparisonResult],
+    budgets: list[BudgetResult],
+) -> str | None:
+    """Why a run failed on comparison severity alone, naming every blocking row.
+
+    ``None`` when a budget's confirmed breach is (also) why it failed — the
+    budget rows already say so — or when no comparison reached a blocking
+    severity. The invariant and dropped-params reasons are applied after this
+    and keep their precedence.
+    """
+    if any(not b.passed and b.conclusive for b in budgets):
+        return None
+    blocking = [c for c in comparisons if c.severity in _BLOCKING_SEVERITIES]
+    if not blocking:
+        return None
+    named = "; ".join(
+        f"{c.evaluator_name} regressed at {c.severity} severity on prompt {c.prompt_id} "
+        f"(effect size {c.effect_size:+.2f}, adjusted p {c.p_value_corrected:.4f})"
+        for c in blocking
+    )
+    return (
+        f"{named}. A critical or high regression from a blocking evaluator fails the run "
+        "on its own, whatever the budgets say."
     )
 
 

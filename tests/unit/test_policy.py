@@ -3237,3 +3237,57 @@ class TestTriageRunRegression:
     def test_the_same_drop_below_min_similarity_still_fails(self) -> None:
         decision = self._decide(self._records(flagged=True))
         assert decision.verdict == "fail"
+
+
+class TestSeverityDrivenFailReason:
+    def _clean_records(self) -> list[EvalRecord]:
+        return [_record(example_id=f"ex{i}", delta=0.0) for i in range(30)]
+
+    def test_a_critical_comparison_with_every_budget_held_names_itself(self) -> None:
+        decision = _decide(
+            self._clean_records(),
+            comparisons=[
+                _comparison(
+                    severity="critical",
+                    evaluator_name="semantic.cosine",
+                    prompt_id="replay",
+                ),
+            ],
+        )
+        assert decision.verdict == "fail"
+        assert decision.reason is not None
+        assert decision.reason.startswith(
+            "semantic.cosine regressed at critical severity on prompt replay "
+            "(effect size -0.80, adjusted p 0.0100)",
+        )
+        assert decision.reason.endswith(
+            "A critical or high regression from a blocking evaluator fails the run "
+            "on its own, whatever the budgets say.",
+        )
+
+    def test_every_blocking_comparison_is_named(self) -> None:
+        decision = _decide(
+            self._clean_records(),
+            comparisons=[
+                _comparison(severity="critical", evaluator_name="a.one"),
+                _comparison(severity="high", evaluator_name="b.two"),
+                _comparison(severity="medium", evaluator_name="c.three"),
+            ],
+        )
+        assert decision.reason is not None
+        assert "a.one regressed at critical severity" in decision.reason
+        assert "b.two regressed at high severity" in decision.reason
+        assert "c.three" not in decision.reason
+
+    def test_a_budget_breach_keeps_the_budget_line(self) -> None:
+        decision = _decide(
+            [_record(example_id=f"ex{i}", delta=-0.5) for i in range(30)],
+            comparisons=[_comparison(severity="critical")],
+        )
+        assert decision.verdict == "fail"
+        assert decision.reason is None
+
+    def test_a_pass_has_no_reason(self) -> None:
+        decision = _decide(self._clean_records(), comparisons=[_comparison(severity="none")])
+        assert decision.verdict == "pass"
+        assert decision.reason is None
