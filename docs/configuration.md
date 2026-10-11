@@ -239,10 +239,12 @@ changes which rows the tool returns. Lower it to `0.4` if you want presence
 differences ignored.
 
 Semantic-evaluator drift counts toward `max_overall_regression_rate` and
-`min_equivalence_rate` only when it breaches
+`min_equivalence_rate` — and toward the paired test that sets each comparison's
+severity — only when it breaches
 [`evaluators.semantic.min_similarity`](#evaluatorssemantic). A near-identical
 output (cosine ~0.98) that stays within `min_similarity` is treated as
-*equivalent*, not a regression — so the policy gate and the report agree.
+*equivalent*, not a regression, by the budgets and the test alike — so the
+policy gate, the severity and the report agree.
 
 Per-slice overrides live under `migration_policy.slices` — a map of
 slice name (an example tag: every distinct tag is a slice) to a partial
@@ -953,9 +955,9 @@ only when `suites:` is empty.
 
 A project's suites are rarely homogeneous: one calls tools, six answer in prose.
 One top-level `evaluators:` block either leaves the tool-calling suite unmeasured
-or hands the tool-free ones a tool evaluator with an empty denominator, which
-reads as an *inconclusive* gate rather than as "not applicable here". So a suite
-can carry its own block:
+or hands the tool-free ones tool evaluators with nothing to check — they skip
+every pair that was offered no tools (no row, no coverage entry, and `evaluate`
+warns that they checked nothing). So a suite can carry its own block:
 
 ```yaml
 suites:
@@ -1135,7 +1137,7 @@ Each suite's entry is generated from what that suite's own rows contain, tool
 evaluators included, so nothing has to be wired by hand:
 
 - No row was offered a toolset → no `evaluators:` block at all; the suite
-  inherits the top level, and no tool evaluator scores an empty denominator.
+  inherits the top level; a tool evaluator it inherits skips its tool-free pairs.
 - Any row was offered a toolset → `tool_selection: [{name: routing, conformance:
   expected, divergence: set}]`.
 - Any row recorded tool-call arguments → `tool_arguments: [{name: routing_args,

@@ -117,10 +117,10 @@ suite's rows actually contain and writes that suite's own evaluator block —
 `tool_selection` when any row was offered a toolset, `tool_arguments` when any
 row recorded call arguments, and nothing at all for a suite whose captures never
 called a tool. That last case is the point: a tool evaluator pointed at a
-tool-free suite scores an empty denominator, which the policy reads as an
-*inconclusive* gate rather than as "not applicable here". A family a suite
-declares replaces the top-level one wholesale; families it does not mention are
-inherited. See
+tool-free suite has nothing to check: it skips every pair that was offered no
+tools — no row, no coverage entry, no effect on the verdict — and `evaluate`
+warns that it checked nothing. A family a suite declares replaces the top-level
+one wholesale; families it does not mention are inherited. See
 [Configuration → per-suite evaluators](configuration.md#per-suite-evaluators).
 
 Hand edits inside the markers are regenerated away on the next sync. To keep

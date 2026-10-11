@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A `semantic` evaluator set to `blocking: true` no longer fails runs whose every row
+  stays within `min_similarity`. The source is pinned at 1.0, so any rewording is a
+  small negative delta, and the paired significance test ran on those raw deltas:
+  nine rows at 0.90–0.98 tested as a `critical` regression and failed a run whose every
+  budget passed. Rows within `min_similarity` now enter the test as no change — the
+  rule the budgets already used — and the comparison notes how many. `delta_avg_score`
+  and the aggregates still show the raw drift. Re-analysing an older run can lower its
+  semantic severities.
+- A fail caused by comparison severity alone now carries a `reason` naming the
+  comparison, so the report no longer shows "7 of 7 budgets within policy" under FAIL.
+  The templated recommendation names the actual cause instead of always claiming a
+  budget breach, and the summary's critical count reads the blocking comparisons.
+- Tool evaluators (including a top-level `trace_invariants` inherited by every suite) no
+  longer attempt pairs that were offered no tools. On a tool-free suite they used to
+  book every pair as unmeasured, demote a clean `pass` to `conditional_pass`, and blame
+  "tool calls and no prose". They now skip those pairs, and `evaluate` warns that the
+  evaluator checked nothing because no example offered tools.
+
 ## [1.4.1] - 2026-10-11
 
 ### Fixed

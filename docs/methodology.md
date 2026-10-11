@@ -112,6 +112,29 @@ After BH correction, each comparison gets a severity tag based on the
 | `none`          | adjusted p ≥ 0.05                                     |
 | `insufficient`  | n < 5                                                 |
 
+### Drift inside `min_similarity` is tested as no change
+
+`semantic` pins the source at 1.0, so every target that words anything
+differently scores below it: a negative delta is the evaluator's normal output,
+not evidence of a regression. Its rows therefore enter the paired test
+**tolerance-adjusted** — a row within `min_similarity` (no `SEMANTIC_REGRESSION`
+flag) contributes a delta of `0`, a flagged row its full drop. That is the line
+the policy budgets already draw, so the two layers cannot disagree: nine rows at
+0.90–0.98 once passed every budget and still failed the run as a `critical`
+regression, because nine small, consistent drops have almost no variance.
+`delta_avg_score` stays the raw mean — it describes the drift; severity judges
+it — and the comparison carries the note `k of n rows within the evaluator's own
+threshold (min_similarity) — tested as no change`. A comparison where only a few
+rows are flagged may not reach significance on its own; the rate budgets
+(`max_overall_regression_rate`, `min_equivalence_rate`) decide it.
+
+### Which severities fail the run
+
+A `critical` or `high` comparison from a blocking evaluator fails the run on its
+own, even when every budget holds; `medium` and `low` downgrade a `pass` to
+`conditional_pass`. When severity alone failed the run, the decision's `reason`
+names each such comparison, so the report's verdict line explains the FAIL.
+
 ## How policy metrics find their rows
 
 `migration_policy` budgets are computed over subsets of the scored records —
@@ -152,7 +175,9 @@ a call counts as drifted only when its target score falls below the floor. The
 rate then measures what its name promises — the fraction of tool calls whose
 arguments are *materially* wrong — and the budget becomes something you can act
 on. The same reasoning is why semantic drift is counted against the evaluator's
-own `min_similarity` rather than against `delta < 0`.
+own `min_similarity` rather than against `delta < 0` — by the budgets and by the
+paired test alike (see
+[Drift inside `min_similarity` is tested as no change](#drift-inside-min_similarity-is-tested-as-no-change)).
 
 ### A zero delta both models earned by failing is not equivalence
 
