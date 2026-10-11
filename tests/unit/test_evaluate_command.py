@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -146,6 +146,7 @@ def _scaffold_run(
     tmp_path: Path,
     completed: bool = True,
     suite_name: str | None = None,
+    with_traces: bool = False,
 ) -> str:
     """Create a minimal completed run dir and return its run_id."""
     runs_base = tmp_path / ".evalshift" / "runs"
@@ -181,6 +182,11 @@ def _scaffold_run(
                     model_id=model_id,
                     role=role,  # type: ignore[arg-type]
                     text=text,
+                    trace=(
+                        ToolTrace(calls=[ToolCall(tool_name="lookup", sequence_index=0)])
+                        if with_traces
+                        else None
+                    ),
                 ),
             )
     return run_id
@@ -1801,7 +1807,7 @@ class TestTraceInvariantsThatCheckedNothing:
 
     def test_partial_scoping_stays_silent(self, tmp_path: Path) -> None:
         _write_invariants_config(tmp_path, applies_to=["gre*", "checkout-*"])
-        _scaffold_run(tmp_path)
+        _scaffold_run(tmp_path, with_traces=True)
 
         assert "checked nothing" not in _evaluate_output(tmp_path)
         state = read_state(tmp_path / ".evalshift" / "runs" / "r_20260601_aaaaaa")
@@ -1835,6 +1841,32 @@ class TestTraceInvariantsThatCheckedNothing:
 
         assert result.exit_code == 0
         assert "checked nothing" in " ".join(result.stdout.split())
+
+    def test_a_tool_free_suite_names_the_real_cause(self, tmp_path: Path) -> None:
+        _write_invariants_config(tmp_path, applies_to=["*"])
+        _scaffold_run(tmp_path, suite_name="triage")
+
+        output = " ".join(_evaluate_output(tmp_path).split())
+
+        assert (
+            "trace_invariants evaluator 'payments_contract' checked nothing: no example in "
+            "suite 'triage' offered the models any tools, so there were no tool calls to "
+            "check. It did not gate this run."
+        ) in output
+        assert "applies_to" not in output
+        state = read_state(tmp_path / ".evalshift" / "runs" / "r_20260601_aaaaaa")
+        assert state.evaluator_coverage == []
+
+    def test_an_applies_to_miss_keeps_its_own_wording_on_a_tool_free_run(
+        self, tmp_path: Path
+    ) -> None:
+        _write_invariants_config(tmp_path, applies_to=["checkout-*"])
+        _scaffold_run(tmp_path)
+
+        output = _evaluate_output(tmp_path)
+
+        assert "['checkout-*']" in output
+        assert "offered the models any tools" not in output
 
 
 class TestMissingImportedTracesNamesTheFamily:
@@ -2088,3 +2120,49 @@ class TestEvaluatorKeyGaps:
         raw.pop("skipped_evaluators", None)
         state_path.write_text(json.dumps(raw), encoding="utf-8")
         assert read_state(state_path.parent).skipped_evaluators == []
+
+
+# ---------------------------------------------------------------------------
+# Tool evaluators on pairs that offered no tools -- not applicable, not unmeasured
+# ---------------------------------------------------------------------------
+
+
+class TestToolEvaluatorsOnToolFreePairs:
+    def _invariants(self) -> TraceInvariantsEvaluator:
+        return TraceInvariantsEvaluator(TraceInvariantsEvaluatorConfig.model_validate(_INVARIANTS))
+
+    async def _cells(self, evaluator: Any, pairs: list[_PairedCalls]) -> list[_ScoredCell]:
+        return await _score_all(Console(), [evaluator], pairs, "r1", {}, concurrency=2, quiet=True)
+
+    async def test_a_pair_that_offered_no_tools_is_never_attempted(self) -> None:
+        cells = await self._cells(
+            self._invariants(),
+            [_pair_for("ex1"), _tool_pair("greet", "ex2", "lookup")],
+        )
+        assert [(c.example_id, c.record is not None) for c in cells] == [("ex2", True)]
+        coverage = _coverage_for(cells)
+        assert (coverage[0].attempted, coverage[0].unmeasured) == (1, [])
+
+    async def test_a_wholly_tool_free_run_books_no_coverage(self) -> None:
+        cells = await self._cells(self._invariants(), [_pair_for("ex1"), _pair_for("ex2")])
+        assert cells == []
+        assert _coverage_for(cells) == []
+
+    async def test_text_evaluators_still_score_tool_free_pairs(self) -> None:
+        cells = await self._cells(_SometimesUnmeasuredEvaluator(), [_pair_for("ex1")])
+        assert [c.record is not None for c in cells] == [True]
+
+    async def test_a_one_sided_trace_is_still_unmeasured(self) -> None:
+        pair = _tool_pair("greet", "ex1", "lookup")
+        one_sided = replace(pair, target=pair.target.model_copy(update={"trace": None}))
+        cells = await self._cells(self._invariants(), [one_sided])
+        coverage = _coverage_for(cells)
+        assert [p.example_id for p in coverage[0].unmeasured] == ["ex1"]
+
+    async def test_an_errored_tool_free_pair_keeps_its_error_row(self) -> None:
+        pair = _pair_for("ex1")
+        errored = replace(pair, source=pair.source.model_copy(update={"error": "boom"}))
+        cells = await self._cells(self._invariants(), [errored])
+        assert len(cells) == 1
+        assert cells[0].record is not None
+        assert (cells[0].record.error or "").startswith("upstream call failed")
