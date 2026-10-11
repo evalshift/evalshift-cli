@@ -956,8 +956,8 @@ only when `suites:` is empty.
 A project's suites are rarely homogeneous: one calls tools, six answer in prose.
 One top-level `evaluators:` block either leaves the tool-calling suite unmeasured
 or hands the tool-free ones tool evaluators with nothing to check — they skip
-every pair that was offered no tools (no row, no coverage entry, and `evaluate`
-warns that they checked nothing). So a suite can carry its own block:
+every pair that was offered no tools (no row, no coverage entry, and `evaluate` —
+or `compare`, under its verdict — warns that they checked nothing). So a suite can carry its own block:
 
 ```yaml
 suites:

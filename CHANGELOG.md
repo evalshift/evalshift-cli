@@ -17,15 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rule the budgets already used — and the comparison notes how many. `delta_avg_score`
   and the aggregates still show the raw drift. Re-analysing an older run can lower its
   semantic severities.
-- A fail caused by comparison severity alone now carries a `reason` naming the
+- A fail caused by comparison severity alone now carries a `reason` naming each
   comparison, so the report no longer shows "7 of 7 budgets within policy" under FAIL.
   The templated recommendation names the actual cause instead of always claiming a
-  budget breach, and the summary's critical count reads the blocking comparisons.
+  budget breach — a breached budget, including a slice's own (`the 'security' slice
+  overall regression rate budget was breached`), or else the overall blocking
+  regressions — and the summary's critical count reads the blocking comparisons.
 - Tool evaluators (including a top-level `trace_invariants` inherited by every suite) no
   longer attempt pairs that were offered no tools. On a tool-free suite they used to
   book every pair as unmeasured, demote a clean `pass` to `conditional_pass`, and blame
-  "tool calls and no prose". They now skip those pairs, and `evaluate` warns that the
-  evaluator checked nothing because no example offered tools.
+  "tool calls and no prose". They now skip those pairs, and `evaluate` (and `compare`,
+  under its verdict) warns that the evaluator checked nothing because no example offered
+  tools. Coverage is written by `evaluate`, so an older run needs `evaluate` re-run to
+  drop the stale coverage; `analyze` alone keeps it, and the `conditional_pass` with it.
 
 ## [1.4.1] - 2026-10-11
 

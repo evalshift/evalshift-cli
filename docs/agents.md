@@ -119,7 +119,7 @@ row recorded call arguments, and nothing at all for a suite whose captures never
 called a tool. That last case is the point: a tool evaluator pointed at a
 tool-free suite has nothing to check: it skips every pair that was offered no
 tools — no row, no coverage entry, no effect on the verdict — and `evaluate`
-warns that it checked nothing. A family a suite declares replaces the top-level
+(or `compare`, under its verdict) warns that it checked nothing. A family a suite declares replaces the top-level
 one wholesale; families it does not mention are inherited. See
 [Configuration → per-suite evaluators](configuration.md#per-suite-evaluators).
 

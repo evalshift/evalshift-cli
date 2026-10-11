@@ -407,7 +407,7 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   Each suite's entry is DERIVED from its own rows, evaluators included:
     no row offered a toolset -> no evaluators: block (suite inherits the top level; an
       inherited tool evaluator skips pairs offered no tools: no cell, no coverage, evaluate
-      warns "checked nothing")
+      and compare warn "checked nothing")
     any row offered a toolset -> tool_selection: [{name: routing, conformance: expected,
       divergence: set}]
     any row recorded call arguments -> tool_arguments: [{name: routing_args, against: expected}]
@@ -905,13 +905,13 @@ Per (prompt_id, evaluator_name, slice_name) over paired per-example deltas (targ
    reconstructed from state.json's evaluator_coverage and noted ("K of N rows not applicable
    - <reason>"). Nothing measured -> n=0, test "skipped", severity "insufficient", note prefixed
    "nothing measured:" (UNMEASURED_NOTE_PREFIX). Never "none" - unmeasured is not equivalent.
-   Pairs offered no tools are not handed to tool evaluators at all (no cell, no coverage).
    The signal rides in notes[] because the bundle's Comparison is additionalProperties: false.
    If the axis is blocking: false (read from evaluator_coverage), the synthesized comparison
    also carries an "advisory:" note (ADVISORY_NOTE_PREFIX) - with zero rows in scores.jsonl
    that note is the only surviving carrier of the config flag for the policy layer.
    report.html renders such a row as "Nothing measured" (not the "Not enough data" headline
    the rest of `insufficient` gets) - the sample was absent, not small.
+   Pairs offered no tools are not handed to tool evaluators at all (no cell, no coverage).
 0b. Tolerance: a semantic row without SEMANTIC_REGRESSION (within min_similarity) enters the
    test as delta 0 (SlicedScore.within_tolerance); note
    "k of n rows within the evaluator's own threshold (min_similarity) - tested as no change".

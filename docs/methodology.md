@@ -496,6 +496,14 @@ comparison carries an `advisory:` note — riding in `notes`, like the
 **Not enough data** headline the rest of `insufficient` carries — the sample was
 absent, not small.
 
+A tool evaluator is never handed a pair that was offered no tools: both calls
+error-free and neither carrying a tool trace is a plain text exchange with no
+tool call to check. That pair gets no row and no coverage entry, so it counts
+toward no note and has no effect on the verdict — and when it is every pair the
+evaluator was scoped to, `evaluate` warns that it checked nothing. A pair with
+an errored call keeps its error row: a failed call says nothing about whether
+tools were offered.
+
 ## What we always report
 
 Every comparison row in `analysis.json` and `report.html` carries:
