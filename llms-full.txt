@@ -623,6 +623,9 @@ evaluators:                         # every evaluator config also takes blocking
     # measures drift, not correctness (reworded-but-right reads as drift). Init
     # writes blocking: false for it; library default is true. Judge = correctness.
     # source score pinned 1.0; target = cosine(source, target) clamped [0,1]
+    # both outputs normalized before embedding: a code fence wrapping the WHOLE output is
+    #   dropped; a JSON object/array is re-serialized (sorted keys) -- fenced pretty JSON vs
+    #   the same JSON compact scores 1.0. Fences inside prose are kept. Empty fence = empty.
     # both outputs empty (tool-only turn) -> NO record at all (score returns None),
     #   no provider call. ONE empty side still scores: 0.0 similarity by definition,
     #   no embedding call (provider 400s on empty input); min_similarity gate applies;

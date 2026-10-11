@@ -55,6 +55,16 @@ equivalent. That is why `evalshift init` ships semantic as advisory
 and why correctness belongs to an `llm_judge` criterion that names the
 property you care about.
 
+**Formatting is not drift.** Both outputs are normalized before
+embedding: a code fence wrapping the whole output (```` ```json … ``` ````)
+is dropped, and a JSON object or array is re-serialized canonically
+(sorted keys, uniform separators). A fenced, pretty-printed object and
+the same object returned compact score 1.0 — without this, layout alone
+pulled such pairs down to ~0.73 and flagged them. A fence inside prose is
+part of the answer and kept; an empty fenced block counts as an empty
+output. Whether an output is valid, unfenced JSON is a job for
+`structural.json_schema` or an `llm_judge` criterion.
+
 Use when:
 * You don't have a clean structural check.
 * You want to detect "wandered off" outputs that still look fine
