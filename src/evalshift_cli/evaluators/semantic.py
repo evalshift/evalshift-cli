@@ -8,6 +8,12 @@ negative number indicates drift.
 This deliberately doesn't make symmetric "both halves same score" pairs
 because that would always produce delta=0 and defeat the regression
 detection.
+
+Both outputs are reduced to their meaning before embedding (see
+:func:`_meaning_text`): a code fence wrapping the whole output is dropped
+and JSON is re-serialized canonically. Presentation otherwise dominates
+the embedding — a fenced, pretty-printed object against the same object
+compact scores ~0.73, enough to flag every example of a run.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 from typing import Any
 
 import litellm
@@ -29,6 +36,10 @@ log = logging.getLogger(__name__)
 #: Marker written into the cache key's ``inputs`` so embedding entries can
 #: never collide with completion entries for the same model + text.
 _EMBEDDING_INPUTS: dict[str, Any] = {"kind": "embedding"}
+
+#: A markdown code fence wrapping the *entire* output (optional info
+#: string, e.g. ``json``). A fence inside prose is part of the answer.
+_WHOLE_FENCE = re.compile(r"\A\s*```[^\n`]*\n(.*?)\n?```\s*\Z", re.DOTALL)
 
 
 class CosineSimilarityEvaluator:
@@ -73,8 +84,12 @@ class CosineSimilarityEvaluator:
         target_output: str,
         history: list[dict[str, str]] | None = None,
     ) -> PairedScore | None:
-        source_silent = not source_output.strip()
-        target_silent = not target_output.strip()
+        # Everything below — the silence guards, the identical shortcut and
+        # the embeddings — sees meaning only, never fences or JSON layout.
+        source_output = _meaning_text(source_output)
+        target_output = _meaning_text(target_output)
+        source_silent = not source_output
+        target_silent = not target_output
         if source_silent and target_silent:
             # Tool-only turn: both models answered with calls, not prose.
             # There is nothing to embed, and an embedding provider will 400
@@ -198,6 +213,33 @@ class CosineSimilarityEvaluator:
             temperature=0.0,
             max_tokens=0,
         )
+
+
+def _meaning_text(text: str) -> str:
+    """Strip presentation from an output, keeping what it says.
+
+    Drops a code fence wrapping the whole output, then, if what remains is
+    a JSON object or array, re-serializes it with sorted keys and default
+    separators — layout and key order are not meaning. Anything else is
+    returned stripped of surrounding whitespace.
+
+    Args:
+        text: A raw model output.
+
+    Returns:
+        The text to embed; empty when the output carries no text.
+    """
+    stripped = text.strip()
+    fenced = _WHOLE_FENCE.match(stripped)
+    if fenced:
+        stripped = fenced.group(1).strip()
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        return stripped
+    if not isinstance(decoded, dict | list):
+        return stripped
+    return json.dumps(decoded, sort_keys=True, ensure_ascii=False)
 
 
 def _decode_embedding(payload: str) -> list[float] | None:

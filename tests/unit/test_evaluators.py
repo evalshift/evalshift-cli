@@ -521,6 +521,113 @@ class TestCosineEvaluator:
             )
 
 
+class TestCosineEvaluatorFormatNormalization:
+    """Presentation (code fences, JSON layout) is not meaning.
+
+    One model fencing pretty-printed JSON where the other returns it
+    compact used to drag cosine from ~0.97 to ~0.73 — formatting drowned
+    the content signal and flagged every example of a run.
+    """
+
+    @staticmethod
+    def _recording_embed(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> list[str]:
+        embedded: list[str] = []
+
+        async def fake_embed(model: str, input: list[str]) -> Any:  # noqa: A002
+            embedded.append(input[0])
+            vec = [1.0, 0.0] if len(embedded) == 1 else [0.0, 1.0]
+            return type("R", (), {"data": [{"embedding": vec}]})()
+
+        monkeypatch.setattr(semantic_module.litellm, "aembedding", fake_embed)
+        return embedded
+
+    async def test_fenced_and_compact_json_with_same_content_score_identical(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        embedded = self._recording_embed(monkeypatch)
+        ev = CosineSimilarityEvaluator(embedding_model="x/y")
+        score = await ev.score(
+            prompt_id="p",
+            example_id="e",
+            input_vars={},
+            source_output='```json\n{\n  "b": 2,\n  "a": "x"\n}\n```',
+            target_output='{"a":"x","b":2}',
+        )
+        assert score is not None
+        assert score.target_score == pytest.approx(1.0)
+        assert embedded == ['{"a": "x", "b": 2}']
+
+    async def test_differing_json_is_embedded_in_canonical_form(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        embedded = self._recording_embed(monkeypatch)
+        ev = CosineSimilarityEvaluator(embedding_model="x/y")
+        await ev.score(
+            prompt_id="p",
+            example_id="e",
+            input_vars={},
+            source_output='```json\n{"summary": "café", "category": "bug"}\n```\n',
+            target_output='{"category":"billing","summary":"café"}',
+        )
+        assert sorted(embedded) == [
+            '{"category": "billing", "summary": "café"}',
+            '{"category": "bug", "summary": "café"}',
+        ]
+
+    async def test_fenced_non_json_has_only_the_fence_stripped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        embedded = self._recording_embed(monkeypatch)
+        ev = CosineSimilarityEvaluator(embedding_model="x/y")
+        score = await ev.score(
+            prompt_id="p",
+            example_id="e",
+            input_vars={},
+            source_output="```python\ndef f():\n    return 1\n```",
+            target_output="def f():\n    return 1",
+        )
+        assert score is not None
+        assert score.target_score == pytest.approx(1.0)
+        assert embedded == ["def f():\n    return 1"]
+
+    async def test_prose_with_an_inner_fence_is_embedded_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Only a fence wrapping the whole output is presentation; a fence
+        # inside prose is part of the answer.
+        embedded = self._recording_embed(monkeypatch)
+        ev = CosineSimilarityEvaluator(embedding_model="x/y")
+        source = "Run this:\n```bash\nls\n```"
+        await ev.score(
+            prompt_id="p",
+            example_id="e",
+            input_vars={},
+            source_output=source,
+            target_output="Run ls.",
+        )
+        assert source in embedded
+
+    async def test_empty_fence_counts_as_silent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An empty fenced block carries no text; embedding "" would 400.
+        async def boom(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("the provider must not be called")
+
+        monkeypatch.setattr(semantic_module.litellm, "aembedding", boom)
+        ev = CosineSimilarityEvaluator(embedding_model="x/y")
+        score = await ev.score(
+            prompt_id="p",
+            example_id="e",
+            input_vars={},
+            source_output='{"a": 1}',
+            target_output="```json\n```",
+        )
+        assert score is not None
+        assert score.target_score == 0.0
+        assert score.metadata["empty_side"] == "target"
+
+
 # ---------------------------------------------------------------------------
 # LLM judge
 # ---------------------------------------------------------------------------

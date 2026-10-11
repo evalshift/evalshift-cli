@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `semantic` no longer reads formatting as drift. Before embedding, both
+  outputs drop a code fence wrapping the whole output, and JSON objects and
+  arrays are re-serialized canonically (sorted keys). A source that fences
+  pretty-printed JSON against a target returning the same JSON compact used
+  to score ~0.73 and get flagged; it now scores 1.0. Semantic scores for
+  structured outputs change on upgrade — expect higher similarity where the
+  models only differed in layout.
+
 ## [1.4.0] - 2026-10-11
 
 ### Added
