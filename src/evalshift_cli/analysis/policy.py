@@ -1317,6 +1317,21 @@ def _distinct_slice_budgets(
     return kept
 
 
+def gating_budget_results(decision: MigrationDecision) -> list[BudgetResult]:
+    """Every budget that gated ``decision``'s verdict, each breach listed once.
+
+    The overall rows, then each slice row that measures something an overall
+    one does not — the same list :func:`evaluate_migration_policy` decides
+    on, rebuilt from the persisted decision. ``decision.budget_results`` alone
+    is only the overall scope, and a run a slice budget failed has every one
+    of those green.
+    """
+    return [
+        *decision.budget_results,
+        *_distinct_slice_budgets(decision.budget_results, decision.slices),
+    ]
+
+
 def _budget_identity(budget: BudgetResult) -> tuple[str, float, float, bool, bool, int | None]:
     """Everything about a budget except which scope reported it."""
     return (
@@ -1846,6 +1861,7 @@ __all__ = [
     "PolicyMetricSummary",
     "SliceDecision",
     "evaluate_migration_policy",
+    "gating_budget_results",
     "inconclusive_decision",
     "is_shared_ground_truth_miss",
     "unmeasured_gating_evaluators",

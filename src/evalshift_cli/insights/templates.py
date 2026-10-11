@@ -55,7 +55,8 @@ def _recommendation(facts: Facts) -> str:
     Keyed on the verdict alone, a ``fail`` once said "at least one regression
     budget was breached" over a run whose every budget held: the fail came
     from a blocking evaluator's severity. The facts carry the cause, so the
-    sentence names it.
+    sentence names it: a confirmed budget breach first (overall or slice),
+    then an overall-slice blocking regression.
     """
     if facts.verdict != "fail":
         return _RECOMMENDATIONS.get(facts.verdict, _RECOMMENDATIONS["inconclusive"])
@@ -66,16 +67,20 @@ def _recommendation(facts: Facts) -> str:
             f"Do not migrate under the configured policy — the {labels} {noun} breached. "
             "Address the blocking evaluators, then re-run."
         )
-    if facts.blocking_evaluators:
-        whose = "its" if len(facts.blocking_evaluators) == 1 else "their"
+    if facts.overall_blocking_evaluators:
+        names = facts.overall_blocking_evaluators
+        whose = "its" if len(names) == 1 else "their"
         return (
             "Do not migrate under the configured policy — "
-            f"{', '.join(facts.blocking_evaluators)} regressed at blocking severity "
+            f"{', '.join(names)} regressed at blocking severity "
             f"although no budget was breached. Review {whose} regressed examples, then re-run."
         )
+    # Not "see the verdict's reason": a fail can carry none (a slice-driven
+    # demotion overridden by dropped params, say), and advice pointing at an
+    # empty field is a dead end.
     return (
-        "Do not migrate under the configured policy — see the verdict's reason, "
-        "address it, then re-run."
+        "Do not migrate under the configured policy — see the verdict's recommendations "
+        "and the budget table, address the cause, then re-run."
     )
 
 
