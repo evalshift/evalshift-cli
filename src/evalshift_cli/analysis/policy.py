@@ -19,12 +19,12 @@ from evalshift_cli.analysis.statistics import (
     UNMEASURED_NOTE_PREFIX,
     ComparisonResult,
 )
+from evalshift_cli.analysis.tolerance import is_semantic, is_semantic_regression, within_tolerance
 from evalshift_cli.config.models import MigrationPolicy, SliceMigrationPolicy
 from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.evaluators.failures import (
     BROKEN_HARNESS_CAUSES,
     INVARIANT_VIOLATION,
-    SEMANTIC_REGRESSION,
     TOOL_GROUND_TRUTH_MISS,
 )
 from evalshift_cli.evaluators.keys import LLM_JUDGE_KIND, skip_recommendation
@@ -35,7 +35,6 @@ MigrationVerdict = Literal["pass", "conditional_pass", "fail", "inconclusive"]
 _REGRESSION_SEVERITIES = frozenset({"critical", "high", "medium", "low"})
 _BLOCKING_SEVERITIES = frozenset({"critical", "high"})
 _TOOL_ARGUMENT_KIND = "tool_arguments"
-_SEMANTIC_KIND = "semantic"
 # The two axes ``tool_selection`` scores. They are separate measurements
 # against separate baselines — conformance grades each side absolutely
 # against the recorded ground truth, divergence grades the target against a
@@ -58,7 +57,6 @@ _INVARIANTS_KIND = "trace_invariants"
 # under a name prefix, so a row that predates them cannot belong to either.
 _LEGACY_KIND_PREFIXES = {
     _TOOL_ARGUMENT_KIND: "tool_arguments.",
-    _SEMANTIC_KIND: "semantic.",
 }
 
 # Rate *ceilings*, and the noun naming the rows each one is counted over. A
@@ -661,21 +659,10 @@ def _is_kind(r: EvalRecord, kind: str) -> bool:
     return prefix is not None and r.evaluator_name.startswith(prefix)
 
 
-def _is_semantic_regression(r: EvalRecord) -> bool:
-    """Whether a semantic-evaluator record breached ``min_similarity``.
-
-    Reuses the ``SEMANTIC_REGRESSION`` flag the evaluator already wrote at
-    scoring time, so the policy gate honours the same ``min_similarity``
-    threshold as the report instead of re-deriving it from ``delta``.
-    """
-    cats = r.metadata.get("failure_categories", [])
-    return isinstance(cats, list) and SEMANTIC_REGRESSION in cats
-
-
 def _is_regression(r: EvalRecord) -> bool:
     """Whether a record counts as a regression for policy budgets."""
-    if _is_kind(r, _SEMANTIC_KIND):
-        return _is_semantic_regression(r)
+    if is_semantic(r):
+        return is_semantic_regression(r)
     return r.delta < 0
 
 
@@ -684,9 +671,11 @@ def _is_equivalent(r: EvalRecord) -> bool:
 
     Semantic drift within ``min_similarity`` is treated as equivalent (not a
     regression), keeping the improved/equivalent/regressed partition intact.
+    The same rule decides what the paired test sees — see
+    :mod:`evalshift_cli.analysis.tolerance`.
     """
-    if _is_kind(r, _SEMANTIC_KIND):
-        return not _is_semantic_regression(r)
+    if is_semantic(r):
+        return within_tolerance(r)
     return r.delta == 0
 
 
@@ -730,8 +719,9 @@ def is_shared_ground_truth_miss(r: EvalRecord) -> bool:
     count in ``failure_categories``).
 
     Reuses the flag the evaluator already wrote, on the same rule as
-    :func:`_is_semantic_regression`: one definition of "both sides missed",
-    in the evaluator that knows the expectation.
+    :func:`~evalshift_cli.analysis.tolerance.is_semantic_regression`: one
+    definition of "both sides missed", in the evaluator that knows the
+    expectation.
 
     The ``delta == 0`` guard is what keeps the exclusion from eating real
     findings. A conformance row where both sides missed *and* the target
