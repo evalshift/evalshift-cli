@@ -710,6 +710,12 @@ def compare_command(
     if evaluate_result.harness_check is not None:
         render_results([evaluate_result.harness_check], console)
         console.print()
+    # Same reason: a tool evaluator that checked nothing is a gate the reader
+    # configured and the verdict below did not use.
+    if evaluate_result.tool_free_warnings:
+        for line in evaluate_result.tool_free_warnings:
+            console.print(line)
+        console.print()
     collapsed_note = format_collapsed_slices(analyze_result.collapsed_slices)
     if collapsed_note is not None:
         console.print(collapsed_note, style="dim")

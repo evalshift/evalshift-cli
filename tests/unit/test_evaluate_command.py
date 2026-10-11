@@ -1857,6 +1857,29 @@ class TestTraceInvariantsThatCheckedNothing:
         state = read_state(tmp_path / ".evalshift" / "runs" / "r_20260601_aaaaaa")
         assert state.evaluator_coverage == []
 
+    def test_a_quiet_run_carries_the_tool_free_warning_on_its_result(self, tmp_path: Path) -> None:
+        """``evalshift compare`` scores quietly and renders the warning itself."""
+        from evalshift_cli.cli.commands.evaluate import run_evaluate
+
+        _write_invariants_config(tmp_path, applies_to=["*"])
+        _scaffold_run(tmp_path, suite_name="triage")
+        console = Console(record=True, width=400)
+
+        result = run_evaluate(
+            run_id="r_20260601_aaaaaa",
+            config_path=tmp_path / "evalshift.yaml",
+            runs_base=tmp_path / ".evalshift" / "runs",
+            console=console,
+            quiet=True,
+        )
+
+        assert "checked nothing" not in console.export_text()
+        assert result.tool_free_warnings == (
+            "[yellow]⚠[/yellow] trace_invariants evaluator 'payments_contract' checked "
+            "nothing: no example in suite 'triage' offered the models any tools, so there "
+            "were no tool calls to check. It did not gate this run.",
+        )
+
     def test_an_applies_to_miss_keeps_its_own_wording_on_a_tool_free_run(
         self, tmp_path: Path
     ) -> None:

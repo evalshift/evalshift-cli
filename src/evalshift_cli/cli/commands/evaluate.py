@@ -183,6 +183,11 @@ class EvaluateResult:
     #: Advisory evaluators dropped because their model had no API key; the
     #: same list ``state.json`` carries as ``skipped_evaluators``.
     skipped: tuple[SkippedEvaluator, ...] = ()
+    #: One rendered console line per tool evaluator a tool-free run left
+    #: nothing to check. Carried for the same reason as ``harness_check``:
+    #: ``evalshift compare`` scores quietly and prints these itself. In memory
+    #: only — nothing persisted changes.
+    tool_free_warnings: tuple[str, ...] = ()
 
 
 class NoEvaluatorsError(ValueError):
@@ -288,10 +293,11 @@ def run_evaluate(
         ),
     )
 
+    tool_free = _tool_free_evaluators(evaluators, pairs)
+    tool_free_warnings = tuple(_tool_free_warning(e, state.suite_name) for e in tool_free)
     if not quiet:
-        tool_free = _tool_free_evaluators(evaluators, pairs)
-        for evaluator in tool_free:
-            console.print(_tool_free_warning(evaluator, state.suite_name))
+        for line in tool_free_warnings:
+            console.print(line)
         for evaluator in _unchecked_trace_invariants(evaluators, coverage):
             if evaluator not in tool_free:
                 console.print(_unchecked_trace_invariants_warning(evaluator))
@@ -348,6 +354,7 @@ def run_evaluate(
         coverage=tuple(coverage),
         harness_check=harness_check,
         skipped=skipped,
+        tool_free_warnings=tool_free_warnings,
     )
 
 
@@ -1387,7 +1394,12 @@ async def _score_one_tool(
     run_id: str,
     examples_by_id: dict[str, SuiteExample],
 ) -> list[EvalRecord]:
-    """Dispatch a v0.2 tool evaluator. Skips plain (text) calls cleanly.
+    """Dispatch a v0.2 tool evaluator over an error-free, untruncated pair.
+
+    A pair offered no tools never reaches here — :func:`_attempts` drops it
+    before scoring, so it has no row and no coverage. The only pair that
+    returns ``[]`` here is a one-sided one (one call carries a trace, the
+    other does not), which coverage then books as unmeasured.
 
     ``score_pair`` returns one record, ``None``, or — for the two-axis
     ``tool_selection`` — a list of them; all three normalise to a list here.

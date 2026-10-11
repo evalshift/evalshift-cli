@@ -365,6 +365,43 @@ class TestEndToEnd:
         assert "Set blocking: true" in flat
         assert "Collect more examples" not in flat
 
+    def test_all_prints_the_tool_free_warning_it_scored_quietly(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Stage 4 scores quietly inside the Live grid; the warning is not lost."""
+        _scaffold(tmp_path)
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "              max_chars: 200",
+                "              max_chars: 200\n"
+                "          trace_invariants:\n"
+                "            - name: payments_contract\n"
+                "              rules:\n"
+                "                - id: no-v1\n"
+                "                  type: forbidden\n"
+                "                  tools: [refund_v1]",
+            ),
+            encoding="utf-8",
+        )
+        _patch_client(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert (
+            "trace_invariants evaluator 'payments_contract' checked nothing: no example in "
+        ) in flat
+        assert (
+            "offered the models any tools, so there were no tool calls to check. "
+            "It did not gate this run."
+        ) in flat
+        assert flat.count("checked nothing") == 1
+
     def test_all_pushes_before_gate_exit(
         self,
         monkeypatch: pytest.MonkeyPatch,
