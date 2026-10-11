@@ -68,7 +68,10 @@ class SlicedScore:
     #: above ``min_similarity`` — so the paired test reads it as no change,
     #: exactly as the policy budgets count it (see
     #: :mod:`evalshift_cli.analysis.tolerance`). ``delta`` stays raw for the
-    #: aggregates. Defaulted for the same reason as ``kind``.
+    #: aggregates. Defaulted so every construction that predates the field —
+    #: positional or keyword, in code and tests — keeps working (it also has
+    #: to be, following the defaulted ``kind``); :func:`build_slices` is what
+    #: sets it from the record.
     within_tolerance: bool = False
 
 

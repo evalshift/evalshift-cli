@@ -789,9 +789,35 @@ class TestWithinTolerance:
         targets = [*_TRIAGE_TARGETS[:8], 0.60]
         flagged = [False] * 8 + [True]
         (c,) = analyze(sliced_by_slice=_semantic_sliced(targets, flagged))
-        assert c.test in ("paired_t", "wilcoxon")
+        assert c.test == "wilcoxon"
         assert c.severity == "none"
         assert any(note.startswith("8 of 9 rows within") for note in c.notes)
+        # The effect size reads the tolerance-adjusted deltas, not the raw
+        # drift: on the raw ones d is about -0.78, which reads as a regression.
+        tested = np.array([0.0] * 8 + [0.60 - 1.0])
+        assert c.effect_size == pytest.approx(
+            float(np.mean(tested) / np.std(tested, ddof=1)),
+        )
+
+    def test_the_t_path_sizes_its_effect_and_ci_on_adjusted_deltas(self) -> None:
+        """Forgiven rows reach the paired t too, and its CI is built from that d."""
+        flagged_deltas = [
+            -0.30, -0.26, -0.24, -0.22, -0.21, -0.20, -0.19, -0.18,
+            -0.17, -0.16, -0.15, -0.14, -0.12, -0.10, -0.08, -0.06,
+        ]  # fmt: skip
+        forgiven_targets = [0.96, 0.95]
+        targets = [1.0 + d for d in flagged_deltas] + forgiven_targets
+        flagged = [True] * len(flagged_deltas) + [False] * len(forgiven_targets)
+        (c,) = analyze(sliced_by_slice=_semantic_sliced(targets, flagged))
+        assert c.test == "paired_t"
+        tested = np.array([*flagged_deltas, 0.0, 0.0])
+        d = float(np.mean(tested) / np.std(tested, ddof=1))
+        assert c.effect_size == pytest.approx(d)
+        se = float(np.sqrt(1.0 / tested.size + d * d / (2.0 * tested.size)))
+        assert c.effect_size_ci_low == pytest.approx(d - 1.96 * se)
+        assert c.effect_size_ci_high == pytest.approx(d + 1.96 * se)
+        # The descriptive mean is still the raw drift.
+        assert c.delta_avg_score == pytest.approx(float(np.mean([t - 1.0 for t in targets])))
 
     def test_non_semantic_statistics_are_unchanged(self) -> None:
         pairs = _ss(40, -0.3)

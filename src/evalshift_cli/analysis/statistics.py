@@ -289,8 +289,10 @@ def _one_comparison(
     # What the test sees: a drop inside the evaluator's own threshold is no
     # change, exactly as the policy budgets count it. ``deltas`` stays raw
     # for ``delta_avg_score``, which describes the drift rather than judging
-    # it — the sign of the two means always agrees, because a forgiven row is
-    # a non-positive delta set to zero.
+    # it. Only a semantic row is ever forgiven, and a semantic delta is never
+    # positive (the source is pinned at 1.0), so zeroing forgiven rows moves
+    # the tested mean from the raw one toward zero — never past it, so the
+    # two means never disagree in sign.
     tested = np.array([0.0 if p.within_tolerance else p.delta for p in pairs], dtype=float)
     forgiven = sum(1 for p in pairs if p.within_tolerance)
     notes: list[str] = []
