@@ -829,6 +829,43 @@ async def test_a_fail_that_blames_a_held_budget_is_rejected_and_retried(
     )
 
 
+async def test_the_misblame_hint_points_at_failed_budgets_when_one_was_breached(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    sample_run["decision"] = converter_decision()
+    fake_client.queue_responses(_payload(verdict_summary=_SHIPPED_SUMMARY), _payload())
+    await _generate(build_facts(**sample_run), fake_client)
+
+    assert (
+        "Your previous answer blamed budgets that held: Trace-rule violations. Only the "
+        "budgets under failed_budgets were breached; a budget marked within may be "
+        "described as within policy or left out, never as a cause of the verdict or as "
+        "something to address." in fake_client.prompts[1]
+    )
+
+
+async def test_the_misblame_hint_says_no_budget_broke_on_a_severity_only_fail(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    """No budget was breached, so there is no failed_budgets line to point at."""
+    sample_run["decision"] = replace(decision(verdict="fail"), reason=SEVERITY_REASON)
+    facts = build_facts(**sample_run)
+    assert facts.failed_budgets == []
+    fake_client.queue_responses(
+        _payload(verdict_summary="The run failed because Cost increase was exceeded."),
+        _payload(verdict_summary="semantic.cosine regressed at critical severity."),
+    )
+    await _generate(facts, fake_client)
+
+    retry = fake_client.prompts[1]
+    assert (
+        "Your previous answer blamed budgets that held: Cost increase. No budget was "
+        "breached; a budget marked within may be described as within policy or left out, "
+        "never as a cause of the verdict or as something to address." in retry
+    )
+    assert "failed_budgets" not in retry.split("FACTS (")[1]
+
+
 async def test_a_misblaming_recommendation_is_rejected(
     fake_client: FakeModelClient, sample_run: dict[str, Any]
 ) -> None:

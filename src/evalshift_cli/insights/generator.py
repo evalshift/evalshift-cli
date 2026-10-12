@@ -487,12 +487,19 @@ def build_prompt(
             "identifiers must be rewritten as plain language."
         )
     if misblamed:
+        # A FAIL from severity or dropped parameters breached no budget, and
+        # its FACTS block has no failed_budgets line to point at.
+        breached = (
+            "Only the budgets under failed_budgets were breached"
+            if facts.failed_budgets
+            else "No budget was breached"
+        )
         sections.append(
             "Your previous answer blamed budgets that held: "
             + ", ".join(dict.fromkeys(misblamed))
-            + ". Only the budgets under failed_budgets were breached; a budget "
-            "marked within may be described as within policy or left out, never "
-            "as a cause of the verdict or as something to address."
+            + f". {breached}; a budget marked within may be described as within "
+            "policy or left out, never as a cause of the verdict or as something "
+            "to address."
         )
     return "\n\n".join(section for section in sections if section)
 
