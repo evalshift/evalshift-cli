@@ -6,6 +6,7 @@ from dataclasses import asdict
 
 import numpy as np
 import pytest
+from scipy import stats
 
 from evalshift_cli.analysis.slicing import (
     ALL_SLICE,
@@ -20,6 +21,7 @@ from evalshift_cli.analysis.statistics import (
     ADVISORY_NOTE_PREFIX,
     AXIS_NOTE_PREFIX,
     UNMEASURED_NOTE_PREFIX,
+    WITHIN_TOLERANCE_REASON,
     ComparisonResult,
     _benjamini_hochberg,
     _classify_severity,
@@ -27,6 +29,7 @@ from evalshift_cli.analysis.statistics import (
     analyze,
 )
 from evalshift_cli.evaluators.base import EvalRecord
+from evalshift_cli.evaluators.failures import SEMANTIC_REGRESSION
 from evalshift_cli.runner.models import EvaluatorCoverage, UnmeasuredPair
 from evalshift_cli.suite.models import Suite
 from tests.unit.suite_examples import suite_example
@@ -717,3 +720,117 @@ class TestUnmeasuredPairsAreNotMeasurements:
             "notes",
         }
         assert set(asdict(result)) == allowed
+
+
+# ---------------------------------------------------------------------------
+# Semantic drift inside min_similarity — tested as no change
+# ---------------------------------------------------------------------------
+
+#: The nine semantic.cosine target scores of run r_20261011_triage_e14cda,
+#: every one above min_similarity 0.9 — the run that failed as "critical".
+_TRIAGE_TARGETS = [0.9734, 0.9608, 0.9212, 0.9531, 0.9321, 0.9492, 0.9043, 0.9800, 0.9542]
+
+
+def _semantic_record(example: str, target: float, *, flagged: bool) -> EvalRecord:
+    return EvalRecord(
+        run_id="r1",
+        prompt_id="replay",
+        example_id=example,
+        evaluator_name="semantic.cosine",
+        kind="semantic",
+        source_score=1.0,
+        target_score=target,
+        delta=target - 1.0,
+        metadata={"failure_categories": [SEMANTIC_REGRESSION]} if flagged else {},
+    )
+
+
+def _semantic_sliced(targets: list[float], flagged: list[bool]) -> dict[str, list[SlicedScore]]:
+    records = [
+        _semantic_record(f"ex{i}", t, flagged=f)
+        for i, (t, f) in enumerate(zip(targets, flagged, strict=True))
+    ]
+    suite = Suite(examples=[suite_example(id=r.example_id) for r in records])
+    return build_slices(records=records, suite=suite)
+
+
+class TestWithinTolerance:
+    def test_build_slices_marks_only_unflagged_semantic_rows(self) -> None:
+        records = [
+            _semantic_record("ex1", 0.95, flagged=False),
+            _semantic_record("ex2", 0.70, flagged=True),
+            _record(example="ex3", delta=-0.2),
+        ]
+        suite = Suite(examples=[suite_example(id=f"ex{i}") for i in (1, 2, 3)])
+        sliced = build_slices(records=records, suite=suite)[ALL_SLICE]
+        assert [s.within_tolerance for s in sliced] == [True, False, False]
+
+    def test_drift_inside_min_similarity_is_not_a_regression(self) -> None:
+        sliced = _semantic_sliced(_TRIAGE_TARGETS, [False] * 9)
+        (c,) = analyze(sliced_by_slice=sliced)
+        assert c.severity == "none"
+        assert c.test == "skipped"
+        # Descriptive mean stays the raw drift: the report still says -5%.
+        assert c.delta_avg_score == pytest.approx(
+            sum(t - 1.0 for t in _TRIAGE_TARGETS) / 9,
+        )
+        assert (
+            "9 of 9 rows within the evaluator's own threshold (min_similarity) — "
+            f"{WITHIN_TOLERANCE_REASON}"
+        ) in c.notes
+
+    def test_drift_below_min_similarity_still_regresses(self) -> None:
+        targets = [0.70, 0.72, 0.75, 0.71, 0.74, 0.73, 0.76, 0.69, 0.72]
+        (c,) = analyze(sliced_by_slice=_semantic_sliced(targets, [True] * 9))
+        assert c.severity == "critical"
+        assert not any(WITHIN_TOLERANCE_REASON in note for note in c.notes)
+
+    def test_one_flagged_row_among_forgiven_ones_runs_and_stays_quiet(self) -> None:
+        targets = [*_TRIAGE_TARGETS[:8], 0.60]
+        flagged = [False] * 8 + [True]
+        (c,) = analyze(sliced_by_slice=_semantic_sliced(targets, flagged))
+        assert c.test == "wilcoxon"
+        assert c.severity == "none"
+        assert any(note.startswith("8 of 9 rows within") for note in c.notes)
+        # The effect size reads the tolerance-adjusted deltas, not the raw
+        # drift: on the raw ones d is about -0.78, which reads as a regression.
+        tested = np.array([0.0] * 8 + [0.60 - 1.0])
+        assert c.effect_size == pytest.approx(
+            float(np.mean(tested) / np.std(tested, ddof=1)),
+        )
+
+    def test_the_t_path_sizes_its_effect_and_ci_on_adjusted_deltas(self) -> None:
+        """Forgiven rows reach the paired t too, and its CI is built from that d."""
+        flagged_deltas = [
+            -0.30, -0.26, -0.24, -0.22, -0.21, -0.20, -0.19, -0.18,
+            -0.17, -0.16, -0.15, -0.14, -0.12, -0.10, -0.08, -0.06,
+        ]  # fmt: skip
+        forgiven_targets = [0.96, 0.95]
+        targets = [1.0 + d for d in flagged_deltas] + forgiven_targets
+        flagged = [True] * len(flagged_deltas) + [False] * len(forgiven_targets)
+        (c,) = analyze(sliced_by_slice=_semantic_sliced(targets, flagged))
+        assert c.test == "paired_t"
+        tested = np.array([*flagged_deltas, 0.0, 0.0])
+        d = float(np.mean(tested) / np.std(tested, ddof=1))
+        assert c.effect_size == pytest.approx(d)
+        se = float(np.sqrt(1.0 / tested.size + d * d / (2.0 * tested.size)))
+        assert c.effect_size_ci_low == pytest.approx(d - 1.96 * se)
+        assert c.effect_size_ci_high == pytest.approx(d + 1.96 * se)
+        # The descriptive mean is still the raw drift.
+        assert c.delta_avg_score == pytest.approx(float(np.mean([t - 1.0 for t in targets])))
+
+    def test_non_semantic_statistics_are_unchanged(self) -> None:
+        pairs = _ss(40, -0.3)
+        (c,) = analyze(sliced_by_slice={"all": pairs})
+        assert c.test == "paired_t"
+        expected = stats.ttest_rel(
+            [p.target_score for p in pairs],
+            [p.source_score for p in pairs],
+        )
+        assert c.statistic == pytest.approx(float(expected.statistic))
+        assert c.p_value == pytest.approx(float(expected.pvalue))
+
+    def test_aggregates_keep_the_raw_drift(self) -> None:
+        sliced = _semantic_sliced(_TRIAGE_TARGETS, [False] * 9)
+        agg = aggregates(sliced[ALL_SLICE], ALL_SLICE)
+        assert agg.delta_min_score == pytest.approx(min(_TRIAGE_TARGETS) - 1.0)

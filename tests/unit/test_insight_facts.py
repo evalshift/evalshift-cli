@@ -8,10 +8,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from evalshift_cli.analysis.policy import BlockingRegression, BudgetResult, FailureCategoryCount
+from evalshift_cli.analysis.policy import (
+    BlockingRegression,
+    BudgetResult,
+    FailureCategoryCount,
+    evaluate_migration_policy,
+)
+from evalshift_cli.analysis.statistics import ComparisonResult
+from evalshift_cli.config.models import MigrationPolicy, SliceMigrationPolicy
+from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.insights.facts import build_facts
 from evalshift_cli.insights.templates import fallback_insight
 from evalshift_cli.reports.economics import PromptEconomics
+from evalshift_cli.runner.models import Call
 from tests.unit.insights_factories import (
     COST_TARGET,
     budgets,
@@ -428,3 +437,243 @@ def test_the_fallback_is_unchanged_when_every_gate_measured(
     insight = fallback_insight(build_facts(**sample_run))
     assert "6 of 6 budgets passed" in insight.verdict_summary
     assert "measured nothing" not in insight.verdict_summary
+
+
+def _critical_semantic() -> BlockingRegression:
+    return BlockingRegression(
+        prompt_id="replay",
+        evaluator_name="semantic.cosine",
+        slice_name="all",
+        severity="critical",
+        delta_avg_score=-0.05,
+        effect_size=-2.15,
+    )
+
+
+def test_a_severity_fail_never_claims_a_budget_breach(sample_run: dict[str, Any]) -> None:
+    sample_run["decision"] = decision(verdict="fail", blocking=[_critical_semantic()])
+    recommendation = fallback_insight(build_facts(**sample_run)).recommendation
+    assert recommendation == (
+        "Do not migrate under the configured policy — semantic.cosine regressed at "
+        "blocking severity although no budget was breached. Review its regressed "
+        "examples, then re-run."
+    )
+
+
+def test_a_budget_fail_names_the_budget(sample_run: dict[str, Any]) -> None:
+    breached = BudgetResult(
+        name="max_overall_regression_rate",
+        observed=0.5,
+        allowed=0.03,
+        passed=False,
+        conclusive=True,
+        ci_low=0.3,
+        ci_high=0.7,
+    )
+    sample_run["decision"] = decision(
+        verdict="fail",
+        blocking=[_critical_semantic()],
+        budget_results=[breached, *budgets()[1:]],
+    )
+    facts = build_facts(**sample_run)
+    assert facts.failed_budgets == ["Overall regression rate"]
+    assert fallback_insight(facts).recommendation.startswith(
+        "Do not migrate under the configured policy — the overall regression rate "
+        "budget was breached.",
+    )
+
+
+def test_a_fail_with_no_named_cause_points_at_what_the_reader_can_see(
+    sample_run: dict[str, Any],
+) -> None:
+    """``decision.reason`` can be ``None`` on a fail, so the advice never points there."""
+    sample_run["decision"] = decision(verdict="fail")
+    assert fallback_insight(build_facts(**sample_run)).recommendation == (
+        "Do not migrate under the configured policy — see the verdict's recommendations "
+        "and the budget table, address the cause, then re-run."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Slice budgets gate the run too
+# ---------------------------------------------------------------------------
+
+
+def _slice_comparison(
+    *,
+    evaluator_name: str,
+    slice_name: str,
+    severity: str = "none",
+) -> ComparisonResult:
+    blocking = severity in {"critical", "high"}
+    return ComparisonResult(
+        prompt_id="replay",
+        evaluator_name=evaluator_name,
+        slice_name=slice_name,
+        n=20,
+        test="paired_t",
+        statistic=1.0,
+        p_value=0.01 if blocking else 0.6,
+        p_value_corrected=0.01 if blocking else 0.6,
+        effect_size=-0.9 if blocking else 0.0,
+        effect_size_ci_low=-1.2 if blocking else -0.3,
+        effect_size_ci_high=-0.6 if blocking else 0.3,
+        delta_avg_score=-0.2 if blocking else 0.0,
+        severity=severity,  # type: ignore[arg-type]
+        notes=[],
+    )
+
+
+def _scored(evaluator_name: str, *, n: int, delta: float) -> list[EvalRecord]:
+    return [
+        EvalRecord(
+            run_id="r_20260803_abcdef",
+            prompt_id="replay",
+            example_id=f"{evaluator_name}_{index}",
+            evaluator_name=evaluator_name,
+            source_score=1.0,
+            target_score=1.0 + delta,
+            delta=delta,
+        )
+        for index in range(n)
+    ]
+
+
+def _slice_budget_run(
+    sample_run: dict[str, Any],
+    *,
+    extra: list[ComparisonResult],
+    policy: MigrationPolicy | None = None,
+    calls: list[Call] | None = None,
+) -> dict[str, Any]:
+    """A run whose overall budgets hold and whose 'security' slice budget breaks.
+
+    Decided by the real policy rather than a hand-built decision, so the
+    facts are read off exactly the shape ``evaluate_migration_policy``
+    produces: the slice row lives under ``decision.slices``, never in the
+    overall ``budget_results``.
+    """
+    comparisons = [
+        _slice_comparison(evaluator_name="structural.length", slice_name="all"),
+        _slice_comparison(evaluator_name="security.judge", slice_name="security"),
+        *extra,
+    ]
+    records = [
+        *_scored("structural.length", n=20, delta=0.0),
+        *_scored("security.judge", n=20, delta=-0.5),
+    ]
+    sample_run["decision"] = evaluate_migration_policy(
+        run_id="r_20260803_abcdef",
+        source_model="src",
+        target_model="tgt",
+        policy=policy
+        or MigrationPolicy(
+            max_overall_regression_rate=0.5,
+            min_equivalence_rate=0.0,
+            slices={"security": SliceMigrationPolicy(max_overall_regression_rate=0.0)},
+        ),
+        comparisons=comparisons,
+        records=records,
+        calls=calls or [],
+    )
+    sample_run["comparisons"] = comparisons
+    sample_run["records"] = records
+    return sample_run
+
+
+def test_a_slice_budget_fail_names_the_slice_budget(sample_run: dict[str, Any]) -> None:
+    run = _slice_budget_run(sample_run, extra=[])
+    assert run["decision"].verdict == "fail"
+    assert run["decision"].reason is None
+
+    facts = build_facts(**run)
+
+    assert facts.failed_budgets == ["'security' slice overall regression rate"]
+    assert fallback_insight(facts).recommendation == (
+        "Do not migrate under the configured policy — the 'security' slice overall "
+        "regression rate budget was breached. Address the blocking evaluators, then re-run."
+    )
+
+
+def test_a_slice_budget_fail_with_a_slice_only_blocking_row_blames_the_budget(
+    sample_run: dict[str, Any],
+) -> None:
+    """Slice severity only demotes to conditional_pass; the budget is what failed."""
+    run = _slice_budget_run(
+        sample_run,
+        extra=[
+            _slice_comparison(
+                evaluator_name="structural.length",
+                slice_name="security",
+                severity="high",
+            ),
+        ],
+    )
+    assert run["decision"].verdict == "fail"
+
+    recommendation = fallback_insight(build_facts(**run)).recommendation
+
+    assert "'security' slice overall regression rate budget was breached" in recommendation
+    assert "no budget was breached" not in recommendation
+
+
+def test_a_slice_row_that_restates_an_overall_breach_is_named_once(
+    sample_run: dict[str, Any],
+) -> None:
+    """An inheriting slice copies the run-level cost row; one breach, one name."""
+    run = _slice_budget_run(
+        sample_run,
+        extra=[],
+        policy=MigrationPolicy(
+            max_overall_regression_rate=1.0,
+            min_equivalence_rate=0.0,
+            max_cost_increase=0.0,
+            slices={"security": SliceMigrationPolicy()},
+        ),
+        calls=[
+            Call(
+                run_id="r_20260803_abcdef",
+                prompt_id="replay",
+                example_id="e1",
+                model_id=model_role,
+                role=model_role,  # type: ignore[arg-type]
+                text="ok",
+                cost_usd=cost,
+                latency_ms=100,
+            )
+            for model_role, cost in (("source", 1.0), ("target", 2.0))
+        ],
+    )
+    assert run["decision"].verdict == "fail"
+
+    assert build_facts(**run).failed_budgets == ["Cost increase"]
+
+
+def test_a_severity_fail_names_only_the_overall_blocking_evaluators(
+    sample_run: dict[str, Any],
+) -> None:
+    """A slice-only blocking row did not fail the run, so it is not named as why."""
+    slice_only = BlockingRegression(
+        prompt_id="replay",
+        evaluator_name="structural.length",
+        slice_name="security",
+        severity="high",
+        delta_avg_score=-0.2,
+        effect_size=-0.9,
+    )
+    sample_run["decision"] = decision(verdict="fail", blocking=[_critical_semantic(), slice_only])
+
+    recommendation = fallback_insight(build_facts(**sample_run)).recommendation
+
+    assert recommendation == (
+        "Do not migrate under the configured policy — semantic.cosine regressed at "
+        "blocking severity although no budget was breached. Review its regressed "
+        "examples, then re-run."
+    )
+
+
+def test_the_critical_count_reads_the_blocking_regressions(sample_run: dict[str, Any]) -> None:
+    sample_run["decision"] = decision(verdict="fail", blocking=[_critical_semantic()])
+    facts = build_facts(**sample_run)
+    assert facts.rendered["critical_regressions"] == "1"
+    assert "1 blocking regression (1 critical)" in fallback_insight(facts).verdict_summary

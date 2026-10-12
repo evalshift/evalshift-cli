@@ -405,8 +405,9 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   Advisory only: never edits the workflow, exit code unchanged. `init` (without --ci) warns
   the same way next to an existing workflow; `validate` prints it after its success line.
   Each suite's entry is DERIVED from its own rows, evaluators included:
-    no row offered a toolset -> no evaluators: block (suite inherits the top level; a tool
-      evaluator on a tool-free suite would score an empty denominator = inconclusive gate)
+    no row offered a toolset -> no evaluators: block (suite inherits the top level; an
+      inherited tool evaluator skips pairs offered no tools: no cell, no coverage, evaluate
+      and compare warn "checked nothing")
     any row offered a toolset -> tool_selection: [{name: routing, conformance: expected,
       divergence: set}]
     any row recorded call arguments -> tool_arguments: [{name: routing_args, against: expected}]
@@ -615,7 +616,7 @@ evaluators:                         # every evaluator config also takes blocking
       applies_to: ["*"]
   semantic:                         # single block, not a list
     embedding_model: str = text-embedding-3-small   # bare text-embedding-* resolves to openai
-    min_similarity: float = 0.9     # below -> SEMANTIC_REGRESSION flag
+    min_similarity: float = 0.9     # below -> SEMANTIC_REGRESSION flag; above -> delta tested as 0
     # init writes it ACTIVE for every provider (anthropic/deepseek borrow an OpenAI/Gemini
     # embedder -- see init). No key for embedding_model -> skipped or refused before any
     # call; see "Missing judge/embedding keys" under Behavior rules.
@@ -746,7 +747,8 @@ evaluators:                         # every evaluator config also takes blocking
       # required / min_calls are NOT vacuous (fail every in-scope trace lacking the call); on a
       #   single-shot replay they see only the first response -> scope with applies_to, or use
       #   --rounds all / imported traces. order/arguments/max-only call_count are vacuous when
-      #   the tool is never called. Replayed pairs with no tool trace get no row.
+      #   the tool is never called. Replayed pairs with no tool trace get no row; pairs offered
+      #   no tools at all get no cell (not attempted).
       # Score per side = (rules - rules broken) / rules; kind slug trace_invariants; metadata
       #   rules_checked, source_violations, target_violations (each [{rule_id, rule_type, tool,
       #   round_index, detail}], with sample ordinal when samples_per_example > 1), owner;
@@ -909,6 +911,11 @@ Per (prompt_id, evaluator_name, slice_name) over paired per-example deltas (targ
    that note is the only surviving carrier of the config flag for the policy layer.
    report.html renders such a row as "Nothing measured" (not the "Not enough data" headline
    the rest of `insufficient` gets) - the sample was absent, not small.
+   Pairs offered no tools are not handed to tool evaluators at all (no cell, no coverage).
+0b. Tolerance: a semantic row without SEMANTIC_REGRESSION (within min_similarity) enters the
+   test as delta 0 (SlicedScore.within_tolerance); note
+   "k of n rows within the evaluator's own threshold (min_similarity) - tested as no change".
+   delta_avg_score and aggregates stay raw.
 1. n<5 -> skipped, severity "insufficient". 5<=n<20 -> tested, flagged uncertain.
    Zero variance (std < 1e-9) -> skipped, severity "none".
 2. Shapiro-Wilk on deltas at alpha=.05: normal -> paired t-test; else Wilcoxon signed-rank.
@@ -1105,7 +1112,8 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
   nothing -> positive denominator, conclusive: false. The hosted gate computes its OWN
   Wilson interval from these denominators, over the same three proportion budgets and with
   the same z, so a local and a hosted verdict agree on whether a breach was confirmed.
-- fail: any conclusive budget failure OR any blocking critical/high comparison. Slice budgets
+- fail: any conclusive budget failure OR any blocking critical/high comparison (when severity
+  alone fails the run, reason names each such comparison). Slice budgets
   (migration_policy.slices) count here on the same terms as the top-level ones: conclusive
   breach -> fail, unconfirmed breach -> inconclusive, Wilson-judged over that slice's own
   denominator. recommendations names the blocking row ("The 'security' slice breached its overall
@@ -1123,8 +1131,9 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
   inconclusive: all comparisons insufficient, or unconfirmed rate-budget breach (never when
   max_invariant_violations is breached -- that is fail).
   pass: otherwise.
-- Semantic drift above min_similarity counts as equivalent, not regression. min_equivalence_rate
-  floors the NON-REGRESSION rate: equivalent and improved both count toward it.
+- Semantic drift above min_similarity counts as equivalent, not regression -- in budgets and
+  in the paired test (severity). min_equivalence_rate floors the NON-REGRESSION rate:
+  equivalent and improved both count toward it.
 - cost/latency increase = max(0, (target_avg - source_avg)/source_avg) over non-errored calls.
 CI gates: analyze/compare --gate critical,high (exit 1 on matching severities; allowed:
 critical,high,medium,low); --policy-gate (exit 1 on fail OR conditional_pass, or when no
@@ -1476,8 +1485,9 @@ suites: {}                         # init writes the managed region LAST, after
 
 # evalshift.yaml — agent prompt (tool-calling additions). Tool evaluators live in the
 # PER-SUITE block `capture sync` generates, not at the top level: a tool-free suite that
-# inherits a tool evaluator scores an empty denominator = an inconclusive gate. Hand-written
-# trace_invariants are the exception (top level is fine; sync keeps them on managed entries).
+# inherits a tool evaluator gives it nothing to check (it skips those pairs and evaluate
+# warns). Hand-written trace_invariants are the exception (top level is fine; sync keeps
+# them on managed entries).
 prompts:
   - id: customer_routing
     detection: python_string

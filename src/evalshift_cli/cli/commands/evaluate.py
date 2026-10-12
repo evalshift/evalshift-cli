@@ -183,6 +183,11 @@ class EvaluateResult:
     #: Advisory evaluators dropped because their model had no API key; the
     #: same list ``state.json`` carries as ``skipped_evaluators``.
     skipped: tuple[SkippedEvaluator, ...] = ()
+    #: One rendered console line per tool evaluator a tool-free run left
+    #: nothing to check. Carried for the same reason as ``harness_check``:
+    #: ``evalshift compare`` scores quietly and prints these itself. In memory
+    #: only — nothing persisted changes.
+    tool_free_warnings: tuple[str, ...] = ()
 
 
 class NoEvaluatorsError(ValueError):
@@ -288,9 +293,14 @@ def run_evaluate(
         ),
     )
 
+    tool_free = _tool_free_evaluators(evaluators, pairs)
+    tool_free_warnings = tuple(_tool_free_warning(e, state.suite_name) for e in tool_free)
     if not quiet:
+        for line in tool_free_warnings:
+            console.print(line)
         for evaluator in _unchecked_trace_invariants(evaluators, coverage):
-            console.print(_unchecked_trace_invariants_warning(evaluator))
+            if evaluator not in tool_free:
+                console.print(_unchecked_trace_invariants_warning(evaluator))
 
     output_path = run_dir / SCORES_FILENAME
     with output_path.open("w", encoding="utf-8") as fh:
@@ -344,6 +354,7 @@ def run_evaluate(
         coverage=tuple(coverage),
         harness_check=harness_check,
         skipped=skipped,
+        tool_free_warnings=tool_free_warnings,
     )
 
 
@@ -711,6 +722,77 @@ def _applies(evaluator: Evaluator, prompt_id: str) -> bool:
     return True if applies is None else bool(applies(prompt_id))
 
 
+def _offers_no_tools(pair: _PairedCalls) -> bool:
+    """Whether neither side of ``pair`` was offered a tool.
+
+    The orchestrator dispatches with tools exactly when the example's resolved
+    toolset is non-empty, and that path always stores a :class:`ToolTrace` on
+    the call. Two error-free calls with no trace between them are therefore a
+    plain text exchange, and a tool evaluator has nothing it could check — the
+    same as an ``applies_to`` miss. An errored call proves nothing about the
+    toolset and keeps the error path; one trace without the other stays
+    unmeasured (see :func:`_score_one_tool`).
+    """
+    return (
+        pair.source.error is None
+        and pair.target.error is None
+        and pair.source.trace is None
+        and pair.target.trace is None
+    )
+
+
+def _attempts(evaluator: Evaluator, pair: _PairedCalls) -> bool:
+    """Whether ``evaluator`` is asked to score ``pair`` at all.
+
+    ``False`` means no cell: no row, and no coverage attempt that would later
+    read as "unmeasured" and demote the verdict. Booking a tool-free suite as
+    unmeasured is what turned a clean ``pass`` into ``conditional_pass`` for a
+    top-level ``trace_invariants`` entry written for a different suite.
+    """
+    if not _applies(evaluator, pair.prompt_id):
+        return False
+    return not (_is_tool_evaluator(evaluator) and _offers_no_tools(pair))
+
+
+def _tool_free_evaluators(
+    evaluators: list[Evaluator],
+    pairs: list[_PairedCalls],
+) -> list[Evaluator]:
+    """Tool evaluators whose every in-scope pair offered no tools.
+
+    Computed from the pairs rather than from coverage: an evaluator with no
+    coverage entry may also be an ``applies_to`` miss, which has its own
+    warning and its own fix.
+
+    Args:
+        evaluators: Every evaluator built for the run.
+        pairs: Every (source, target) pair in the run.
+
+    Returns:
+        The ``score_pair`` evaluators that checked nothing because no pair
+        they were scoped to was offered a tool, in configured order.
+    """
+    out: list[Evaluator] = []
+    for evaluator in evaluators:
+        if not _is_tool_evaluator(evaluator):
+            continue
+        scoped = [pair for pair in pairs if _applies(evaluator, pair.prompt_id)]
+        if scoped and all(_offers_no_tools(pair) for pair in scoped):
+            out.append(evaluator)
+    return out
+
+
+def _tool_free_warning(evaluator: Evaluator, suite_name: str | None) -> str:
+    """The console line for a tool evaluator that a tool-free run left nothing to check."""
+    where = f"suite {suite_name!r}" if suite_name else "this run"
+    kind = _evaluator_kind(evaluator) or "tool"
+    return (
+        f"[yellow]⚠[/yellow] {escape(kind)} evaluator {escape(repr(evaluator.name))} "
+        f"checked nothing: no example in {escape(where)} offered the models any tools, "
+        "so there were no tool calls to check. It did not gate this run."
+    )
+
+
 def _unchecked_trace_invariants(
     evaluators: list[Evaluator],
     coverage: list[EvaluatorCoverage],
@@ -904,7 +986,7 @@ async def _score_all(
         (pair, evaluator)
         for pair in pairs
         for evaluator in evaluators
-        if _applies(evaluator, pair.prompt_id)
+        if _attempts(evaluator, pair)
     ]
     sem = asyncio.Semaphore(concurrency)
     progress: Progress | None = None
@@ -1260,8 +1342,7 @@ async def _score_one(
         return _error_records(evaluator, pair, run_id, "output truncated (token cap)")
 
     # v0.2 — tool evaluators consume the (source, target) ToolTrace pair.
-    # Plain prompts have ``call.trace is None`` and we skip cleanly with
-    # a neutral record so the analysis layer doesn't see noise.
+    # A pair offered no tools never reaches here (see _attempts).
     if _is_tool_evaluator(evaluator):
         return await _score_one_tool(evaluator, pair, run_id, examples_by_id)
 
@@ -1313,15 +1394,20 @@ async def _score_one_tool(
     run_id: str,
     examples_by_id: dict[str, SuiteExample],
 ) -> list[EvalRecord]:
-    """Dispatch a v0.2 tool evaluator. Skips plain (text) calls cleanly.
+    """Dispatch a v0.2 tool evaluator over an error-free, untruncated pair.
+
+    A pair offered no tools never reaches here — :func:`_attempts` drops it
+    before scoring, so it has no row and no coverage. The only pair that
+    returns ``[]`` here is a one-sided one (one call carries a trace, the
+    other does not), which coverage then books as unmeasured.
 
     ``score_pair`` returns one record, ``None``, or — for the two-axis
     ``tool_selection`` — a list of them; all three normalise to a list here.
     """
     if pair.source.trace is None or pair.target.trace is None:
-        # No tool trace on either side → nothing for this evaluator to
-        # measure, so nothing to report. The 1.0/1.0 this used to write
-        # claimed a perfect tool match on a plain text prompt.
+        # Only one side carries a trace — a pair offered no tools at all
+        # never gets here (see _attempts). There is nothing to pair, so
+        # nothing to report; coverage books it unmeasured.
         return []
     # tools=[]: this placeholder stands in for an example the loaded suite has
     # no record of at all, so there is no real toolset to carry -- not an

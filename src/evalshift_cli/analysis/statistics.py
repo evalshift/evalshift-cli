@@ -5,7 +5,8 @@ Implements the contract from PDF §5.5 step-by-step:
 1. Pair scores per slice; require ``n>=5`` to test, flag ``n<20``.
 2. Test normality via Shapiro-Wilk on the deltas; route to a paired
    t-test (normal) or Wilcoxon signed-rank (non-normal).
-3. Compute Cohen's d for paired samples (``mean(deltas)/std(deltas)``).
+3. Compute Cohen's d for paired samples (``mean(deltas)/std(deltas)``)
+   over the tolerance-adjusted deltas.
 4. Compute a 95% CI on the effect size — analytical for the t-test,
    bootstrap for Wilcoxon.
 5. After every comparison in the run is collected, apply the
@@ -87,6 +88,13 @@ ADVISORY_NOTE_PREFIX = "advisory:"
 #: from the run's ``EvaluatorCoverage`` — see
 #: :func:`evalshift_cli.analysis.slicing.build_unmeasured`.
 NOT_APPLICABLE_REASON = "the evaluator measured nothing on them"
+
+#: Suffix of the note counting rows whose drop sat inside the evaluator's own
+#: threshold (a semantic row above ``min_similarity``). Those rows enter the
+#: test as a delta of zero — see :mod:`evalshift_cli.analysis.tolerance` —
+#: and the note is what tells a reader why a visible average drift tested as
+#: no change.
+WITHIN_TOLERANCE_REASON = "tested as no change"
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,12 +286,26 @@ def _one_comparison(
     """
     n = len(pairs)
     deltas = np.array([p.delta for p in pairs], dtype=float)
+    # What the test sees: a drop inside the evaluator's own threshold is no
+    # change, exactly as the policy budgets count it. ``deltas`` stays raw
+    # for ``delta_avg_score``, which describes the drift rather than judging
+    # it. Only a semantic row is ever forgiven, and a semantic delta is never
+    # positive (the source is pinned at 1.0), so zeroing forgiven rows moves
+    # the tested mean from the raw one toward zero — never past it, so the
+    # two means never disagree in sign.
+    tested = np.array([0.0 if p.within_tolerance else p.delta for p in pairs], dtype=float)
+    forgiven = sum(1 for p in pairs if p.within_tolerance)
     notes: list[str] = []
     if name_axis:
         notes.append(f"{AXIS_NOTE_PREFIX} {kind}")
     if n_unmeasured:
         notes.append(
             f"{n_unmeasured} of {n + n_unmeasured} rows not applicable — {NOT_APPLICABLE_REASON}",
+        )
+    if forgiven:
+        notes.append(
+            f"{forgiven} of {n} rows within the evaluator's own threshold "
+            f"(min_similarity) — {WITHIN_TOLERANCE_REASON}",
         )
 
     if n == 0:
@@ -341,7 +363,7 @@ def _one_comparison(
     # Variance ≈ 0 (every delta identical, modulo float noise) → no
     # inference possible. Use a small tolerance to dodge catastrophic
     # cancellation that scipy already warns about.
-    if float(np.std(deltas, ddof=1)) < 1e-9:
+    if float(np.std(tested, ddof=1)) < 1e-9:
         return ComparisonResult(
             prompt_id=prompt_id,
             evaluator_name=evaluator_name,
@@ -361,24 +383,23 @@ def _one_comparison(
         )
 
     # Pick the test based on a normality screen.
-    use_t = _is_normal(deltas)
+    use_t = _is_normal(tested)
 
     if use_t:
-        result = stats.ttest_rel(
-            [p.target_score for p in pairs],
-            [p.source_score for p in pairs],
-        )
+        # One-sample t on the paired deltas is ``ttest_rel(target, source)``
+        # exactly; it is written this way so a forgiven row can be zero.
+        result = stats.ttest_1samp(tested, 0.0)
         statistic = float(result.statistic)
         p_value = float(result.pvalue)
-        d = _cohens_d_paired(deltas)
+        d = _cohens_d_paired(tested)
         ci_low, ci_high = _t_test_d_ci(d=d, n=n)
         test_kind: TestKind = "paired_t"
     else:
-        result = stats.wilcoxon(deltas, zero_method="wilcox", correction=False)
+        result = stats.wilcoxon(tested, zero_method="wilcox", correction=False)
         statistic = float(result.statistic)
         p_value = float(result.pvalue)
-        d = _cohens_d_paired(deltas)
-        ci_low, ci_high = _bootstrap_d_ci(deltas, rng=rng)
+        d = _cohens_d_paired(tested)
+        ci_low, ci_high = _bootstrap_d_ci(tested, rng=rng)
         test_kind = "wilcoxon"
         notes.append("non-normal deltas; used Wilcoxon")
 
@@ -528,6 +549,7 @@ __all__ = [
     "NORMALITY_ALPHA",
     "NOT_APPLICABLE_REASON",
     "UNMEASURED_NOTE_PREFIX",
+    "WITHIN_TOLERANCE_REASON",
     "ComparisonResult",
     "Severity",
     "TestKind",

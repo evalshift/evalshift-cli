@@ -15,21 +15,26 @@ from evalshift_cli.analysis.policy import (
     inconclusive_decision,
     unmeasured_gating_evaluators,
 )
+from evalshift_cli.analysis.slicing import build_slices
 from evalshift_cli.analysis.statistics import (
     ADVISORY_NOTE_PREFIX,
     UNMEASURED_NOTE_PREFIX,
     ComparisonResult,
+    analyze,
 )
 from evalshift_cli.config.models import MigrationPolicy, SliceMigrationPolicy
 from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.evaluators.failures import (
     INVARIANT_VIOLATION,
+    SEMANTIC_REGRESSION,
     TOOL_GROUND_TRUTH_MISS,
     TOOL_SELECTION_DRIFT,
 )
 from evalshift_cli.evaluators.tool_arguments import KIND as KIND_ARGUMENTS
 from evalshift_cli.evaluators.tool_selection import KIND_CONFORMANCE, KIND_DIVERGENCE
 from evalshift_cli.runner.models import Call, SkippedEvaluator
+from evalshift_cli.suite.models import Suite
+from tests.unit.suite_examples import suite_example
 
 
 def _comparison(
@@ -3164,3 +3169,125 @@ class TestSkippedEvaluatorLines:
             skipped_evaluators=(_SKIPPED_SEMANTIC,),
         )
         assert _SKIPPED_LINE in decision.recommendations
+
+
+class TestTriageRunRegression:
+    """r_20261011_triage_e14cda: every budget held and the run still failed."""
+
+    _TARGETS = (0.9734, 0.9608, 0.9212, 0.9531, 0.9321, 0.9492, 0.9043, 0.9800, 0.9542)
+
+    def _records(self, *, flagged: bool) -> list[EvalRecord]:
+        semantic = [
+            EvalRecord(
+                run_id="r1",
+                prompt_id="replay",
+                example_id=f"ex{i}",
+                evaluator_name="semantic.cosine",
+                kind="semantic",
+                source_score=1.0,
+                target_score=t,
+                delta=t - 1.0,
+                metadata={"failure_categories": [SEMANTIC_REGRESSION]} if flagged else {},
+            )
+            for i, t in enumerate(self._TARGETS)
+        ]
+        judge = [
+            EvalRecord(
+                run_id="r1",
+                prompt_id="replay",
+                example_id=f"ex{i}",
+                evaluator_name="llm_judge.equivalence",
+                kind="llm_judge",
+                source_score=0.0 if i < 7 else 0.5,
+                target_score=1.0 if i < 7 else 0.5,
+                delta=1.0 if i < 7 else 0.0,
+                blocking=False,
+            )
+            for i in range(9)
+        ]
+        return [*semantic, *judge]
+
+    def _decide(self, records: list[EvalRecord]) -> MigrationDecision:
+        suite = Suite(examples=[suite_example(id=f"ex{i}") for i in range(9)])
+        comparisons = analyze(sliced_by_slice=build_slices(records=records, suite=suite))
+        return evaluate_migration_policy(
+            run_id="r1",
+            source_model="anthropic/claude-sonnet-5",
+            target_model="anthropic/claude-sonnet-5-5",
+            policy=MigrationPolicy(
+                max_overall_regression_rate=0.3,
+                max_critical_regressions=1,
+                min_equivalence_rate=0.75,
+                max_tool_argument_drift=0.2,
+                max_tool_divergence=0.2,
+                max_cost_increase=0.5,
+                max_latency_increase=0.3,
+            ),
+            comparisons=comparisons,
+            records=records,
+            calls=[],
+        )
+
+    def test_drift_inside_min_similarity_passes(self) -> None:
+        decision = self._decide(self._records(flagged=False))
+        assert decision.verdict == "pass"
+        assert decision.blocking_regressions == []
+        assert decision.recommendations[0] == "Safe to migrate under the configured policy."
+
+    def test_the_same_drop_below_min_similarity_still_fails(self) -> None:
+        decision = self._decide(self._records(flagged=True))
+        assert decision.verdict == "fail"
+
+
+class TestSeverityDrivenFailReason:
+    def _clean_records(self) -> list[EvalRecord]:
+        return [_record(example_id=f"ex{i}", delta=0.0) for i in range(30)]
+
+    def test_a_critical_comparison_with_every_budget_held_names_itself(self) -> None:
+        decision = _decide(
+            self._clean_records(),
+            comparisons=[
+                _comparison(
+                    severity="critical",
+                    evaluator_name="semantic.cosine",
+                    prompt_id="replay",
+                ),
+            ],
+        )
+        assert decision.verdict == "fail"
+        assert decision.reason is not None
+        assert decision.reason.startswith(
+            "semantic.cosine regressed at critical severity on prompt replay "
+            "(effect size -0.80, adjusted p 0.0100)",
+        )
+        assert decision.reason.endswith(
+            "A critical or high regression from a blocking evaluator fails the run "
+            "on its own, whatever the budgets say.",
+        )
+
+    def test_every_blocking_comparison_is_named(self) -> None:
+        decision = _decide(
+            self._clean_records(),
+            comparisons=[
+                _comparison(severity="critical", evaluator_name="a.one"),
+                _comparison(severity="high", evaluator_name="b.two"),
+                _comparison(severity="medium", evaluator_name="c.three"),
+            ],
+        )
+        assert decision.reason is not None
+        assert "a.one regressed at critical severity" in decision.reason
+        assert "b.two regressed at high severity" in decision.reason
+        assert "c.three" not in decision.reason
+
+    def test_a_budget_breach_keeps_the_budget_line(self) -> None:
+        decision = _decide(
+            [_record(example_id=f"ex{i}", delta=-0.5) for i in range(30)],
+            comparisons=[_comparison(severity="critical")],
+        )
+        assert decision.verdict == "fail"
+        assert decision.reason is None
+
+    def test_a_pass_has_no_reason(self) -> None:
+        decision = _decide(self._clean_records(), comparisons=[_comparison(severity="none")])
+        assert decision.verdict == "pass"
+        assert decision.reason is None

@@ -17,9 +17,12 @@ from dataclasses import dataclass, field
 
 from evalshift_cli.analysis.policy import (
     BUDGET_LABELS,
+    BudgetResult,
     MigrationDecision,
+    gating_budget_results,
     unmeasured_gating_evaluators,
 )
+from evalshift_cli.analysis.slicing import ALL_SLICE
 from evalshift_cli.analysis.statistics import ComparisonResult
 from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.insights.models import (
@@ -142,6 +145,19 @@ class Facts:
     #: as :attr:`rates_basis`: a name without a reason is a fact the model will
     #: explain for itself.
     coverage_basis: str = ""
+    #: Display names of the budgets whose breach the sample confirmed — the
+    #: overall rows and the slice rows alike, since a slice budget gates the
+    #: run too; a slice row is named for its scope ("'security' slice overall
+    #: regression rate"). Empty on a fail that came from comparison severity
+    #: alone — which is how the templated advice tells the two causes apart
+    #: instead of claiming a breach the budget table contradicts.
+    failed_budgets: list[str] = field(default_factory=list)
+    #: Blocking evaluators with a critical/high regression on the overall
+    #: slice — the only ones whose severity can fail the run. A slice-only
+    #: blocking row demotes the verdict to ``conditional_pass`` at most, so
+    #: naming it as why a run failed would be false. ``blocking_evaluators``
+    #: keeps every scope, for the prose that lists them rather than blames them.
+    overall_blocking_evaluators: list[str] = field(default_factory=list)
 
 
 def build_facts(
@@ -201,6 +217,11 @@ def build_facts(
     coverage_basis = (
         _COVERAGE_BASIS_UNMEASURED if (unmeasured_budgets or unmeasured_evaluators) else ""
     )
+    failed_budgets = _unique(
+        _failed_budget_label(b)
+        for b in gating_budget_results(decision)
+        if not b.passed and b.conclusive
+    )
 
     rendered: dict[str, str] = {
         "verdict": decision.verdict.replace("_", " ").upper(),
@@ -212,7 +233,12 @@ def build_facts(
         "budgets_total": str(len(decision.budget_results)),
         "budgets_unmeasured": str(len(unmeasured_budgets)),
         "blocking_regressions": str(len(decision.blocking_regressions)),
-        "critical_regressions": str(decision.overall.critical_regressions),
+        # Counted from the blocking comparisons themselves. The policy metric
+        # of the same name reads a per-record severity no evaluator writes,
+        # so it is always 0 and once sat beside a critical blocking item.
+        "critical_regressions": str(
+            sum(1 for r in decision.blocking_regressions if r.severity == "critical"),
+        ),
         "n_examples": str(len(examples)),
         "n_calls": str(source.calls + target.calls),
         "cost_source_usd": _usd(source.total_cost_usd),
@@ -278,6 +304,10 @@ def build_facts(
         unmeasured_budgets=unmeasured_budgets,
         unmeasured_evaluators=unmeasured_evaluators,
         coverage_basis=coverage_basis,
+        failed_budgets=failed_budgets,
+        overall_blocking_evaluators=_unique(
+            r.evaluator_name for r in decision.blocking_regressions if r.slice_name == ALL_SLICE
+        ),
     )
 
 
@@ -325,6 +355,20 @@ def _relative_pct(source: float, target: float) -> str:
 
 def _p_value(value: float) -> str:
     return f"< {P_VALUE_FLOOR}" if value < P_VALUE_FLOOR else f"{value:.4f}"
+
+
+def _failed_budget_label(budget: BudgetResult) -> str:
+    """A breached budget's display name, scoped when it is a slice's own row.
+
+    A bare "overall regression rate" for a slice breach would send the reader
+    to the overall row — green in exactly the run this names. Worded so the
+    templated advice reads "the 'security' slice overall regression rate
+    budget was breached".
+    """
+    label = BUDGET_LABELS.get(budget.name, budget.name)
+    if budget.scope == "overall":
+        return label
+    return f"'{budget.scope}' slice {label[:1].lower()}{label[1:]}"
 
 
 def _budget_limit(name: str, allowed: float) -> str:
