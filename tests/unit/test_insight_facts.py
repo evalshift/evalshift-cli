@@ -6,28 +6,42 @@ which is what makes the generator testable without mocking a provider.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from evalshift_cli.analysis.policy import (
     BlockingRegression,
     BudgetResult,
     FailureCategoryCount,
+    _dropped_params_reason,
+    _invariant_reason,
     evaluate_migration_policy,
 )
 from evalshift_cli.analysis.statistics import ComparisonResult
 from evalshift_cli.config.models import MigrationPolicy, SliceMigrationPolicy
 from evalshift_cli.evaluators.base import EvalRecord
-from evalshift_cli.insights.facts import build_facts
+from evalshift_cli.insights.facts import (
+    BUDGET_BREACHED,
+    BUDGET_UNCONFIRMED,
+    BUDGET_UNMEASURED,
+    BUDGET_WITHIN,
+    _scoped_budget_label,
+    build_facts,
+)
+from evalshift_cli.insights.generator import banned_identifiers
 from evalshift_cli.insights.templates import fallback_insight
 from evalshift_cli.reports.economics import PromptEconomics
 from evalshift_cli.runner.models import Call
 from tests.unit.insights_factories import (
     COST_TARGET,
+    SEVERITY_REASON,
     budgets,
     comparisons,
+    converter_decision,
     decision,
     records,
     role,
+    slice_invariant_decision,
     unmeasured_budget,
     unmeasured_comparison,
 )
@@ -677,3 +691,160 @@ def test_the_critical_count_reads_the_blocking_regressions(sample_run: dict[str,
     facts = build_facts(**sample_run)
     assert facts.rendered["critical_regressions"] == "1"
     assert "1 blocking regression (1 critical)" in fallback_insight(facts).verdict_summary
+
+
+# ---------------------------------------------------------------------------
+# Budget status and the decision's reason — what a FAIL's cause is read from
+# ---------------------------------------------------------------------------
+
+
+def _status_of(facts_statuses: list[tuple[str, str, str]], label: str) -> tuple[str, str]:
+    (hit,) = [(limit, status) for name, limit, status in facts_statuses if name == label]
+    return hit
+
+
+def test_every_gating_budget_carries_a_status(sample_run: dict[str, Any]) -> None:
+    """The converter run: one breached, one blind, the rest held."""
+    sample_run["decision"] = converter_decision()
+    facts = build_facts(**sample_run)
+
+    assert len(facts.budget_statuses) == 8
+    assert _status_of(facts.budget_statuses, "Latency increase") == ("+30%", BUDGET_BREACHED)
+    assert _status_of(facts.budget_statuses, "Trace-rule violations") == ("1", BUDGET_WITHIN)
+    assert _status_of(facts.budget_statuses, "Cost increase") == ("+200%", BUDGET_WITHIN)
+    assert _status_of(facts.budget_statuses, "Tool-selection divergence") == (
+        "20%",
+        BUDGET_UNMEASURED,
+    )
+    assert facts.failed_budgets == ["Latency increase"]
+
+
+def test_an_unconfirmed_breach_has_its_own_status(sample_run: dict[str, Any]) -> None:
+    over = BudgetResult(
+        name="max_overall_regression_rate",
+        observed=0.1,
+        allowed=0.03,
+        passed=False,
+        conclusive=False,
+        ci_low=0.0,
+        ci_high=0.3,
+    )
+    sample_run["decision"] = decision(verdict="inconclusive", budget_results=[over, *budgets()[1:]])
+    facts = build_facts(**sample_run)
+    assert _status_of(facts.budget_statuses, "Overall regression rate") == (
+        "3%",
+        BUDGET_UNCONFIRMED,
+    )
+    assert facts.failed_budgets == []
+
+
+def test_a_slice_budget_is_listed_under_its_scope(sample_run: dict[str, Any]) -> None:
+    """A slice row is a gating budget too, and its limit is a copyable figure."""
+    # A slice limit no overall figure shares, so only the status lines can
+    # have admitted it to the allow-list.
+    policy = MigrationPolicy(
+        max_overall_regression_rate=0.5,
+        min_equivalence_rate=0.0,
+        slices={"security": SliceMigrationPolicy(max_overall_regression_rate=0.07)},
+    )
+    facts = build_facts(**_slice_budget_run(sample_run, extra=[], policy=policy))
+    assert _status_of(facts.budget_statuses, "'security' slice overall regression rate") == (
+        "7%",
+        BUDGET_BREACHED,
+    )
+    assert "7%" not in facts.budget_limits.values()
+    assert {"7%", "7"} <= facts.allowed_numbers
+
+
+def test_the_decision_reason_travels_with_the_facts(sample_run: dict[str, Any]) -> None:
+    sample_run["decision"] = replace(decision(verdict="fail"), reason=SEVERITY_REASON)
+    facts = build_facts(**sample_run)
+    assert facts.verdict_reason == SEVERITY_REASON
+    # Its figures are facts the model may copy.
+    assert {"-2.15", "2.15", "0.0004"} <= facts.allowed_numbers
+
+
+def test_a_decision_without_a_reason_renders_none(sample_run: dict[str, Any]) -> None:
+    assert build_facts(**sample_run).verdict_reason == ""
+
+
+def test_a_trace_rule_reason_reaches_the_facts_without_its_config_key(
+    sample_run: dict[str, Any],
+) -> None:
+    """The policy quotes ``migration_policy.max_invariant_violations``; the facts must not.
+
+    The reason lands in a copy-verbatim block, and that key is a banned
+    identifier — a faithful copy would be rejected on exactly these runs.
+    """
+    breach = BudgetResult(
+        name="max_invariant_violations", observed=2.0, allowed=1.0, passed=False, denominator=10
+    )
+    sample_run["decision"] = replace(decision(verdict="fail"), reason=_invariant_reason([breach]))
+    facts = build_facts(**sample_run)
+
+    assert "the trace-rule violations budget" in facts.verdict_reason
+    assert "migration_policy." not in facts.verdict_reason
+    assert not [t for t in banned_identifiers(facts) if t in facts.verdict_reason]
+    assert {"2", "10", "1"} <= facts.allowed_numbers
+
+
+def test_a_slice_trace_rule_reason_names_the_slice_budget_not_the_overall_one(
+    sample_run: dict[str, Any],
+) -> None:
+    """The policy quotes the overall key beside the slice's limit; the facts must scope it.
+
+    Overall limit 5 held; the 'security' slice's 0 broke. Rewritten as "the
+    trace-rule violations budget", the reason pins the slice's 0 on the overall
+    row — the one the FACTS block marks ``within`` — and a summary that copies
+    the reason, as instructed, blames a budget that held.
+    """
+    sample_run["decision"] = slice_invariant_decision()
+    facts = build_facts(**sample_run)
+
+    assert (
+        "in the 'security' slice, over the 0 allowed by the 'security' slice "
+        "trace-rule violations budget." in facts.verdict_reason
+    )
+    assert "allowed by the trace-rule violations budget" not in facts.verdict_reason
+    assert "migration_policy." not in facts.verdict_reason
+    # Exactly the label the FACTS block lists the slice row under.
+    assert "'security' slice trace-rule violations" in facts.failed_budgets
+    assert ("Trace-rule violations", "5", BUDGET_WITHIN) in facts.budget_statuses
+
+
+def test_a_slice_whose_name_has_an_apostrophe_keeps_its_scoped_budget(
+    sample_run: dict[str, Any],
+) -> None:
+    """The scope is read up to "' slice, over", not up to the first quote.
+
+    Stopping at the first quote, scope "o'brien" fell back to the overall
+    wording and pinned the slice's limit on the overall row.
+    """
+    row = BudgetResult(
+        name="max_invariant_violations",
+        observed=1.0,
+        allowed=0.0,
+        passed=False,
+        scope="o'brien",
+        denominator=4,
+    )
+    sample_run["decision"] = replace(decision(verdict="fail"), reason=_invariant_reason([row]))
+    facts = build_facts(**sample_run)
+
+    assert f"{_scoped_budget_label(row)} budget" in facts.verdict_reason
+    assert "'o'brien' slice trace-rule violations budget" in facts.verdict_reason
+    assert "allowed by the trace-rule violations budget" not in facts.verdict_reason
+    assert "migration_policy." not in facts.verdict_reason
+
+
+def test_a_dropped_params_reason_reaches_the_facts_in_plain_words(
+    sample_run: dict[str, Any],
+) -> None:
+    """Config vocabulary is not banned, so it would otherwise ship to readers."""
+    reason = _dropped_params_reason({"anthropic/claude-sonnet-5-5": ["temperature"]})
+    sample_run["decision"] = replace(decision(verdict="fail"), reason=reason)
+    facts = build_facts(**sample_run)
+
+    assert "migration_policy." not in facts.verdict_reason
+    assert "drop_params" not in facts.verdict_reason
+    assert "anthropic/claude-sonnet-5-5 dropped temperature" in facts.verdict_reason

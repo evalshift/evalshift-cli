@@ -11,6 +11,7 @@ Pure — no network, no model. That is what makes the generator testable.
 
 from __future__ import annotations
 
+import re
 import statistics
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -82,6 +83,14 @@ _COVERAGE_BASIS_UNMEASURED: str = (
 _INCREASE_BUDGETS: frozenset[str] = frozenset({"max_cost_increase", "max_latency_increase"})
 #: The budgets that are plain counts.
 _COUNT_BUDGETS: frozenset[str] = frozenset({"max_critical_regressions", "max_invariant_violations"})
+
+#: Budget status words, rendered beside each budget's limit in the FACTS
+#: block. Digit-free plain English — the model copies them into prose — and
+#: the only vocabulary the blame validator keys on.
+BUDGET_BREACHED = "breached"
+BUDGET_WITHIN = "within"
+BUDGET_UNMEASURED = "measured nothing"
+BUDGET_UNCONFIRMED = "over its limit but not confirmed at this sample size"
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +167,19 @@ class Facts:
     #: naming it as why a run failed would be false. ``blocking_evaluators``
     #: keeps every scope, for the prose that lists them rather than blames them.
     overall_blocking_evaluators: list[str] = field(default_factory=list)
+    #: One ``(display label, rendered limit, status)`` per gating budget row —
+    #: the overall rows and the distinct slice rows, in policy order. Handed to
+    #: the model beside each limit so a FAIL's cause is read off the line, not
+    #: guessed: a narrative once blamed "Trace-rule violations" on a run where
+    #: that budget held and only the latency ceiling was breached, because the
+    #: prompt listed limits without results.
+    budget_statuses: list[tuple[str, str, str]] = field(default_factory=list)
+    #: The decision's own explanation of its verdict
+    #: (``MigrationDecision.reason``), or ``""`` when it carries none — with the
+    #: config keys it quotes put into words, scoped to the slice where the
+    #: reason names one, so the model can copy it without echoing internal
+    #: identifiers.
+    verdict_reason: str = ""
 
 
 def build_facts(
@@ -218,10 +240,15 @@ def build_facts(
         _COVERAGE_BASIS_UNMEASURED if (unmeasured_budgets or unmeasured_evaluators) else ""
     )
     failed_budgets = _unique(
-        _failed_budget_label(b)
+        _scoped_budget_label(b)
         for b in gating_budget_results(decision)
         if not b.passed and b.conclusive
     )
+    budget_statuses = [
+        (_scoped_budget_label(b), _budget_limit(b.name, b.allowed), _budget_status(b))
+        for b in gating_budget_results(decision)
+    ]
+    verdict_reason = _plain_reason(decision.reason or "")
 
     rendered: dict[str, str] = {
         "verdict": decision.verdict.replace("_", " ").upper(),
@@ -286,6 +313,8 @@ def build_facts(
         allowed_numbers=_allowed_numbers(
             rendered=rendered,
             budget_limits=budget_limits,
+            slice_limits=[limit for _, limit, _ in budget_statuses],
+            verdict_reason=verdict_reason,
             failure_categories=failure_categories,
             model_ids=(state.models.source, state.models.target),
             n_examples=len(examples),
@@ -308,6 +337,8 @@ def build_facts(
         overall_blocking_evaluators=_unique(
             r.evaluator_name for r in decision.blocking_regressions if r.slice_name == ALL_SLICE
         ),
+        budget_statuses=budget_statuses,
+        verdict_reason=verdict_reason,
     )
 
 
@@ -357,18 +388,23 @@ def _p_value(value: float) -> str:
     return f"< {P_VALUE_FLOOR}" if value < P_VALUE_FLOOR else f"{value:.4f}"
 
 
-def _failed_budget_label(budget: BudgetResult) -> str:
-    """A breached budget's display name, scoped when it is a slice's own row.
+def _scoped_budget_label(budget: BudgetResult) -> str:
+    """A budget's display name, scoped when it is a slice's own row.
 
-    A bare "overall regression rate" for a slice breach would send the reader
-    to the overall row — green in exactly the run this names. Worded so the
+    A bare "overall regression rate" for a slice row would send the reader to
+    the overall row — green in exactly the run that names it. Worded so the
     templated advice reads "the 'security' slice overall regression rate
-    budget was breached".
+    budget was breached" and the FACTS block lists the row under that name.
     """
-    label = BUDGET_LABELS.get(budget.name, budget.name)
-    if budget.scope == "overall":
+    return _scoped_label(budget.name, budget.scope)
+
+
+def _scoped_label(name: str, scope: str) -> str:
+    """The display name for budget ``name`` on ``scope`` — see :func:`_scoped_budget_label`."""
+    label = BUDGET_LABELS.get(name, name)
+    if scope == "overall":
         return label
-    return f"'{budget.scope}' slice {label[:1].lower()}{label[1:]}"
+    return f"'{scope}' slice {label[:1].lower()}{label[1:]}"
 
 
 def _budget_limit(name: str, allowed: float) -> str:
@@ -377,6 +413,21 @@ def _budget_limit(name: str, allowed: float) -> str:
     if name in _INCREASE_BUDGETS:
         return _signed_pct(allowed)
     return _rate_pct(allowed)
+
+
+def _budget_status(budget: BudgetResult) -> str:
+    """Which of the four things a budget row says, as a word the prose may use.
+
+    ``measured`` first: the ``0/0`` default passes by arithmetic, and calling
+    it ``within`` is the clean-sweep claim the coverage facts exist to stop.
+    """
+    if not budget.measured:
+        return BUDGET_UNMEASURED
+    if budget.passed:
+        return BUDGET_WITHIN
+    if budget.conclusive:
+        return BUDGET_BREACHED
+    return BUDGET_UNCONFIRMED
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +459,44 @@ def _regression_samples(examples: Sequence[ExampleFact]) -> list[RegressionSampl
     ]
 
 
+#: A config key quoted as the source of a slice's limit, as
+#: ``policy._invariant_reason`` words it: "in the 'security' slice, over the 0
+#: allowed by migration_policy.max_invariant_violations".
+_SLICE_KEY_RE = re.compile(
+    r"(?P<lead>in the '(?P<scope>.+?)' slice, over the \S+ allowed by )"
+    r"migration_policy\.(?P<key>" + "|".join(map(re.escape, BUDGET_LABELS)) + r")\b"
+)
+
+
+def _plain_reason(reason: str) -> str:
+    """The decision's reason with the config keys it quotes put into words.
+
+    The reason enters a FACTS block the model is told to copy verbatim, and the
+    policy's own prose quotes ``evalshift.yaml`` keys the narrative may not
+    show — a banned one costs a faithful generation its retry, an unbanned one
+    ships to readers as config vocabulary. Figures are left untouched.
+
+    A key quoted beside a slice's limit is named for that slice, in the label
+    the FACTS block lists the slice row under: "in the 'security' slice, over
+    the 0 allowed by the trace-rule violations budget" pins the slice's 0 on
+    the overall budget, which may have held — and a summary that copies the
+    reason, as instructed, would then blame it.
+    """
+    reason = _SLICE_KEY_RE.sub(
+        lambda m: f"{m.group('lead')}the {_scoped_label(m.group('key'), m.group('scope'))} budget",
+        reason,
+    )
+    for key, label in BUDGET_LABELS.items():
+        reason = reason.replace(
+            f"migration_policy.{key}", f"the {label[:1].lower()}{label[1:]} budget"
+        )
+    reason = reason.replace(
+        "migration_policy.fail_on_dropped_params",
+        "the policy's fail-on-dropped-parameters setting",
+    )
+    return reason.replace("(drop_params)", "(parameters dropped)")
+
+
 def _bounded(text: str | None) -> str:
     return (text or "")[:MAX_SAMPLE_TEXT_CHARS]
 
@@ -416,6 +505,8 @@ def _allowed_numbers(
     *,
     rendered: dict[str, str],
     budget_limits: dict[str, str],
+    slice_limits: Sequence[str],
+    verdict_reason: str,
     failure_categories: Sequence[tuple[str, int]],
     model_ids: tuple[str, ...],
     n_examples: int,
@@ -424,14 +515,18 @@ def _allowed_numbers(
 
     Beyond the rendered figures themselves this admits each one's bare-numeral
     form (``+102%`` also admits ``102``), the counts behind the budget table
-    and failure categories, the numerals inside the model ids — writing
-    ``gemini-3.1-flash`` must not read as an invented figure — and every
-    integer up to ``n_examples`` so the model can write "15 of 21".
+    and failure categories, the slice budgets' limits (rendered only in the
+    status lines) and the decision reason's own figures, the numerals inside
+    the model ids — writing ``gemini-3.1-flash`` must not read as an invented
+    figure — and every integer up to ``n_examples`` so the model can write
+    "15 of 21".
     """
     allowed: set[str] = {str(index) for index in range(n_examples + 1)}
     sources: list[str] = [
         *rendered.values(),
         *budget_limits.values(),
+        *slice_limits,
+        verdict_reason,
         *(str(count) for _, count in failure_categories),
         *model_ids,
     ]
@@ -449,6 +544,10 @@ def _unique(values: Iterable[str]) -> list[str]:
 
 
 __all__ = [
+    "BUDGET_BREACHED",
+    "BUDGET_UNCONFIRMED",
+    "BUDGET_UNMEASURED",
+    "BUDGET_WITHIN",
     "NOT_AVAILABLE",
     "NOT_COMPARABLE",
     "NOT_MEASURED",

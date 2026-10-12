@@ -34,6 +34,11 @@ deterministic templated prose instead (shown as model `none`). So a figure in
 that block is the same figure as in the tables below it, or it is not there at
 all.
 
+The same goes for the cause of a FAIL. The model is told which budgets were
+breached and which held, and only a breached one may be named as the cause. On
+a failed run a summary or recommendation that blames a budget that held is
+rejected and retried the same way, then replaced by the templated prose.
+
 It costs one model call per run, is cached in `insights.json`, and skips
 itself when no API key is configured. Disable it with
 `evalshift report --no-insights` or `evalshift compare --no-insights`.

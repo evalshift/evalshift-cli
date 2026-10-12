@@ -1199,6 +1199,59 @@ Model: defaults.insights_model, falling back to defaults.judge_model.
   they scored zero rows - the "advisory:" note on the synthesized comparison carries the
   flag their absent records cannot. Orthogonal to the absent-rate rule above: that one needs
   n_records == 0, this one fires when only some gate died.
+- A FAIL's CAUSE is a fact, not an inference. Every gating budget (overall and slice rows)
+  enters FACTS as `budget "<label>": limit <x>, <status>`, status breached | within |
+  measured nothing | over its limit but not confirmed at this sample size
+  (facts._budget_status: not measured -> measured nothing, passed -> within, conclusive ->
+  breached, else unconfirmed). `failed_budgets: <labels>` lists the breached rows (overall
+  and slice, as decision prose names them: "'security' slice overall regression rate");
+  `verdict_reason: <text>` carries MigrationDecision.reason when set, plain-worded by
+  facts._plain_reason (no config keys: migration_policy.max_invariant_violations -> "the
+  trace-rule violations budget", likewise every budget key; quoted beside a slice's limit
+  ("in the 'security' slice, over the 0 allowed by ...") -> the slice row's own label, "the
+  'security' slice trace-rule violations budget"; fail_on_dropped_params and (drop_params)
+  put into words); its figures join the allow-list. Both keys are banned identifiers in
+  prose. Instruction: "breached" is the only status that may be blamed - only a breached
+  budget may be named as why the run failed or as something to fix; a "within" budget is
+  never breached/exceeded/failed/missed/violated/to be addressed; verdict_summary must agree
+  with verdict_reason. On verdict fail only, verdict_summary and recommendation are scanned
+  (generator.validate_blame). Clauses split on sentence punctuation (. ; : ! ?),
+  while/but/whereas/although/though/however, ", and" / ", but" / ", with" / ", however,",
+  and an em or en dash; a bare "and" or bare comma does not split. Every budget label, held
+  or not, is located longest-first and masked (case-insensitive; hyphens, whitespace and
+  quote characters folded, so "checkout slice cost increase" still matches the slice label).
+  A "within" label sharing a clause with a non-negated blame word (breach*, exceed*, fail*,
+  violat*, address*, miss/missed/misses/missing, unmet, not met, broke, broken,
+  over/above/beyond + a limit phrase: optional the/its/their, at most 2 comma-free words or
+  figures, then a limit noun (limit, budget, ceiling, threshold, maximum, allowance, policy;
+  singular or plural), e.g. "over budget", "over the +200% cost limit"; so "+102% over the
+  source" is not blame; negated: not|no|never|without within the 24 chars before it in the
+  clause) blames it unless every mention of it in the clause is excused (generator._excused,
+  per occurrence): (a) negated mention - not|no|never|without directly before it, only other
+  labels/or/and/nor/commas between, and the label (plus any labels chained to it) followed
+  by a comma, clause end or or/and/nor/but ("not Cost increase or Trace-rule violations"
+  passes; "no Cost increase headroom left" is blamed); (b) limit-relative holding phrase
+  after it - within/inside/under/below + that same limit phrase ("within policy", "within
+  budget", "under their limits", "under the +200% cost limit"), or a bare held/holds/passed
+  with only punctuation after it to the clause end - itself un-negated, no un-negated blame
+  word between, no other label between unless joined by and/or/nor/comma ("as Cost increase
+  and Trace-rule violations all stayed within budget" passes; a verb or preposition alone
+  does not hold, so "remained above the +200% limit", "held at +250%, exceeding its limit",
+  "under the target model breached its ceiling", "within hours, broke its ceiling",
+  "exceeded its limit and stayed within budget" and "failed on Cost increase as Latency
+  increase stayed within its ceiling" are blamed). Accepted misses: "stayed within budget at
+  first, then exceeded it", "Address Cost increase so it stays within budget", "below the
+  target's ceiling failed the run" and "below the ceiling on 3 prompts, failed on the rest"
+  pass. A blamed label rejects the generation; the retry names the misblamed labels ("Your
+  previous answer blamed budgets that held: ..."; "No budget was breached" when
+  failed_budgets is empty); 2 rejections -> templated prose (templates._recommendation):
+  names the breached budget, else the overall blocking regressions, else points at the
+  decision's recommendations and budget table.
+  Heuristic safety net by design: it catches the shipped phrasing and close variants, the
+  prompt rule is the primary fix; a false match costs the retry (shared with invented-number
+  rejections) and a repeated one ships the templated prose, which has no findings. Cached
+  narratives do not regenerate (key = config_hash + model, not the CLI version): delete
+  insights.json to rewrite an existing run's prose.
 - Prompt input: the pre-rendered FACTS block plus the worst 8 regressions by worst_delta_score
   (input + both outputs, each truncated to 2000 chars). Same data exposure as llm_judge.
 - Cost: 1 model call per run (2 on a rejected generation). Cached in insights.json keyed on
