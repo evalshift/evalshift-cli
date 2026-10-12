@@ -698,11 +698,17 @@ def test_a_breached_label_with_a_blame_word_does_not_accuse_its_neighbour() -> N
     """ "violations" is part of a label, not an accusation, once the label is masked.
 
     The bare "and" keeps both labels in one clause, so the masking alone saves
-    it — without ``others`` the same sentence accuses "Cost increase".
+    it — without ``others`` the same sentence accuses "Cost increase". The
+    held label carries no holding word here, so nothing but the masking can
+    clear it ("stayed inside its limit" would, on its own).
     """
-    text = "Trace-rule violations rose to 3 and cost increase stayed inside its limit."
+    text = "Trace-rule violations rose to 3 and cost increase came in at +102%."
     assert validate_blame(text, ["Cost increase"], others=["Trace-rule violations"]) == []
     assert validate_blame(text, ["Cost increase"]) == ["Cost increase"]
+    # The original sentence, which a holding word now clears even unmasked.
+    text = "Trace-rule violations rose to 3 and cost increase stayed inside its limit."
+    assert validate_blame(text, ["Cost increase"], others=["Trace-rule violations"]) == []
+    assert validate_blame(text, ["Cost increase"]) == []
 
 
 def test_a_slice_label_matches_whatever_quotes_the_model_used() -> None:
@@ -728,6 +734,71 @@ def test_the_retry_hints_own_phrasing_is_not_blame() -> None:
 def test_a_dash_or_however_separates_the_blame() -> None:
     assert validate_blame("Latency breached its ceiling — Cost increase held.", _HELD) == []
     assert validate_blame("Latency was exceeded, however, Cost increase held.", _HELD) == []
+
+
+def test_over_or_above_the_source_is_a_comparison_not_blame() -> None:
+    """ "over the" alone measures against the source model; only a limit noun accuses."""
+    for text in (
+        "Cost increase was +102% over the source, within its +200% limit.",
+        "Cost increase came in at +102% over the source model, inside the +200% budget.",
+        "Cost increase of +102% above the source stayed within the +200% ceiling.",
+    ):
+        assert validate_blame(text, _HELD) == [], text
+
+
+def test_over_or_above_a_limit_noun_is_blame() -> None:
+    assert validate_blame("Cost increase went over its budget.", _HELD) == ["Cost increase"]
+    assert validate_blame("Cost increase was above the ceiling.", _HELD) == ["Cost increase"]
+    assert validate_blame("Cost increase went beyond its +200% limit.", _HELD) == ["Cost increase"]
+
+
+def test_a_held_budget_that_stayed_within_is_excused_beside_a_run_level_failure() -> None:
+    """The run failed — on another budget; a holding word clears the held one."""
+    for text in (
+        "Despite Cost increase staying within its limit, the run failed on Latency increase.",
+        "The migration failed on Latency increase alone, as Cost increase and Trace-rule "
+        "violations all stayed within budget.",
+        "Do not migrate until the latency regression is addressed and Cost increase remains "
+        "within its limit.",
+    ):
+        assert validate_blame(text, _HELD, others=["Latency increase"]) == [], text
+        assert validate_blame(text, _HELD) == [], text
+
+
+def test_a_negated_mention_of_a_held_budget_is_excused() -> None:
+    text = (
+        "The run failed only because of Latency increase, not Cost increase or "
+        "Trace-rule violations."
+    )
+    assert validate_blame(text, _HELD, others=["Latency increase"]) == []
+    assert validate_blame(text, _HELD) == []
+
+
+def test_a_blame_word_before_the_holding_word_still_accuses() -> None:
+    """The holding word excuses only a label it describes unaccused."""
+    text = "Cost increase exceeded its limit and stayed within budget."
+    assert validate_blame(text, _HELD) == ["Cost increase"]
+
+
+def test_a_negated_holding_word_does_not_excuse() -> None:
+    """ "not within" is the accusation, not the excuse."""
+    text = "Cost increase was not within budget, it was exceeded."
+    assert validate_blame(text, _HELD) == ["Cost increase"]
+
+
+def test_another_budgets_holding_word_does_not_excuse() -> None:
+    """ "stayed within" belongs to the label it follows, not to one further back."""
+    text = "The run failed on Cost increase as Latency increase stayed within its ceiling."
+    assert validate_blame(text, _HELD, others=["Latency increase"]) == ["Cost increase"]
+
+
+def test_each_occurrence_is_judged_on_its_own() -> None:
+    """One excused mention does not clear an accusing one in the same clause."""
+    text = (
+        "Cost increase stayed within its limit at first and the run failed because "
+        "Cost increase was exceeded."
+    )
+    assert validate_blame(text, _HELD) == ["Cost increase"]
 
 
 # ---------------------------------------------------------------------------
@@ -802,6 +873,33 @@ async def test_a_fail_may_mention_a_held_budget_without_blaming_it(
     await _generate(build_facts(**sample_run), fake_client)
 
     assert fake_client.call_count == 1
+
+
+async def test_a_fail_that_clears_the_held_budgets_by_name_ships_first_time(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    """A run-level "failed" beside held budgets that "stayed within" is not an accusation.
+
+    Rejected twice, a faithful narrative like this one shipped the templated
+    prose — which carries no findings.
+    """
+    sample_run["decision"] = converter_decision()
+    fake_client.queue_responses(
+        _payload(
+            verdict_summary=(
+                "The migration failed on Latency increase alone, as Cost increase and "
+                "Trace-rule violations all stayed within budget."
+            ),
+            recommendation=(
+                "Do not migrate until the latency regression is addressed and Cost "
+                "increase remains within its limit."
+            ),
+        )
+    )
+    insight = await _generate(build_facts(**sample_run), fake_client)
+
+    assert fake_client.call_count == 1
+    assert insight.model == "m"
 
 
 async def test_blame_is_not_checked_outside_a_fail(

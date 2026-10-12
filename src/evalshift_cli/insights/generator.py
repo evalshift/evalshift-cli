@@ -78,11 +78,45 @@ _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 #: shares a clause with one of these, un-negated, is a cause the model
 #: invented: a shipped narrative said a run "failed to meet the budget for
 #: Trace-rule violations" when that budget held and only latency broke.
+#: "over"/"above"/"beyond" accuse only with a limit noun, one word or figure
+#: allowed between ("over its +200% limit"): "+102% over the source" measures
+#: against the source model, not against a budget.
 _BLAME_RE = re.compile(
     r"\b(?:breach\w*|exceed\w*|fail\w*|violat\w*|address\w*|miss(?:ed|es|ing)?|"
-    r"unmet|not met|over (?:the|its)|above (?:the|its)|broke|broken)\b",
+    r"unmet|not met|broke|broken|"
+    r"(?:over|above|beyond) (?:the|its) (?:\S+ )?"
+    r"(?:limit|budget|ceiling|threshold|maximum|allowance)s?)\b",
     re.IGNORECASE,
 )
+
+#: Words that say a budget held. One after a held label, in its clause, with
+#: no blame word between and not itself negated, describes that label rather
+#: than accusing it: "Despite Cost increase staying within its limit, the run
+#: failed on Latency increase."
+_HOLDING_RE = re.compile(
+    r"\b(?:within|held|holds|stayed|stays|staying|remained|remains|passed|inside|"
+    r"under (?:the|its))\b",
+    re.IGNORECASE,
+)
+
+#: Stands in for every located label in the masked clause. One character, so
+#: the negation window measures what it did when labels were blanked out, and
+#: neither a word character nor whitespace, so no pattern above can match it.
+_MASK = "\x00"
+
+#: A held label right after a negation — with only other labels, "or", "and",
+#: "nor" and commas between — is named to be cleared: "not Cost increase or
+#: Trace-rule violations". Matched against the masked text before the label.
+_NEGATED_MENTION_RE = re.compile(
+    r"\b(?:not|no|never|without)\b(?:[\s,\x00]|\b(?:or|and|nor)\b)*$",
+    re.IGNORECASE,
+)
+
+#: What may join two labels that share one holding word: "Cost increase and
+#: Trace-rule violations all stayed within budget". Anything else between them
+#: ("Cost increase as Latency increase stayed within") gives the holding word
+#: to the nearer label.
+_COORDINATION_RE = re.compile(r"(?:[\s,\x00]|\b(?:or|and|nor)\b)*", re.IGNORECASE)
 
 #: A blame word shortly after one of these is a denial ("was not breached",
 #: "no breach of"), not an accusation. Bounded so a "not" three clauses back
@@ -248,12 +282,18 @@ def validate_blame(text: str, within: Sequence[str], *, others: Sequence[str] = 
 
     A budget that held may be mentioned — "Trace-rule violations stayed within
     budget" is accurate — but not accused: it may not share a clause with a
-    blame word unless that word is negated. A plain-English accusation carries
-    no digit for :func:`validate_numbers` and no identifier for
-    :func:`validate_identifiers`, so this is the only check that sees it.
+    blame word unless that word is negated, or unless each of its mentions in
+    that clause is excused. A mention is excused by a negation right before it
+    ("not Cost increase or Trace-rule violations"), or by a holding word after
+    it that describes it ("Cost increase stayed within its limit" beside "the
+    run failed on Latency increase") — see :func:`_excused`. A plain-English
+    accusation carries no digit for :func:`validate_numbers` and no identifier
+    for :func:`validate_identifiers`, so this is the only check that sees it.
 
     A safety net, not a parser: it catches the shipped phrasing and its close
-    variants, and a false match costs one retry. Labels are matched
+    variants. A false match costs the retry — the one retry, shared with
+    invented-number rejections — and a repeated one ships the templated prose,
+    which has no findings. Labels are matched
     case-insensitively with hyphens and runs of whitespace folded to one space.
     Every label — held or not — is located longest first and masked before the
     scan: "'checkout' slice cost increase" contains "cost increase", and
@@ -281,42 +321,83 @@ def validate_blame(text: str, within: Sequence[str], *, others: Sequence[str] = 
     )
     blamed: set[str] = set()
     for clause in (_normalise(c) for c in _CLAUSE_RE.split(text)):
-        spans, present = _locate_labels(clause, needles)
-        present &= held
-        if not present:
+        spans = _locate_labels(clause, needles)
+        if not any(label in held for _, _, label in spans):
             continue
         # Every located label comes out before the scan, not just the one
         # under test: "Trace-rule violations" would otherwise read as a
         # violation of whichever budget shares its clause.
         rest, cursor = "", 0
-        for start, end in sorted(spans):
-            rest += clause[cursor:start] + " "
+        marks: list[tuple[int, str]] = []
+        for start, end, label in sorted(spans):
+            rest += clause[cursor:start]
+            marks.append((len(rest), label))
+            rest += _MASK
             cursor = end
         rest += clause[cursor:]
-        if any(not _NEGATION_RE.search(rest[: m.start()]) for m in _BLAME_RE.finditer(rest)):
-            blamed.update(present)
+        blames = [
+            m.start()
+            for m in _BLAME_RE.finditer(rest)
+            if not _NEGATION_RE.search(rest[: m.start()])
+        ]
+        if not blames:
+            continue
+        positions = [position for position, _ in marks]
+        blamed.update(
+            label
+            for position, label in marks
+            if label in held and not _excused(rest, position, blames, positions)
+        )
     return [label for label in within if label in blamed]
 
 
-def _locate_labels(
-    clause: str, needles: list[tuple[str, str]]
-) -> tuple[list[tuple[int, int]], set[str]]:
+def _excused(rest: str, position: int, blames: list[int], marks: list[int]) -> bool:
+    """Whether the masked label at ``position`` is mentioned rather than accused.
+
+    Two ways out, judged per occurrence. A negation right before it ("not
+    Cost increase or Trace-rule violations") names it to clear it. Or a
+    holding word after it ("Cost increase stayed within its limit") describes
+    it — provided that word is not negated, no un-negated blame word stands
+    between the two ("exceeded its limit and stayed within budget" still
+    accuses), and no other label does unless joined by "and"/"or"/"nor"/a
+    comma ("as Latency increase stayed within" describes latency).
+
+    Args:
+        rest: The clause with every located label replaced by :data:`_MASK`.
+        position: Where the label under judgement sits in ``rest``.
+        blames: Start of each un-negated blame word in ``rest``.
+        marks: Where every located label sits in ``rest``, in order.
+    """
+    if _NEGATED_MENTION_RE.search(rest[:position]):
+        return True
+    for holding in _HOLDING_RE.finditer(rest, position + 1):
+        at = holding.start()
+        if _NEGATION_RE.search(rest[:at]):
+            continue
+        if any(position < blame < at for blame in blames):
+            continue
+        between = [mark for mark in marks if position < mark < at]
+        if between and not _COORDINATION_RE.fullmatch(rest, position + 1, between[-1]):
+            continue
+        return True
+    return False
+
+
+def _locate_labels(clause: str, needles: list[tuple[str, str]]) -> list[tuple[int, int, str]]:
     """Claim non-overlapping spans of ``clause`` for ``needles``, in the order given.
 
     Returns:
-        The claimed ``(start, end)`` spans, and the labels that claimed one.
+        One ``(start, end, label)`` per claimed span.
     """
-    spans: list[tuple[int, int]] = []
-    found: set[str] = set()
+    spans: list[tuple[int, int, str]] = []
     for label, needle in needles:
         start = clause.find(needle)
         while start != -1:
             end = start + len(needle)
-            if all(end <= s or start >= e for s, e in spans):
-                spans.append((start, end))
-                found.add(label)
+            if all(end <= s or start >= e for s, e, _ in spans):
+                spans.append((start, end, label))
             start = clause.find(needle, start + 1)
-    return spans, found
+    return spans
 
 
 def _normalise(text: str) -> str:
