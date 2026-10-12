@@ -6,6 +6,7 @@ which is what makes the generator testable without mocking a provider.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from evalshift_cli.analysis.policy import (
@@ -17,14 +18,22 @@ from evalshift_cli.analysis.policy import (
 from evalshift_cli.analysis.statistics import ComparisonResult
 from evalshift_cli.config.models import MigrationPolicy, SliceMigrationPolicy
 from evalshift_cli.evaluators.base import EvalRecord
-from evalshift_cli.insights.facts import build_facts
+from evalshift_cli.insights.facts import (
+    BUDGET_BREACHED,
+    BUDGET_UNCONFIRMED,
+    BUDGET_UNMEASURED,
+    BUDGET_WITHIN,
+    build_facts,
+)
 from evalshift_cli.insights.templates import fallback_insight
 from evalshift_cli.reports.economics import PromptEconomics
 from evalshift_cli.runner.models import Call
 from tests.unit.insights_factories import (
     COST_TARGET,
+    SEVERITY_REASON,
     budgets,
     comparisons,
+    converter_decision,
     decision,
     records,
     role,
@@ -677,3 +686,70 @@ def test_the_critical_count_reads_the_blocking_regressions(sample_run: dict[str,
     facts = build_facts(**sample_run)
     assert facts.rendered["critical_regressions"] == "1"
     assert "1 blocking regression (1 critical)" in fallback_insight(facts).verdict_summary
+
+
+# ---------------------------------------------------------------------------
+# Budget status and the decision's reason — what a FAIL's cause is read from
+# ---------------------------------------------------------------------------
+
+
+def _status_of(facts_statuses: list[tuple[str, str, str]], label: str) -> tuple[str, str]:
+    (hit,) = [(limit, status) for name, limit, status in facts_statuses if name == label]
+    return hit
+
+
+def test_every_gating_budget_carries_a_status(sample_run: dict[str, Any]) -> None:
+    """The converter run: one breached, one blind, the rest held."""
+    sample_run["decision"] = converter_decision()
+    facts = build_facts(**sample_run)
+
+    assert len(facts.budget_statuses) == 8
+    assert _status_of(facts.budget_statuses, "Latency increase") == ("+30%", BUDGET_BREACHED)
+    assert _status_of(facts.budget_statuses, "Trace-rule violations") == ("1", BUDGET_WITHIN)
+    assert _status_of(facts.budget_statuses, "Cost increase") == ("+200%", BUDGET_WITHIN)
+    assert _status_of(facts.budget_statuses, "Tool-selection divergence") == (
+        "20%",
+        BUDGET_UNMEASURED,
+    )
+    assert facts.failed_budgets == ["Latency increase"]
+
+
+def test_an_unconfirmed_breach_has_its_own_status(sample_run: dict[str, Any]) -> None:
+    over = BudgetResult(
+        name="max_overall_regression_rate",
+        observed=0.1,
+        allowed=0.03,
+        passed=False,
+        conclusive=False,
+        ci_low=0.0,
+        ci_high=0.3,
+    )
+    sample_run["decision"] = decision(verdict="inconclusive", budget_results=[over, *budgets()[1:]])
+    facts = build_facts(**sample_run)
+    assert _status_of(facts.budget_statuses, "Overall regression rate") == (
+        "3%",
+        BUDGET_UNCONFIRMED,
+    )
+    assert facts.failed_budgets == []
+
+
+def test_a_slice_budget_is_listed_under_its_scope(sample_run: dict[str, Any]) -> None:
+    """A slice row is a gating budget too, and its limit is a copyable figure."""
+    facts = build_facts(**_slice_budget_run(sample_run, extra=[]))
+    assert _status_of(facts.budget_statuses, "'security' slice overall regression rate") == (
+        "0%",
+        BUDGET_BREACHED,
+    )
+    assert "0%" in facts.allowed_numbers
+
+
+def test_the_decision_reason_travels_with_the_facts(sample_run: dict[str, Any]) -> None:
+    sample_run["decision"] = replace(decision(verdict="fail"), reason=SEVERITY_REASON)
+    facts = build_facts(**sample_run)
+    assert facts.verdict_reason == SEVERITY_REASON
+    # Its figures are facts the model may copy.
+    assert {"-2.15", "2.15", "0.0004"} <= facts.allowed_numbers
+
+
+def test_a_decision_without_a_reason_renders_none(sample_run: dict[str, Any]) -> None:
+    assert build_facts(**sample_run).verdict_reason == ""

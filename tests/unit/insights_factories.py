@@ -256,6 +256,33 @@ def unmeasured_budget(name: str = "max_tool_divergence") -> BudgetResult:
     )
 
 
+#: A severity-only fail's ``MigrationDecision.reason``, as the policy words it.
+#: Carries figures: a generation that copies them must not be rejected.
+SEVERITY_REASON = (
+    "semantic.cosine regressed at critical severity on prompt replay "
+    "(effect size -2.15, adjusted p 0.0004). A critical or high regression from a "
+    "blocking evaluator fails the run on its own, whatever the budgets say."
+)
+
+
+def converter_decision() -> MigrationDecision:
+    """r_20261012_converter_d418e5: the latency ceiling breached, every other budget held.
+
+    The run whose narrative blamed "Trace-rule violations" — a budget that
+    passed at 0 against a limit of 1 — because the prompt listed each budget's
+    limit without its result. Six held budgets, one breached, one blind.
+    """
+    return decision(
+        verdict="fail",
+        budget_results=[
+            *budgets()[:5],
+            BudgetResult(name="max_latency_increase", observed=1.753, allowed=0.30, passed=False),
+            BudgetResult(name="max_invariant_violations", observed=0.0, allowed=1.0, passed=True),
+            unmeasured_budget(),
+        ],
+    )
+
+
 def unmeasured_comparison(evaluator_name: str) -> ComparisonResult:
     """An evaluator that was handed pairs and produced no comparable row.
 
