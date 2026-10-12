@@ -463,7 +463,7 @@ def _regression_samples(examples: Sequence[ExampleFact]) -> list[RegressionSampl
 #: ``policy._invariant_reason`` words it: "in the 'security' slice, over the 0
 #: allowed by migration_policy.max_invariant_violations".
 _SLICE_KEY_RE = re.compile(
-    r"(?P<lead>in the '(?P<scope>[^']+)' slice, over the \S+ allowed by )"
+    r"(?P<lead>in the '(?P<scope>.+?)' slice, over the \S+ allowed by )"
     r"migration_policy\.(?P<key>" + "|".join(map(re.escape, BUDGET_LABELS)) + r")\b"
 )
 

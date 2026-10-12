@@ -25,6 +25,7 @@ from evalshift_cli.insights.facts import (
     BUDGET_UNCONFIRMED,
     BUDGET_UNMEASURED,
     BUDGET_WITHIN,
+    _scoped_budget_label,
     build_facts,
 )
 from evalshift_cli.insights.generator import banned_identifiers
@@ -809,6 +810,31 @@ def test_a_slice_trace_rule_reason_names_the_slice_budget_not_the_overall_one(
     # Exactly the label the FACTS block lists the slice row under.
     assert "'security' slice trace-rule violations" in facts.failed_budgets
     assert ("Trace-rule violations", "5", BUDGET_WITHIN) in facts.budget_statuses
+
+
+def test_a_slice_whose_name_has_an_apostrophe_keeps_its_scoped_budget(
+    sample_run: dict[str, Any],
+) -> None:
+    """The scope is read up to "' slice, over", not up to the first quote.
+
+    Stopping at the first quote, scope "o'brien" fell back to the overall
+    wording and pinned the slice's limit on the overall row.
+    """
+    row = BudgetResult(
+        name="max_invariant_violations",
+        observed=1.0,
+        allowed=0.0,
+        passed=False,
+        scope="o'brien",
+        denominator=4,
+    )
+    sample_run["decision"] = replace(decision(verdict="fail"), reason=_invariant_reason([row]))
+    facts = build_facts(**sample_run)
+
+    assert f"{_scoped_budget_label(row)} budget" in facts.verdict_reason
+    assert "'o'brien' slice trace-rule violations budget" in facts.verdict_reason
+    assert "allowed by the trace-rule violations budget" not in facts.verdict_reason
+    assert "migration_policy." not in facts.verdict_reason
 
 
 def test_a_dropped_params_reason_reaches_the_facts_in_plain_words(

@@ -74,6 +74,12 @@ _SIGN_CHARS = "+−-"
 #: outermost braces of a fenced or prose-wrapped object.
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
+#: A budget's limit as prose names it — "the ceiling", "its +200% limit": a
+#: determiner, at most one word or figure, then a limit noun. Shared by the
+#: blame words ("over its limit") and the holding words ("under the limit"),
+#: so the two can never disagree about what a limit is.
+_LIMIT_PHRASE = r"(?:the|its) (?:\S+ )?(?:limit|budget|ceiling|threshold|maximum|allowance)s?"
+
 #: Words that lay a verdict at a budget's door. A budget marked "within" that
 #: shares a clause with one of these, un-negated, is a cause the model
 #: invented: a shipped narrative said a run "failed to meet the budget for
@@ -84,18 +90,22 @@ _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 _BLAME_RE = re.compile(
     r"\b(?:breach\w*|exceed\w*|fail\w*|violat\w*|address\w*|miss(?:ed|es|ing)?|"
     r"unmet|not met|broke|broken|"
-    r"(?:over|above|beyond) (?:the|its) (?:\S+ )?"
-    r"(?:limit|budget|ceiling|threshold|maximum|allowance)s?)\b",
+    r"(?:over|above|beyond) " + _LIMIT_PHRASE + r")\b",
     re.IGNORECASE,
 )
 
-#: Words that say a budget held. One after a held label, in its clause, with
-#: no blame word between and not itself negated, describes that label rather
-#: than accusing it: "Despite Cost increase staying within its limit, the run
-#: failed on Latency increase."
+#: Phrases that say a budget held, measured against its limit. One after a
+#: held label, in its clause, with no blame word between and not itself
+#: negated, describes that label rather than accusing it: "Despite Cost
+#: increase staying within its limit, the run failed on Latency increase."
+#: Only limit-relative phrases count: "within", "inside/under/below" a limit
+#: phrase, or a bare "held"/"holds"/"passed" with nothing but punctuation after
+#: it to the clause end ("Trace-rule violations held."). A verb alone says
+#: nothing held — "remained above the limit", "held at +250%, exceeding its
+#: limit", "under the target model breached its ceiling" all accuse.
 _HOLDING_RE = re.compile(
-    r"\b(?:within|held|holds|stayed|stays|staying|remained|remains|passed|inside|"
-    r"under (?:the|its))\b",
+    r"\b(?:within|(?:inside|under|below) " + _LIMIT_PHRASE + r"|"
+    r"(?:held|holds|passed)(?=[^\w\x00]*$))\b",
     re.IGNORECASE,
 )
 
@@ -105,10 +115,22 @@ _HOLDING_RE = re.compile(
 _MASK = "\x00"
 
 #: A held label right after a negation — with only other labels, "or", "and",
-#: "nor" and commas between — is named to be cleared: "not Cost increase or
-#: Trace-rule violations". Matched against the masked text before the label.
+#: "nor" and commas between — may be named to be cleared: "not Cost increase
+#: or Trace-rule violations". Matched against the masked text before the label.
 _NEGATED_MENTION_RE = re.compile(
     r"\b(?:not|no|never|without)\b(?:[\s,\x00]|\b(?:or|and|nor)\b)*$",
+    re.IGNORECASE,
+)
+
+#: ...but only when the name stands alone. After the label, and after any
+#: labels chained to it by "or"/"and"/"nor"/commas, must come a comma, the
+#: clause end or a coordinator. Otherwise the label modifies the noun after it
+#: and the negation is that noun's: "no Cost increase headroom left" denies the
+#: headroom, not the budget's blame. Matched against the masked text after the
+#: label; the chain is possessive so it cannot back off a trailing noun.
+_STANDS_ALONE_RE = re.compile(
+    r"(?:(?:\s*,\s*(?:(?:or|and|nor)\s+)?|\s+(?:or|and|nor)\s+)\x00)*+"
+    r"(?:\s*,|\s+(?:or|and|nor|but)\b|[^\w\x00]*$)",
     re.IGNORECASE,
 )
 
@@ -283,18 +305,25 @@ def validate_blame(text: str, within: Sequence[str], *, others: Sequence[str] = 
     A budget that held may be mentioned — "Trace-rule violations stayed within
     budget" is accurate — but not accused: it may not share a clause with a
     blame word unless that word is negated, or unless each of its mentions in
-    that clause is excused. A mention is excused by a negation right before it
-    ("not Cost increase or Trace-rule violations"), or by a holding word after
-    it that describes it ("Cost increase stayed within its limit" beside "the
-    run failed on Latency increase") — see :func:`_excused`. A plain-English
-    accusation carries no digit for :func:`validate_numbers` and no identifier
-    for :func:`validate_identifiers`, so this is the only check that sees it.
+    that clause is excused. A mention is excused by a negation right before a
+    name that stands alone ("not Cost increase or Trace-rule violations", but
+    not "no Cost increase headroom"), or by a limit-relative holding phrase
+    after it that describes it ("Cost increase stayed within its limit" beside
+    "the run failed on Latency increase", but not "remained above the limit")
+    — see :func:`_excused`. A plain-English accusation carries no digit for
+    :func:`validate_numbers` and no identifier for :func:`validate_identifiers`,
+    so this is the only check that sees it.
 
     A safety net, not a parser: it catches the shipped phrasing and its close
     variants. A false match costs the retry — the one retry, shared with
     invented-number rejections — and a repeated one ships the templated prose,
-    which has no findings. Labels are matched
-    case-insensitively with hyphens and runs of whitespace folded to one space.
+    which has no findings. Two misses are accepted: a holding phrase excuses
+    the label before it whatever follows, so "Cost increase stayed within
+    budget at first, then exceeded it" and "Address Cost increase so it stays
+    within budget" pass — telling their blame word's subject from the one in
+    "staying within its limit, the run failed on Latency increase" takes a
+    parser. Labels are matched case-insensitively with hyphens and runs of
+    whitespace folded to one space.
     Every label — held or not — is located longest first and masked before the
     scan: "'checkout' slice cost increase" contains "cost increase", and
     "Trace-rule violations" contains a blame word, and neither may accuse a
@@ -355,12 +384,17 @@ def _excused(rest: str, position: int, blames: list[int], marks: list[int]) -> b
     """Whether the masked label at ``position`` is mentioned rather than accused.
 
     Two ways out, judged per occurrence. A negation right before it ("not
-    Cost increase or Trace-rule violations") names it to clear it. Or a
-    holding word after it ("Cost increase stayed within its limit") describes
-    it — provided that word is not negated, no un-negated blame word stands
-    between the two ("exceeded its limit and stayed within budget" still
-    accuses), and no other label does unless joined by "and"/"or"/"nor"/a
-    comma ("as Latency increase stayed within" describes latency).
+    Cost increase or Trace-rule violations") names it to clear it — provided
+    the name stands alone: it, and any labels chained to it, must be followed
+    by a comma, the clause end or "or"/"and"/"nor"/"but" ("no Cost increase
+    headroom left" negates the headroom and still accuses). Or a holding
+    phrase after it ("Cost increase stayed within its limit") describes it —
+    provided the phrase is limit-relative (see :data:`_HOLDING_RE`; "remained
+    above the limit" is not), it is not negated, no un-negated blame word
+    stands between the two ("exceeded its limit and stayed within budget"
+    still accuses), and no other label does unless joined by
+    "and"/"or"/"nor"/a comma ("as Latency increase stayed within" describes
+    latency).
 
     Args:
         rest: The clause with every located label replaced by :data:`_MASK`.
@@ -368,7 +402,7 @@ def _excused(rest: str, position: int, blames: list[int], marks: list[int]) -> b
         blames: Start of each un-negated blame word in ``rest``.
         marks: Where every located label sits in ``rest``, in order.
     """
-    if _NEGATED_MENTION_RE.search(rest[:position]):
+    if _NEGATED_MENTION_RE.search(rest[:position]) and _STANDS_ALONE_RE.match(rest, position + 1):
         return True
     for holding in _HOLDING_RE.finditer(rest, position + 1):
         at = holding.start()

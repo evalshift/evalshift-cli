@@ -801,6 +801,89 @@ def test_each_occurrence_is_judged_on_its_own() -> None:
     assert validate_blame(text, _HELD) == ["Cost increase"]
 
 
+def test_a_holding_verb_without_a_limit_phrase_does_not_excuse() -> None:
+    """A verb alone says nothing held: "remained above the limit" is the accusation.
+
+    Only a limit-relative phrase counts — "within", "inside/under/below the
+    … limit", or a bare "held"/"holds"/"passed" that ends its clause.
+    """
+    for text in (
+        "Cost increase remained above the +200% limit.",
+        "Cost increase remains over its budget.",
+        "Cost increase stayed above its ceiling, failing the run.",
+        "Cost increase held at +250%, exceeding its limit.",
+        "Cost increase held steady and breached the ceiling.",
+        "Cost increase passed the +200% limit, failing the run.",
+        "The run failed because Cost increase, which held for most prompts, exceeded its limit.",
+    ):
+        assert validate_blame(text, _HELD, others=["Latency increase"]) == ["Cost increase"], text
+        assert validate_blame(text, _HELD) == ["Cost increase"], text
+
+
+def test_under_or_inside_something_other_than_a_limit_does_not_excuse() -> None:
+    """ "under the target model" places the label; it does not say the budget held."""
+    for text in (
+        "Cost increase under the target model breached its ceiling.",
+        "Cost increase, under the target model, breached its ceiling.",
+        "Cost increase inside the checkout flow exceeded its limit.",
+    ):
+        assert validate_blame(text, _HELD, others=["Latency increase"]) == ["Cost increase"], text
+        assert validate_blame(text, _HELD) == ["Cost increase"], text
+
+
+def test_a_limit_relative_phrase_still_excuses() -> None:
+    for text in (
+        "The latency ceiling of +30% was exceeded; Trace-rule violations stayed within budget.",
+        "Despite Cost increase staying below its +200% limit, the run failed on Latency increase.",
+        "Despite Cost increase staying under the ceiling, the run failed on Latency increase.",
+        "The run failed on Latency increase as Cost increase held.",
+        "The run failed on Latency increase as Trace-rule violations passed.",
+    ):
+        assert validate_blame(text, _HELD, others=["Latency increase"]) == [], text
+        assert validate_blame(text, _HELD) == [], text
+
+
+def test_accepted_gaps_a_holding_phrase_before_a_later_accusation() -> None:
+    """Known misses: the holding phrase excuses the label it follows, and the
+    scan cannot tell that a blame word after it has the same subject — "the run
+    failed on Latency increase" after "staying within its limit" must stay
+    clean, and nothing in the words separates the two. These assert today's
+    result; a design that catches them should flip them to ["Cost increase"].
+    """
+    # Accepted gap: should ideally be ["Cost increase"].
+    assert (
+        validate_blame("Cost increase stayed within budget at first, then exceeded it.", _HELD)
+        == []
+    )
+    # Accepted gap: should ideally be ["Cost increase"].
+    assert validate_blame("Address Cost increase so it stays within budget.", _HELD) == []
+
+
+def test_a_negation_before_a_label_used_as_a_modifier_does_not_excuse() -> None:
+    """ "no Cost increase headroom" negates the headroom, not the budget's blame."""
+    for text in (
+        "Without Cost increase under control, the run failed.",
+        "The run failed with no Cost increase headroom left.",
+        "The run failed and no Cost increase margin remained.",
+    ):
+        assert validate_blame(text, _HELD, others=["Latency increase"]) == ["Cost increase"], text
+        assert validate_blame(text, _HELD) == ["Cost increase"], text
+
+
+def test_a_negated_chain_of_labels_is_excused_only_when_it_stands_alone() -> None:
+    clean = (
+        "The run failed on Latency increase, not Cost increase, as the target slowed down.",
+        "The run failed on Latency increase and not Cost increase and Trace-rule violations.",
+        "The run failed on Latency increase, not Cost increase nor Trace-rule violations, "
+        "as the target slowed down.",
+    )
+    for text in clean:
+        assert validate_blame(text, _HELD, others=["Latency increase"]) == [], text
+    # The chain ends on a noun it modifies: the last label is not standing alone.
+    text = "The run failed with no Cost increase or Trace-rule violations headroom left."
+    assert validate_blame(text, _HELD) == ["Trace-rule violations", "Cost increase"]
+
+
 # ---------------------------------------------------------------------------
 # Blame in a generation: retry with the labels named, then the template
 # ---------------------------------------------------------------------------
