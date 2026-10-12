@@ -1223,8 +1223,9 @@ Model: defaults.insights_model, falling back to defaults.judge_model.
   over the/its, above the/its, broke, broken; negated = not|no|never|without within the 24
   chars before it in the clause) rejects the generation; the retry names the misblamed
   labels ("Your previous answer blamed budgets that held: ..."); 2 rejections -> templated
-  prose, which names the breached budget (or the blocking regressions if none was
-  breached). Heuristic safety net by design: it catches the shipped phrasing and close
+  prose (templates._recommendation): names the breached budget, else the overall blocking
+  regressions, else points at the decision's recommendations and budget table. Heuristic
+  safety net by design: it catches the shipped phrasing and close
   variants, a false match costs one retry, the prompt rule is the primary fix. Cached narratives do not regenerate (key = config_hash + model, not the CLI
   version): delete insights.json to rewrite an existing run's prose.
 - Prompt input: the pre-rendered FACTS block plus the worst 8 regressions by worst_delta_score
