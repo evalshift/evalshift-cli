@@ -694,9 +694,25 @@ def test_a_breached_slice_label_does_not_accuse_its_held_overall_row() -> None:
 
 
 def test_a_breached_label_with_a_blame_word_does_not_accuse_its_neighbour() -> None:
-    """ "violations" is part of a label, not an accusation, once the label is masked."""
-    text = "Trace-rule violations rose to 3, with cost increase inside its limit."
+    """ "violations" is part of a label, not an accusation, once the label is masked.
+
+    The bare "and" keeps both labels in one clause, so the masking alone saves
+    it — without ``others`` the same sentence accuses "Cost increase".
+    """
+    text = "Trace-rule violations rose to 3 and cost increase stayed inside its limit."
     assert validate_blame(text, ["Cost increase"], others=["Trace-rule violations"]) == []
+    assert validate_blame(text, ["Cost increase"]) == ["Cost increase"]
+
+
+def test_a_slice_label_matches_whatever_quotes_the_model_used() -> None:
+    """The model may drop the slice's quotes or swap them; the slice still owns its span."""
+    others = ["'checkout' slice cost increase"]
+    for text in (
+        "The checkout slice cost increase budget was breached.",
+        "The \u2018checkout\u2019 slice cost increase budget was breached.",
+        'The "checkout" slice cost increase budget was breached.',
+    ):
+        assert validate_blame(text, ["Cost increase"], others=others) == [], text
 
 
 def test_the_retry_hints_own_phrasing_is_not_blame() -> None:

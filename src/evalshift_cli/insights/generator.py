@@ -102,6 +102,10 @@ _CLAUSE_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Straight and curly quotes, folded out of labels and prose alike before the
+#: blame scan matches one against the other.
+_QUOTE_RE = re.compile(r"[\"'\u2018\u2019\u201c\u201d]")
+
 _INSTRUCTION = """\
 You are writing the explanation section of a model-migration report. The reader
 is an engineer deciding whether to switch their production model to the target.
@@ -316,8 +320,13 @@ def _locate_labels(
 
 
 def _normalise(text: str) -> str:
-    """Lower-case with hyphens and whitespace runs folded, for label matching."""
-    return re.sub(r"[-\s]+", " ", text.lower())
+    """Lower-case, quotes dropped, hyphens and whitespace runs folded, for label matching.
+
+    Quotes go because a slice label reaches the model as "'checkout' slice
+    cost increase" and comes back bare or curly-quoted; left in, the held
+    "cost increase" inside it would claim the span.
+    """
+    return re.sub(r"[-\s]+", " ", _QUOTE_RE.sub("", text.lower()))
 
 
 async def generate_insight(facts: Facts, *, model: str, client: ModelClient) -> Insight:
