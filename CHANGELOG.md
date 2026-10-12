@@ -37,7 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are listed as `failed_budgets`, and the decision's `reason` travels with them in plain
   words, without `evalshift.yaml` keys. Only a breached budget may be named as the cause,
   and on a FAIL a summary or recommendation that blames a budget that held is rejected
-  and retried, then replaced by the templated prose. Narratives are cached on the run's
+  and retried, then replaced by the templated prose. Naming a held budget to clear it
+  ("Cost increase stayed within its limit", "not Cost increase") is not blame, and
+  neither is a figure "over the source". Narratives are cached on the run's
   config hash and model, not the CLI version: delete a run's `insights.json` and re-run
   `report` to rewrite an existing one.
 
