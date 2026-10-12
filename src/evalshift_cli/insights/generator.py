@@ -93,6 +93,12 @@ Rules:
   fact is present, never write that all budgets passed, that every constraint
   or requirement is met, or that the migration is safe — name the blind gates
   and say their silence is unknown.
+- Every "budget" line ends with its status. Only a budget whose status is
+  "breached" — the same ones listed under "failed_budgets" — may be named as
+  why the run failed or as something to fix. A budget marked "within" held:
+  never write that it was breached, exceeded, failed, missed, violated or
+  must be addressed. When "verdict_reason" is present it is the decision's
+  own explanation of the verdict, and your verdict summary must agree with it.
 - Findings describe BEHAVIORAL changes visible in the sampled outputs — what the
   target does differently from the source. They are not restatements of the
   statistics; the report already renders those.
@@ -139,6 +145,8 @@ _FACTS_FIELD_NAMES: frozenset[str] = frozenset(
         "worst_evaluator",
         "rates_basis",
         "coverage_basis",
+        "failed_budgets",
+        "verdict_reason",
         "blocking_evaluators",
         "unmeasured_budgets",
         "unmeasured_evaluators",
@@ -280,11 +288,17 @@ def _facts_block(facts: Facts) -> str:
         lines.append(f"unmeasured_evaluators: {', '.join(facts.unmeasured_evaluators)}")
     if facts.coverage_basis:
         lines.append(f"coverage_basis: {facts.coverage_basis}")
+    if facts.failed_budgets:
+        lines.append(f"failed_budgets: {', '.join(facts.failed_budgets)}")
+    if facts.verdict_reason:
+        lines.append(f"verdict_reason: {facts.verdict_reason}")
     # Budgets and categories reach the model under their display names: it is
     # told to copy tokens verbatim, so whatever appears here is what a reader
-    # may end up seeing in the narrative.
-    for name, limit in facts.budget_limits.items():
-        lines.append(f'budget "{BUDGET_LABELS.get(name, name)}": {limit}')
+    # may end up seeing in the narrative. Each budget carries its status, so
+    # the cause of a FAIL is read off the line rather than guessed from the
+    # limit — a narrative once blamed a budget that held.
+    for label, limit, status in facts.budget_statuses:
+        lines.append(f'budget "{label}": limit {limit}, {status}')
     for category, count in facts.failure_categories:
         lines.append(f'failure_category "{category_label(category)}": {count}')
     body = "\n".join(lines)

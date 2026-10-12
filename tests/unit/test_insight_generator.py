@@ -8,6 +8,7 @@ validated back against them, so a queued-response double exercises every path.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -17,8 +18,10 @@ from evalshift_cli.insights.facts import Facts, build_facts
 from evalshift_cli.insights.generator import generate_insight, validate_numbers
 from evalshift_cli.models.client import ModelClient
 from tests.unit.insights_factories import (
+    SEVERITY_REASON,
     FakeModelClient,
     budgets,
+    converter_decision,
     decision,
     unmeasured_budget,
     unmeasured_comparison,
@@ -421,7 +424,7 @@ async def test_the_prompt_names_the_blocking_evaluators_and_failure_categories(
     # Categories and budgets reach the model already humanised, so the tokens
     # it can copy into prose are the ones a reader may see.
     assert 'failure_category "Missing field": 15' in prompt
-    assert 'budget "Cost increase": +200%' in prompt
+    assert 'budget "Cost increase": limit +200%, within' in prompt
     assert "failure_category.missing_field" not in prompt
     assert "max_cost_increase" not in prompt
 
@@ -516,3 +519,91 @@ async def test_a_fully_measured_run_carries_no_coverage_facts(
     assert "\nunmeasured_budgets: " not in prompt
     assert "\nunmeasured_evaluators: " not in prompt
     assert "\ncoverage_basis: " not in prompt
+
+
+# ---------------------------------------------------------------------------
+# A FAIL's cause is a fact, not an inference
+# ---------------------------------------------------------------------------
+
+
+async def test_each_budget_line_carries_its_status(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    """The converter run: the model is told which budget broke and which held.
+
+    The shipped narrative blamed "Trace-rule violations" because every budget
+    line read as a bare limit — nothing said which one the run had failed on.
+    """
+    sample_run["decision"] = converter_decision()
+    fake_client.queue_responses(_payload())
+    await _generate(build_facts(**sample_run), fake_client)
+
+    prompt = fake_client.prompts[0]
+    assert '\nbudget "Latency increase": limit +30%, breached\n' in prompt
+    assert '\nbudget "Trace-rule violations": limit 1, within\n' in prompt
+    assert '\nbudget "Tool-selection divergence": limit 20%, measured nothing\n' in prompt
+    assert "\nfailed_budgets: Latency increase\n" in prompt
+
+
+async def test_a_passing_run_lists_no_failed_budgets_and_no_reason(
+    fake_client: FakeModelClient, sample_facts: Facts
+) -> None:
+    fake_client.queue_responses(_payload())
+    await _generate(sample_facts, fake_client)
+
+    prompt = fake_client.prompts[0]
+    assert "\nfailed_budgets: " not in prompt
+    assert "\nverdict_reason: " not in prompt
+    assert '\nbudget "Cost increase": limit +200%, within\n' in prompt
+
+
+async def test_the_verdict_reason_reaches_the_prompt(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    sample_run["decision"] = replace(decision(verdict="fail"), reason=SEVERITY_REASON)
+    fake_client.queue_responses(_payload())
+    await _generate(build_facts(**sample_run), fake_client)
+
+    assert f"\nverdict_reason: {SEVERITY_REASON}\n" in fake_client.prompts[0]
+
+
+async def test_a_copied_reason_figure_is_not_an_invented_number(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    """The reason's own figures are facts; copying them must not cost a retry."""
+    sample_run["decision"] = replace(decision(verdict="fail"), reason=SEVERITY_REASON)
+    fake_client.queue_responses(
+        _payload(verdict_summary="semantic.cosine regressed with effect size -2.15 (p 0.0004).")
+    )
+    insight = await _generate(build_facts(**sample_run), fake_client)
+
+    assert insight.verdict_summary.endswith("(p 0.0004).")
+    assert fake_client.call_count == 1
+
+
+async def test_the_instruction_rules_on_budget_status(
+    fake_client: FakeModelClient, sample_facts: Facts
+) -> None:
+    """A plain-English accusation carries no digit; the rule has to be spelled out."""
+    fake_client.queue_responses(_payload())
+    await _generate(sample_facts, fake_client)
+
+    instruction = fake_client.prompts[0].split("FACTS (")[0]
+    assert '"breached"' in instruction
+    assert '"within"' in instruction
+    assert "failed_budgets" in instruction
+    assert "verdict_reason" in instruction
+
+
+async def test_an_echoed_failed_budgets_key_is_rejected_and_retried(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    sample_run["decision"] = converter_decision()
+    fake_client.queue_responses(
+        _payload(verdict_summary="failed_budgets: Latency increase."),
+        _payload(verdict_summary="The latency ceiling of +30% was exceeded."),
+    )
+    insight = await _generate(build_facts(**sample_run), fake_client)
+
+    assert insight.verdict_summary == "The latency ceiling of +30% was exceeded."
+    assert fake_client.call_count == 2
