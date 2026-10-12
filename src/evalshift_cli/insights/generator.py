@@ -93,9 +93,12 @@ _NEGATION_RE = re.compile(r"\b(?:not|no|never|without)\b[^.;,]{0,24}$", re.IGNOR
 #: exceeded while Trace-rule violations stayed within budget" blames only
 #: latency. A bare "and" is deliberately not one: "exceeded latency and failed
 #: to meet Trace-rule violations" is the shipped sentence, and both halves
-#: accuse.
+#: accuse; nor is a bare comma. ", with" is, because the retry hint invites
+#: "…exceeded its ceiling, with Cost increase within policy", and so are a
+#: parenthetical ", however," and a dash.
 _CLAUSE_RE = re.compile(
-    r"[.;:!?]\s+|\s(?:while|but|whereas|although|though|however)\s|,\s*(?:and|but)\s",
+    r"[.;:!?]\s+|\s(?:while|but|whereas|although|though|however)\s|,\s*(?:and|but)\s"
+    r"|,\s*with\s|,\s*however,?\s|\s*[\u2014\u2013]\s*",
     re.IGNORECASE,
 )
 
@@ -236,7 +239,7 @@ def validate_numbers(text: str, allowed: frozenset[str]) -> list[str]:
     return [token for token in NUMERIC_TOKEN_RE.findall(text) if not _is_allowed(token, allowed)]
 
 
-def validate_blame(text: str, within: Sequence[str]) -> list[str]:
+def validate_blame(text: str, within: Sequence[str], *, others: Sequence[str] = ()) -> list[str]:
     """Return the budgets in ``within`` that ``text`` blames for the verdict.
 
     A budget that held may be mentioned — "Trace-rule violations stayed within
@@ -248,31 +251,68 @@ def validate_blame(text: str, within: Sequence[str]) -> list[str]:
     A safety net, not a parser: it catches the shipped phrasing and its close
     variants, and a false match costs one retry. Labels are matched
     case-insensitively with hyphens and runs of whitespace folded to one space.
+    Every label — held or not — is located longest first and masked before the
+    scan: "'checkout' slice cost increase" contains "cost increase", and
+    "Trace-rule violations" contains a blame word, and neither may accuse a
+    held budget by containment.
 
     Args:
         text: One prose field of a generation.
         within: Display labels of the budgets whose status is
             :data:`~evalshift_cli.insights.facts.BUDGET_WITHIN`.
+        others: Display labels of the gating budgets that did not hold. Never
+            reported, only located: a span one of them claims cannot also
+            match a shorter held label, and its words are not blame words.
 
     Returns:
         The wrongly blamed labels, each once, in ``within`` order. Empty means
         valid.
     """
-    needles = {label: _normalise(label) for label in within}
+    held = set(within)
+    # Longest first, so a position a longer label covers cannot also match a
+    # shorter one it contains. ``sorted`` is stable: on a tie, held labels win.
+    needles = sorted(
+        ((label, _normalise(label)) for label in (*within, *others)),
+        key=lambda pair: -len(pair[1]),
+    )
     blamed: set[str] = set()
     for clause in (_normalise(c) for c in _CLAUSE_RE.split(text)):
-        present = [label for label, needle in needles.items() if needle in clause]
+        spans, present = _locate_labels(clause, needles)
+        present &= held
         if not present:
             continue
-        # Every held label comes out before the scan, not just the one under
-        # test: "Trace-rule violations" would otherwise read as a violation
-        # of whichever budget shares its clause.
-        rest = clause
-        for needle in needles.values():
-            rest = rest.replace(needle, " ")
+        # Every located label comes out before the scan, not just the one
+        # under test: "Trace-rule violations" would otherwise read as a
+        # violation of whichever budget shares its clause.
+        rest, cursor = "", 0
+        for start, end in sorted(spans):
+            rest += clause[cursor:start] + " "
+            cursor = end
+        rest += clause[cursor:]
         if any(not _NEGATION_RE.search(rest[: m.start()]) for m in _BLAME_RE.finditer(rest)):
             blamed.update(present)
     return [label for label in within if label in blamed]
+
+
+def _locate_labels(
+    clause: str, needles: list[tuple[str, str]]
+) -> tuple[list[tuple[int, int]], set[str]]:
+    """Claim non-overlapping spans of ``clause`` for ``needles``, in the order given.
+
+    Returns:
+        The claimed ``(start, end)`` spans, and the labels that claimed one.
+    """
+    spans: list[tuple[int, int]] = []
+    found: set[str] = set()
+    for label, needle in needles:
+        start = clause.find(needle)
+        while start != -1:
+            end = start + len(needle)
+            if all(end <= s or start >= e for s, e in spans):
+                spans.append((start, end))
+                found.add(label)
+            start = clause.find(needle, start + 1)
+    return spans, found
 
 
 def _normalise(text: str) -> str:
@@ -452,8 +492,11 @@ def _build_insight(text: str, *, facts: Facts, model: str) -> Insight:
     misblamed: list[str] = []
     if facts.verdict == "fail":
         held = [label for label, _, status in facts.budget_statuses if status == BUDGET_WITHIN]
+        others = [label for label, _, status in facts.budget_statuses if status != BUDGET_WITHIN]
         for field in (prose["verdict_summary"], prose["recommendation"]):
-            misblamed.extend(t for t in validate_blame(field, held) if t not in misblamed)
+            misblamed.extend(
+                t for t in validate_blame(field, held, others=others) if t not in misblamed
+            )
     if offending or misblamed:
         problems: list[str] = []
         if offending:

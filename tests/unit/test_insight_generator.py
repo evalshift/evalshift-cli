@@ -13,7 +13,12 @@ from typing import Any, cast
 
 import pytest
 
-from evalshift_cli.analysis.policy import BlockingRegression, FailureCategoryCount
+from evalshift_cli.analysis.policy import (
+    BlockingRegression,
+    BudgetResult,
+    FailureCategoryCount,
+    SliceDecision,
+)
 from evalshift_cli.insights.facts import Facts, build_facts
 from evalshift_cli.insights.generator import generate_insight, validate_blame, validate_numbers
 from evalshift_cli.models.client import ModelClient
@@ -668,6 +673,46 @@ def test_every_misblamed_budget_is_returned_once_in_list_order() -> None:
     assert validate_blame(text, _HELD) == ["Trace-rule violations", "Cost increase"]
 
 
+def test_a_breached_slice_label_does_not_accuse_its_held_overall_row() -> None:
+    """The slice label contains the overall one; the longer match owns its span."""
+    held = ["Cost increase"]
+    others = ["'checkout' slice cost increase"]
+    assert (
+        validate_blame(
+            "The 'checkout' slice cost increase budget was breached.", held, others=others
+        )
+        == []
+    )
+    assert (
+        validate_blame(
+            "The run failed because the 'checkout' slice cost increase exceeded its +10% limit.",
+            held,
+            others=others,
+        )
+        == []
+    )
+
+
+def test_a_breached_label_with_a_blame_word_does_not_accuse_its_neighbour() -> None:
+    """ "violations" is part of a label, not an accusation, once the label is masked."""
+    text = "Trace-rule violations rose to 3, with cost increase inside its limit."
+    assert validate_blame(text, ["Cost increase"], others=["Trace-rule violations"]) == []
+
+
+def test_the_retry_hints_own_phrasing_is_not_blame() -> None:
+    """The hint invites "within policy"; a reply phrased that way must pass."""
+    text = (
+        "The run failed because latency exceeded its ceiling, with Cost increase and "
+        "Trace-rule violations within policy."
+    )
+    assert validate_blame(text, _HELD) == []
+
+
+def test_a_dash_or_however_separates_the_blame() -> None:
+    assert validate_blame("Latency breached its ceiling — Cost increase held.", _HELD) == []
+    assert validate_blame("Latency was exceeded, however, Cost increase held.", _HELD) == []
+
+
 # ---------------------------------------------------------------------------
 # Blame in a generation: retry with the labels named, then the template
 # ---------------------------------------------------------------------------
@@ -772,3 +817,38 @@ async def test_an_invented_number_and_a_misblame_are_both_named_on_retry(
     retry = fake_client.prompts[1]
     assert "+43%" in retry
     assert "blamed budgets that held: Trace-rule violations" in retry
+
+
+async def test_a_slice_budget_fail_may_name_the_breached_slice_budget(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    """The overall "Cost increase" held; its 'checkout' slice row broke.
+
+    The slice label contains the held overall one, so a substring match would
+    accuse the overall row in every run a slice budget failed.
+    """
+    base = decision(verdict="fail")
+    slice_row = BudgetResult(
+        name="max_cost_increase", observed=1.02, allowed=0.10, passed=False, scope="checkout"
+    )
+    sample_run["decision"] = replace(
+        base,
+        slices={
+            "checkout": SliceDecision(
+                name="checkout", verdict="fail", metrics=base.overall, budget_results=[slice_row]
+            )
+        },
+    )
+    facts = build_facts(**sample_run)
+    assert facts.failed_budgets == ["'checkout' slice cost increase"]
+    fake_client.queue_responses(
+        _payload(
+            verdict_summary=(
+                "The run failed because the 'checkout' slice cost increase exceeded its +10% limit."
+            ),
+            recommendation="Bring the 'checkout' slice cost increase under its limit.",
+        )
+    )
+    await _generate(facts, fake_client)
+
+    assert fake_client.call_count == 1
