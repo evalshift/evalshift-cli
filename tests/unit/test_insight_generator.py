@@ -857,6 +857,61 @@ def test_accepted_gaps_a_holding_phrase_before_a_later_accusation() -> None:
     )
     # Accepted gap: should ideally be ["Cost increase"].
     assert validate_blame("Address Cost increase so it stays within budget.", _HELD) == []
+    # Accepted gaps: "below the ceiling" is a limit phrase, so it excuses the
+    # label before it even when the words after it say something else held
+    # the ceiling ("the target's") or held it only in part ("on 3 prompts").
+    # Should ideally be ["Cost increase"].
+    assert (
+        validate_blame("Cost increase, below the ceiling on 3 prompts, failed on the rest.", _HELD)
+        == []
+    )
+    # Accepted gap: should ideally be ["Cost increase"].
+    assert validate_blame("Cost increase below the target's ceiling failed the run.", _HELD) == []
+
+
+def test_within_says_nothing_held_unless_a_limit_follows() -> None:
+    """ "within" places the label in time or scope just as easily as under a limit."""
+    for text in (
+        "Cost increase within the checkout flow exceeded its limit.",
+        "Cost increase, within hours, broke its ceiling.",
+        "Cost increase was within reach of its limit before it broke.",
+        "Cost increase was within +250% of its limit, which it exceeded.",
+        "Address Cost increase within the next sprint.",
+    ):
+        assert validate_blame(text, _HELD, others=["Latency increase"]) == ["Cost increase"], text
+        assert validate_blame(text, _HELD) == ["Cost increase"], text
+
+
+def test_within_a_slice_is_not_a_limit() -> None:
+    """Ambiguous: "within the security slice" may scope the budget rather than
+    clear it. The rule reads no limit noun after "within", so the blame word
+    accuses — pinned as the rule's result, not as a judgement on the sentence.
+    """
+    text = "Cost increase within the security slice breached its ceiling."
+    assert validate_blame(text, _HELD) == ["Cost increase"]
+
+
+def test_a_limit_phrase_may_be_plural_their_bare_or_two_words_long() -> None:
+    for text in (
+        "The run failed on Latency increase, and Cost increase and Trace-rule violations "
+        "stayed under their limits.",
+        "Latency increase broke its ceiling and Cost increase stayed under the +200% cost limit.",
+        "The run failed because Latency increase exceeded its ceiling, with Cost increase and "
+        "Trace-rule violations within policy.",
+        "The run failed on Latency increase as Cost increase stayed within budget.",
+        "The run failed on Latency increase as Cost increase stayed below their limits.",
+    ):
+        assert validate_blame(text, _HELD, others=["Latency increase"]) == [], text
+        assert validate_blame(text, _HELD) == [], text
+
+
+def test_over_a_bare_or_their_limit_noun_is_blame() -> None:
+    """The limit phrase is shared, so the blame side widens with the holding side."""
+    assert validate_blame("Cost increase went over budget.", _HELD) == ["Cost increase"]
+    assert validate_blame("Cost increase went over their limits.", _HELD) == ["Cost increase"]
+    assert validate_blame("Cost increase went over the +200% cost limit.", _HELD) == [
+        "Cost increase"
+    ]
 
 
 def test_a_negation_before_a_label_used_as_a_modifier_does_not_excuse() -> None:

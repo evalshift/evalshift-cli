@@ -74,19 +74,24 @@ _SIGN_CHARS = "+−-"
 #: outermost braces of a fenced or prose-wrapped object.
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
-#: A budget's limit as prose names it — "the ceiling", "its +200% limit": a
-#: determiner, at most one word or figure, then a limit noun. Shared by the
-#: blame words ("over its limit") and the holding words ("under the limit"),
-#: so the two can never disagree about what a limit is.
-_LIMIT_PHRASE = r"(?:the|its) (?:\S+ )?(?:limit|budget|ceiling|threshold|maximum|allowance)s?"
+#: A budget's limit as prose names it — "budget", "policy", "their limits",
+#: "the +200% cost limit": an optional the/its/their, at most two words or
+#: figures (none with a comma), then a limit noun — limit, budget, ceiling,
+#: threshold, maximum, allowance or policy, singular or plural. Shared by the
+#: blame words ("over budget") and the holding words ("within policy"), so
+#: the two can never disagree about what a limit is.
+_LIMIT_PHRASE = (
+    r"(?:(?:the|its|their) )?(?:[^\s,]+ ){0,2}?"
+    r"(?:(?:limit|budget|ceiling|threshold|maximum|allowance)s?|polic(?:y|ies))"
+)
 
 #: Words that lay a verdict at a budget's door. A budget marked "within" that
 #: shares a clause with one of these, un-negated, is a cause the model
 #: invented: a shipped narrative said a run "failed to meet the budget for
 #: Trace-rule violations" when that budget held and only latency broke.
-#: "over"/"above"/"beyond" accuse only with a limit noun, one word or figure
-#: allowed between ("over its +200% limit"): "+102% over the source" measures
-#: against the source model, not against a budget.
+#: "over"/"above"/"beyond" accuse only with a limit phrase ("over its +200%
+#: limit", "over budget"): "+102% over the source" measures against the
+#: source model, not against a budget.
 _BLAME_RE = re.compile(
     r"\b(?:breach\w*|exceed\w*|fail\w*|violat\w*|address\w*|miss(?:ed|es|ing)?|"
     r"unmet|not met|broke|broken|"
@@ -98,13 +103,15 @@ _BLAME_RE = re.compile(
 #: held label, in its clause, with no blame word between and not itself
 #: negated, describes that label rather than accusing it: "Despite Cost
 #: increase staying within its limit, the run failed on Latency increase."
-#: Only limit-relative phrases count: "within", "inside/under/below" a limit
-#: phrase, or a bare "held"/"holds"/"passed" with nothing but punctuation after
-#: it to the clause end ("Trace-rule violations held."). A verb alone says
-#: nothing held — "remained above the limit", "held at +250%, exceeding its
-#: limit", "under the target model breached its ceiling" all accuse.
+#: Only limit-relative phrases count: "within", "inside", "under" or "below"
+#: followed by a limit phrase ("within policy", "under their limits"), or a
+#: bare "held"/"holds"/"passed" with nothing but punctuation after it to the
+#: clause end ("Trace-rule violations held."). A verb or preposition alone
+#: says nothing held — "remained above the limit", "held at +250%, exceeding
+#: its limit", "under the target model breached its ceiling", "within hours,
+#: broke its ceiling" all accuse.
 _HOLDING_RE = re.compile(
-    r"\b(?:within|(?:inside|under|below) " + _LIMIT_PHRASE + r"|"
+    r"\b(?:(?:within|inside|under|below) " + _LIMIT_PHRASE + r"|"
     r"(?:held|holds|passed)(?=[^\w\x00]*$))\b",
     re.IGNORECASE,
 )
@@ -309,7 +316,8 @@ def validate_blame(text: str, within: Sequence[str], *, others: Sequence[str] = 
     name that stands alone ("not Cost increase or Trace-rule violations", but
     not "no Cost increase headroom"), or by a limit-relative holding phrase
     after it that describes it ("Cost increase stayed within its limit" beside
-    "the run failed on Latency increase", but not "remained above the limit")
+    "the run failed on Latency increase", but not "remained above the limit"
+    or "within hours, broke its ceiling")
     — see :func:`_excused`. A plain-English accusation carries no digit for
     :func:`validate_numbers` and no identifier for :func:`validate_identifiers`,
     so this is the only check that sees it.
@@ -322,7 +330,9 @@ def validate_blame(text: str, within: Sequence[str], *, others: Sequence[str] = 
     budget at first, then exceeded it" and "Address Cost increase so it stays
     within budget" pass — telling their blame word's subject from the one in
     "staying within its limit, the run failed on Latency increase" takes a
-    parser. Labels are matched case-insensitively with hyphens and runs of
+    parser. For the same reason "Cost increase below the target's ceiling
+    failed the run" and "Cost increase, below the ceiling on 3 prompts, failed
+    on the rest" pass. Labels are matched case-insensitively with hyphens and runs of
     whitespace folded to one space.
     Every label — held or not — is located longest first and masked before the
     scan: "'checkout' slice cost increase" contains "cost increase", and
@@ -389,8 +399,10 @@ def _excused(rest: str, position: int, blames: list[int], marks: list[int]) -> b
     by a comma, the clause end or "or"/"and"/"nor"/"but" ("no Cost increase
     headroom left" negates the headroom and still accuses). Or a holding
     phrase after it ("Cost increase stayed within its limit") describes it —
-    provided the phrase is limit-relative (see :data:`_HOLDING_RE`; "remained
-    above the limit" is not), it is not negated, no un-negated blame word
+    provided the phrase is limit-relative (see :data:`_HOLDING_RE`: within,
+    inside, under or below need a limit phrase after them, so "remained above
+    the limit" and "within hours" are not), it is not negated, no un-negated
+    blame word
     stands between the two ("exceeded its limit and stayed within budget"
     still accuses), and no other label does unless joined by
     "and"/"or"/"nor"/a comma ("as Latency increase stayed within" describes
