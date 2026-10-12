@@ -65,6 +65,16 @@ part of the answer and kept; an empty fenced block counts as an empty
 output. Whether an output is valid, unfenced JSON is a job for
 `structural.json_schema` or an `llm_judge` criterion.
 
+**Drift inside `min_similarity` is no change.** Because the source is
+pinned at 1.0, any rewording is a small negative delta. A row that stays
+within `min_similarity` therefore counts as *equivalent* in the policy
+budgets and enters the paired significance test as a delta of 0 — nine
+rows at 0.90–0.98 used to test as a `critical` regression and fail a run
+whose every budget passed. Only flagged rows (`SEMANTIC_REGRESSION`) carry
+their full drop into severity. `delta_avg_score` still shows the raw
+drift, and the comparison notes how many rows were within the threshold.
+See [methodology](methodology.md#drift-inside-min_similarity-is-tested-as-no-change).
+
 Use when:
 * You don't have a clean structural check.
 * You want to detect "wandered off" outputs that still look fine
@@ -205,7 +215,10 @@ refusal changes scored separately.
 You rarely wire the first two by hand: `evalshift capture sync` writes
 `tool_selection` and `tool_arguments` into each suite's own `suites:` entry
 based on what that suite's captures contain, so a tool-free suite gets no
-tool evaluators at all. See
+tool evaluators at all. A tool evaluator it inherits from the top level —
+`trace_invariants` included — skips every pair that was offered no tools:
+no row, no coverage entry, no effect on the verdict, and `evaluate` (or
+`compare`, under its verdict) warns that it checked nothing. See
 [Agent migrations](agents.md#configuration) and
 [Configuration → per-suite evaluators](configuration.md#per-suite-evaluators).
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-10-12
+
 ### Fixed
 
 - A `semantic` evaluator set to `blocking: true` no longer fails runs whose every row
