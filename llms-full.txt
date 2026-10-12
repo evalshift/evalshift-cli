@@ -1227,21 +1227,27 @@ Model: defaults.insights_model, falling back to defaults.judge_model.
   not|no|never|without within the 24 chars before it in the clause) blames it unless every
   mention of it in the clause is excused (generator._excused, per occurrence): (a) negated
   mention - not|no|never|without directly before it, only other labels/or/and/nor/commas
-  between ("not Cost increase or Trace-rule violations"); (b) holding word after it (within,
-  held, holds, stayed, stays, staying, remained, remains, passed, inside, under the/its),
-  itself un-negated, no un-negated blame word between, no other label between unless joined
-  by and/or/nor/comma ("as Cost increase and Trace-rule violations all stayed within budget"
-  passes; "exceeded its limit and stayed within budget" and "failed on Cost increase as
-  Latency increase stayed within" are blamed). A blamed label rejects the generation; the
-  retry names the misblamed labels ("Your previous answer blamed budgets that held: ...";
-  "No budget was breached" when failed_budgets is empty); 2 rejections -> templated prose
-  (templates._recommendation): names the breached budget, else the overall blocking
-  regressions, else points at the decision's recommendations and budget table. Heuristic
-  safety net by design: it catches the shipped phrasing and close variants, the prompt rule
-  is the primary fix; a false match costs the retry (shared with invented-number rejections)
-  and a repeated one ships the templated prose, which has no findings. Cached narratives do
-  not regenerate (key = config_hash + model, not the CLI version): delete insights.json to
-  rewrite an existing run's prose.
+  between, and the label (plus any labels chained to it) followed by a comma, clause end or
+  or/and/nor/but ("not Cost increase or Trace-rule violations" passes; "no Cost increase
+  headroom left" is blamed); (b) limit-relative holding phrase after it - within;
+  inside/under/below + the same limit phrase as the blame words ("under its +200% limit");
+  or a bare held/holds/passed with only punctuation after it to the clause end - itself
+  un-negated, no un-negated blame word between, no other label between unless joined by
+  and/or/nor/comma ("as Cost increase and Trace-rule violations all stayed within budget"
+  passes; verbs alone do not hold, so "remained above the +200% limit", "held at +250%,
+  exceeding its limit", "under the target model breached its ceiling", "exceeded its limit
+  and stayed within budget" and "failed on Cost increase as Latency increase stayed within"
+  are blamed). Accepted misses: "stayed within budget at first, then exceeded it" and
+  "Address Cost increase so it stays within budget" pass. A blamed label rejects the
+  generation; the retry names the misblamed labels ("Your previous answer blamed budgets that
+  held: ..."; "No budget was breached" when failed_budgets is empty); 2 rejections ->
+  templated prose (templates._recommendation): names the breached budget, else the overall
+  blocking regressions, else points at the decision's recommendations and budget table.
+  Heuristic safety net by design: it catches the shipped phrasing and close variants, the
+  prompt rule is the primary fix; a false match costs the retry (shared with invented-number
+  rejections) and a repeated one ships the templated prose, which has no findings. Cached
+  narratives do not regenerate (key = config_hash + model, not the CLI version): delete
+  insights.json to rewrite an existing run's prose.
 - Prompt input: the pre-rendered FACTS block plus the worst 8 regressions by worst_delta_score
   (input + both outputs, each truncated to 2000 chars). Same data exposure as llm_judge.
 - Cost: 1 model call per run (2 on a rejected generation). Cached in insights.json keyed on
