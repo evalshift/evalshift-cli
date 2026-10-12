@@ -735,12 +735,20 @@ def test_an_unconfirmed_breach_has_its_own_status(sample_run: dict[str, Any]) ->
 
 def test_a_slice_budget_is_listed_under_its_scope(sample_run: dict[str, Any]) -> None:
     """A slice row is a gating budget too, and its limit is a copyable figure."""
-    facts = build_facts(**_slice_budget_run(sample_run, extra=[]))
+    # A slice limit no overall figure shares, so only the status lines can
+    # have admitted it to the allow-list.
+    policy = MigrationPolicy(
+        max_overall_regression_rate=0.5,
+        min_equivalence_rate=0.0,
+        slices={"security": SliceMigrationPolicy(max_overall_regression_rate=0.07)},
+    )
+    facts = build_facts(**_slice_budget_run(sample_run, extra=[], policy=policy))
     assert _status_of(facts.budget_statuses, "'security' slice overall regression rate") == (
-        "0%",
+        "7%",
         BUDGET_BREACHED,
     )
-    assert "0%" in facts.allowed_numbers
+    assert "7%" not in facts.budget_limits.values()
+    assert {"7%", "7"} <= facts.allowed_numbers
 
 
 def test_the_decision_reason_travels_with_the_facts(sample_run: dict[str, Any]) -> None:
