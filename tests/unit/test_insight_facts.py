@@ -13,6 +13,8 @@ from evalshift_cli.analysis.policy import (
     BlockingRegression,
     BudgetResult,
     FailureCategoryCount,
+    _dropped_params_reason,
+    _invariant_reason,
     evaluate_migration_policy,
 )
 from evalshift_cli.analysis.statistics import ComparisonResult
@@ -25,6 +27,7 @@ from evalshift_cli.insights.facts import (
     BUDGET_WITHIN,
     build_facts,
 )
+from evalshift_cli.insights.generator import banned_identifiers
 from evalshift_cli.insights.templates import fallback_insight
 from evalshift_cli.reports.economics import PromptEconomics
 from evalshift_cli.runner.models import Call
@@ -761,3 +764,36 @@ def test_the_decision_reason_travels_with_the_facts(sample_run: dict[str, Any]) 
 
 def test_a_decision_without_a_reason_renders_none(sample_run: dict[str, Any]) -> None:
     assert build_facts(**sample_run).verdict_reason == ""
+
+
+def test_a_trace_rule_reason_reaches_the_facts_without_its_config_key(
+    sample_run: dict[str, Any],
+) -> None:
+    """The policy quotes ``migration_policy.max_invariant_violations``; the facts must not.
+
+    The reason lands in a copy-verbatim block, and that key is a banned
+    identifier — a faithful copy would be rejected on exactly these runs.
+    """
+    breach = BudgetResult(
+        name="max_invariant_violations", observed=2.0, allowed=1.0, passed=False, denominator=10
+    )
+    sample_run["decision"] = replace(decision(verdict="fail"), reason=_invariant_reason([breach]))
+    facts = build_facts(**sample_run)
+
+    assert "the trace-rule violations budget" in facts.verdict_reason
+    assert "migration_policy." not in facts.verdict_reason
+    assert not [t for t in banned_identifiers(facts) if t in facts.verdict_reason]
+    assert {"2", "10", "1"} <= facts.allowed_numbers
+
+
+def test_a_dropped_params_reason_reaches_the_facts_in_plain_words(
+    sample_run: dict[str, Any],
+) -> None:
+    """Config vocabulary is not banned, so it would otherwise ship to readers."""
+    reason = _dropped_params_reason({"anthropic/claude-sonnet-5-5": ["temperature"]})
+    sample_run["decision"] = replace(decision(verdict="fail"), reason=reason)
+    facts = build_facts(**sample_run)
+
+    assert "migration_policy." not in facts.verdict_reason
+    assert "drop_params" not in facts.verdict_reason
+    assert "anthropic/claude-sonnet-5-5 dropped temperature" in facts.verdict_reason

@@ -245,7 +245,7 @@ def build_facts(
         (_scoped_budget_label(b), _budget_limit(b.name, b.allowed), _budget_status(b))
         for b in gating_budget_results(decision)
     ]
-    verdict_reason = decision.reason or ""
+    verdict_reason = _plain_reason(decision.reason or "")
 
     rendered: dict[str, str] = {
         "verdict": decision.verdict.replace("_", " ").upper(),
@@ -449,6 +449,25 @@ def _regression_samples(examples: Sequence[ExampleFact]) -> list[RegressionSampl
         )
         for e in regressed[:MAX_REGRESSION_SAMPLES]
     ]
+
+
+def _plain_reason(reason: str) -> str:
+    """The decision's reason with the config keys it quotes put into words.
+
+    The reason enters a FACTS block the model is told to copy verbatim, and the
+    policy's own prose quotes ``evalshift.yaml`` keys the narrative may not
+    show — a banned one costs a faithful generation its retry, an unbanned one
+    ships to readers as config vocabulary. Figures are left untouched.
+    """
+    for key, label in BUDGET_LABELS.items():
+        reason = reason.replace(
+            f"migration_policy.{key}", f"the {label[:1].lower()}{label[1:]} budget"
+        )
+    reason = reason.replace(
+        "migration_policy.fail_on_dropped_params",
+        "the policy's fail-on-dropped-parameters setting",
+    )
+    return reason.replace("(drop_params)", "(parameters dropped)")
 
 
 def _bounded(text: str | None) -> str:
