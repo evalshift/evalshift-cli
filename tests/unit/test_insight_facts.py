@@ -40,6 +40,7 @@ from tests.unit.insights_factories import (
     decision,
     records,
     role,
+    slice_invariant_decision,
     unmeasured_budget,
     unmeasured_comparison,
 )
@@ -784,6 +785,30 @@ def test_a_trace_rule_reason_reaches_the_facts_without_its_config_key(
     assert "migration_policy." not in facts.verdict_reason
     assert not [t for t in banned_identifiers(facts) if t in facts.verdict_reason]
     assert {"2", "10", "1"} <= facts.allowed_numbers
+
+
+def test_a_slice_trace_rule_reason_names_the_slice_budget_not_the_overall_one(
+    sample_run: dict[str, Any],
+) -> None:
+    """The policy quotes the overall key beside the slice's limit; the facts must scope it.
+
+    Overall limit 5 held; the 'security' slice's 0 broke. Rewritten as "the
+    trace-rule violations budget", the reason pins the slice's 0 on the overall
+    row — the one the FACTS block marks ``within`` — and a summary that copies
+    the reason, as instructed, blames a budget that held.
+    """
+    sample_run["decision"] = slice_invariant_decision()
+    facts = build_facts(**sample_run)
+
+    assert (
+        "in the 'security' slice, over the 0 allowed by the 'security' slice "
+        "trace-rule violations budget." in facts.verdict_reason
+    )
+    assert "allowed by the trace-rule violations budget" not in facts.verdict_reason
+    assert "migration_policy." not in facts.verdict_reason
+    # Exactly the label the FACTS block lists the slice row under.
+    assert "'security' slice trace-rule violations" in facts.failed_budgets
+    assert ("Trace-rule violations", "5", BUDGET_WITHIN) in facts.budget_statuses
 
 
 def test_a_dropped_params_reason_reaches_the_facts_in_plain_words(

@@ -28,6 +28,7 @@ from tests.unit.insights_factories import (
     budgets,
     converter_decision,
     decision,
+    slice_invariant_decision,
     unmeasured_budget,
     unmeasured_comparison,
 )
@@ -868,3 +869,29 @@ async def test_a_slice_budget_fail_may_name_the_breached_slice_budget(
     await _generate(facts, fake_client)
 
     assert fake_client.call_count == 1
+
+
+async def test_a_summary_that_copies_a_slice_trace_rule_reason_ships_first_time(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    """The instruction says the summary must agree with ``verdict_reason``; copying it is safe.
+
+    The overall trace-rule budget held at 5 and only the 'security' slice's 0
+    broke. A reason that pinned the slice's limit on the overall budget made
+    every faithful copy a misblame, and two of those ship no findings.
+    """
+    sample_run["decision"] = slice_invariant_decision()
+    facts = build_facts(**sample_run)
+    fake_client.queue_responses(
+        _payload(
+            verdict_summary=facts.verdict_reason,
+            recommendation=(
+                "Keep security on the source model until the 'security' slice "
+                "trace-rule violations budget holds."
+            ),
+        )
+    )
+    insight = await _generate(facts, fake_client)
+
+    assert fake_client.call_count == 1
+    assert insight.verdict_summary == facts.verdict_reason

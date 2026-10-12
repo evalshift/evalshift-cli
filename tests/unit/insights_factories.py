@@ -12,6 +12,7 @@ hits a real model**, and one double shared across the suites keeps that true.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -21,6 +22,8 @@ from evalshift_cli.analysis.policy import (
     FailureCategoryCount,
     MigrationDecision,
     PolicyMetricSummary,
+    SliceDecision,
+    _invariant_reason,
 )
 from evalshift_cli.analysis.statistics import UNMEASURED_NOTE_PREFIX, ComparisonResult
 from evalshift_cli.evaluators.base import EvalRecord
@@ -280,6 +283,47 @@ def converter_decision() -> MigrationDecision:
             BudgetResult(name="max_invariant_violations", observed=0.0, allowed=1.0, passed=True),
             unmeasured_budget(),
         ],
+    )
+
+
+def slice_invariant_decision() -> MigrationDecision:
+    """A trace rule broke in the 'security' slice only; the overall budget held.
+
+    Overall ``max_invariant_violations`` 5 with 1 observed (within); the
+    'security' slice allows 0 and saw 1 of 4 (breached). The reason is the
+    policy's own sentence for that slice row, so it names the slice's limit —
+    and a rewrite that attached it to the overall budget would put a held
+    budget in the verdict's mouth.
+    """
+    base = decision(
+        verdict="fail",
+        budget_results=[
+            *budgets(),
+            BudgetResult(
+                name="max_invariant_violations",
+                observed=1.0,
+                allowed=5.0,
+                passed=True,
+                denominator=10,
+            ),
+        ],
+    )
+    slice_row = BudgetResult(
+        name="max_invariant_violations",
+        observed=1.0,
+        allowed=0.0,
+        passed=False,
+        scope="security",
+        denominator=4,
+    )
+    return replace(
+        base,
+        slices={
+            "security": SliceDecision(
+                name="security", verdict="fail", metrics=base.overall, budget_results=[slice_row]
+            )
+        },
+        reason=_invariant_reason([slice_row]),
     )
 
 

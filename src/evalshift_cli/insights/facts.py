@@ -11,6 +11,7 @@ Pure — no network, no model. That is what makes the generator testable.
 
 from __future__ import annotations
 
+import re
 import statistics
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -174,8 +175,10 @@ class Facts:
     #: prompt listed limits without results.
     budget_statuses: list[tuple[str, str, str]] = field(default_factory=list)
     #: The decision's own explanation of its verdict
-    #: (``MigrationDecision.reason``), or ``""`` when it carries none. The same
-    #: sentence the report hero renders, so the two surfaces cannot disagree.
+    #: (``MigrationDecision.reason``), or ``""`` when it carries none — with the
+    #: config keys it quotes put into words, scoped to the slice where the
+    #: reason names one, so the model can copy it without echoing internal
+    #: identifiers.
     verdict_reason: str = ""
 
 
@@ -393,10 +396,15 @@ def _scoped_budget_label(budget: BudgetResult) -> str:
     templated advice reads "the 'security' slice overall regression rate
     budget was breached" and the FACTS block lists the row under that name.
     """
-    label = BUDGET_LABELS.get(budget.name, budget.name)
-    if budget.scope == "overall":
+    return _scoped_label(budget.name, budget.scope)
+
+
+def _scoped_label(name: str, scope: str) -> str:
+    """The display name for budget ``name`` on ``scope`` — see :func:`_scoped_budget_label`."""
+    label = BUDGET_LABELS.get(name, name)
+    if scope == "overall":
         return label
-    return f"'{budget.scope}' slice {label[:1].lower()}{label[1:]}"
+    return f"'{scope}' slice {label[:1].lower()}{label[1:]}"
 
 
 def _budget_limit(name: str, allowed: float) -> str:
@@ -451,6 +459,15 @@ def _regression_samples(examples: Sequence[ExampleFact]) -> list[RegressionSampl
     ]
 
 
+#: A config key quoted as the source of a slice's limit, as
+#: ``policy._invariant_reason`` words it: "in the 'security' slice, over the 0
+#: allowed by migration_policy.max_invariant_violations".
+_SLICE_KEY_RE = re.compile(
+    r"(?P<lead>in the '(?P<scope>[^']+)' slice, over the \S+ allowed by )"
+    r"migration_policy\.(?P<key>" + "|".join(map(re.escape, BUDGET_LABELS)) + r")\b"
+)
+
+
 def _plain_reason(reason: str) -> str:
     """The decision's reason with the config keys it quotes put into words.
 
@@ -458,7 +475,17 @@ def _plain_reason(reason: str) -> str:
     policy's own prose quotes ``evalshift.yaml`` keys the narrative may not
     show — a banned one costs a faithful generation its retry, an unbanned one
     ships to readers as config vocabulary. Figures are left untouched.
+
+    A key quoted beside a slice's limit is named for that slice, in the label
+    the FACTS block lists the slice row under: "in the 'security' slice, over
+    the 0 allowed by the trace-rule violations budget" pins the slice's 0 on
+    the overall budget, which may have held — and a summary that copies the
+    reason, as instructed, would then blame it.
     """
+    reason = _SLICE_KEY_RE.sub(
+        lambda m: f"{m.group('lead')}the {_scoped_label(m.group('key'), m.group('scope'))} budget",
+        reason,
+    )
     for key, label in BUDGET_LABELS.items():
         reason = reason.replace(
             f"migration_policy.{key}", f"the {label[:1].lower()}{label[1:]} budget"
