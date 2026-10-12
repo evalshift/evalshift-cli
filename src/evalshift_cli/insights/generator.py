@@ -6,7 +6,9 @@ permit-list on the way out: a numeric token that was not supplied as a fact
 means the model calculated something, and in a report that gates merges a
 derived number is a defect even when it happens to be right.
 
-Two attempts, then :func:`evalshift_cli.insights.templates.fallback_insight`. The
+Three checks on the way out — invented figures, echoed identifiers, and on a
+FAIL a held budget blamed for the verdict (:func:`validate_blame`). Two
+attempts, then :func:`evalshift_cli.insights.templates.fallback_insight`. The
 prose is never load-bearing enough to fail a run over — every headline figure on
 the report is rendered from data, and this module only writes the sentences
 around them.
@@ -17,12 +19,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, cast
 
 from evalshift_cli.analysis.policy import BUDGET_LABELS
 from evalshift_cli.evaluators.failures import CATEGORY_LABELS, category_label
-from evalshift_cli.insights.facts import Facts, RegressionSample
+from evalshift_cli.insights.facts import BUDGET_WITHIN, Facts, RegressionSample
 from evalshift_cli.insights.models import (
     INSIGHT_KINDS,
     MAX_FINDING_DETAIL_CHARS,
@@ -70,6 +73,31 @@ _SIGN_CHARS = "+−-"
 #: Models fence JSON even when told not to. Greedy by design: it spans the
 #: outermost braces of a fenced or prose-wrapped object.
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+
+#: Words that lay a verdict at a budget's door. A budget marked "within" that
+#: shares a clause with one of these, un-negated, is a cause the model
+#: invented: a shipped narrative said a run "failed to meet the budget for
+#: Trace-rule violations" when that budget held and only latency broke.
+_BLAME_RE = re.compile(
+    r"\b(?:breach\w*|exceed\w*|fail\w*|violat\w*|address\w*|miss(?:ed|es|ing)?|"
+    r"unmet|not met|over (?:the|its)|above (?:the|its)|broke|broken)\b",
+    re.IGNORECASE,
+)
+
+#: A blame word shortly after one of these is a denial ("was not breached",
+#: "no breach of"), not an accusation. Bounded so a "not" three clauses back
+#: cannot excuse an accusation.
+_NEGATION_RE = re.compile(r"\b(?:not|no|never|without)\b[^.;,]{0,24}$", re.IGNORECASE)
+
+#: Clause boundaries. A contrast word starts a new claim, so "latency was
+#: exceeded while Trace-rule violations stayed within budget" blames only
+#: latency. A bare "and" is deliberately not one: "exceeded latency and failed
+#: to meet Trace-rule violations" is the shipped sentence, and both halves
+#: accuse.
+_CLAUSE_RE = re.compile(
+    r"[.;:!?]\s+|\s(?:while|but|whereas|although|though|however)\s|,\s*(?:and|but)\s",
+    re.IGNORECASE,
+)
 
 _INSTRUCTION = """\
 You are writing the explanation section of a model-migration report. The reader
@@ -128,11 +156,20 @@ class GenerationError(Exception):
         tokens: Offending tokens — invented figures or echoed internal
             identifiers — fed back into the retry so the second attempt can
             correct them. Empty for every other kind of rejection.
+        misblamed: Display labels of budgets that held but were blamed for
+            the verdict — fed back the same way, under their own hint.
     """
 
-    def __init__(self, message: str, *, tokens: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        tokens: list[str] | None = None,
+        misblamed: list[str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.tokens = tokens or []
+        self.misblamed = misblamed or []
 
 
 #: FACTS field names that are not ``rendered`` keys but appear in the prompt
@@ -199,6 +236,50 @@ def validate_numbers(text: str, allowed: frozenset[str]) -> list[str]:
     return [token for token in NUMERIC_TOKEN_RE.findall(text) if not _is_allowed(token, allowed)]
 
 
+def validate_blame(text: str, within: Sequence[str]) -> list[str]:
+    """Return the budgets in ``within`` that ``text`` blames for the verdict.
+
+    A budget that held may be mentioned — "Trace-rule violations stayed within
+    budget" is accurate — but not accused: it may not share a clause with a
+    blame word unless that word is negated. A plain-English accusation carries
+    no digit for :func:`validate_numbers` and no identifier for
+    :func:`validate_identifiers`, so this is the only check that sees it.
+
+    A safety net, not a parser: it catches the shipped phrasing and its close
+    variants, and a false match costs one retry. Labels are matched
+    case-insensitively with hyphens and runs of whitespace folded to one space.
+
+    Args:
+        text: One prose field of a generation.
+        within: Display labels of the budgets whose status is
+            :data:`~evalshift_cli.insights.facts.BUDGET_WITHIN`.
+
+    Returns:
+        The wrongly blamed labels, each once, in ``within`` order. Empty means
+        valid.
+    """
+    needles = {label: _normalise(label) for label in within}
+    blamed: set[str] = set()
+    for clause in (_normalise(c) for c in _CLAUSE_RE.split(text)):
+        present = [label for label, needle in needles.items() if needle in clause]
+        if not present:
+            continue
+        # Every held label comes out before the scan, not just the one under
+        # test: "Trace-rule violations" would otherwise read as a violation
+        # of whichever budget shares its clause.
+        rest = clause
+        for needle in needles.values():
+            rest = rest.replace(needle, " ")
+        if any(not _NEGATION_RE.search(rest[: m.start()]) for m in _BLAME_RE.finditer(rest)):
+            blamed.update(present)
+    return [label for label in within if label in blamed]
+
+
+def _normalise(text: str) -> str:
+    """Lower-case with hyphens and whitespace runs folded, for label matching."""
+    return re.sub(r"[-\s]+", " ", text.lower())
+
+
 async def generate_insight(facts: Facts, *, model: str, client: ModelClient) -> Insight:
     """Write the run's narrative, or fall back to deterministic prose.
 
@@ -215,10 +296,11 @@ async def generate_insight(facts: Facts, *, model: str, client: ModelClient) -> 
         :data:`MAX_ATTEMPTS` unusable generations.
     """
     invented: list[str] = []
+    misblamed: list[str] = []
     for attempt in range(1, MAX_ATTEMPTS + 1):
         response = await client.complete(
             model=model,
-            prompt=build_prompt(facts, invented=invented),
+            prompt=build_prompt(facts, invented=invented, misblamed=misblamed),
             temperature=0.0,
         )
         log.debug(
@@ -232,6 +314,7 @@ async def generate_insight(facts: Facts, *, model: str, client: ModelClient) -> 
         except GenerationError as exc:
             log.warning("insights generation attempt %d rejected: %s", attempt, exc)
             invented = exc.tokens
+            misblamed = exc.misblamed
     log.warning(
         "insights generation produced nothing usable in %d attempts; using templated prose",
         MAX_ATTEMPTS,
@@ -239,7 +322,12 @@ async def generate_insight(facts: Facts, *, model: str, client: ModelClient) -> 
     return fallback_insight(facts)
 
 
-def build_prompt(facts: Facts, *, invented: list[str] | None = None) -> str:
+def build_prompt(
+    facts: Facts,
+    *,
+    invented: list[str] | None = None,
+    misblamed: list[str] | None = None,
+) -> str:
     """Assemble the instruction, the FACTS block and the regression samples.
 
     Args:
@@ -248,6 +336,9 @@ def build_prompt(facts: Facts, *, invented: list[str] | None = None) -> str:
             or echoed internal identifiers. Present only on a retry, where
             naming them is the whole reason the second call is worth paying
             for.
+        misblamed: Budgets that held but a previous attempt blamed for the
+            verdict. Named separately from ``invented``: the label itself is
+            allowed in prose, the accusation is not.
     """
     sections = [
         _INSTRUCTION.format(
@@ -264,6 +355,14 @@ def build_prompt(facts: Facts, *, invented: list[str] | None = None) -> str:
             + ", ".join(dict.fromkeys(invented))
             + ". Figures must be copied verbatim from FACTS; internal "
             "identifiers must be rewritten as plain language."
+        )
+    if misblamed:
+        sections.append(
+            "Your previous answer blamed budgets that held: "
+            + ", ".join(dict.fromkeys(misblamed))
+            + ". Only the budgets under failed_budgets were breached; a budget "
+            "marked within may be described as within policy or left out, never "
+            "as a cause of the verdict or as something to address."
         )
     return "\n\n".join(section for section in sections if section)
 
@@ -347,10 +446,24 @@ def _build_insight(text: str, *, facts: Facts, model: str) -> Insight:
     for field in (*prose.values(), *(t for f in findings for t in (f.title, f.detail))):
         offending.extend(validate_numbers(field, facts.allowed_numbers))
         offending.extend(t for t in validate_identifiers(field, banned) if t not in offending)
-    if offending:
+    # Only a FAIL assigns a cause, and only its verdict summary and
+    # recommendation do the assigning; the advisory and economics summaries
+    # describe signals, and findings describe behaviour.
+    misblamed: list[str] = []
+    if facts.verdict == "fail":
+        held = [label for label, _, status in facts.budget_statuses if status == BUDGET_WITHIN]
+        for field in (prose["verdict_summary"], prose["recommendation"]):
+            misblamed.extend(t for t in validate_blame(field, held) if t not in misblamed)
+    if offending or misblamed:
+        problems: list[str] = []
+        if offending:
+            problems.append(f"tokens that may not be shown: {', '.join(offending)}")
+        if misblamed:
+            problems.append(f"budgets blamed although they held: {', '.join(misblamed)}")
         raise GenerationError(
-            f"response contained tokens that may not be shown: {', '.join(offending)}",
+            "response contained " + "; ".join(problems),
             tokens=offending,
+            misblamed=misblamed,
         )
 
     return Insight(
@@ -442,5 +555,6 @@ __all__ = [
     "GenerationError",
     "build_prompt",
     "generate_insight",
+    "validate_blame",
     "validate_numbers",
 ]

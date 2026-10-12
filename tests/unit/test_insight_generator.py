@@ -15,7 +15,7 @@ import pytest
 
 from evalshift_cli.analysis.policy import BlockingRegression, FailureCategoryCount
 from evalshift_cli.insights.facts import Facts, build_facts
-from evalshift_cli.insights.generator import generate_insight, validate_numbers
+from evalshift_cli.insights.generator import generate_insight, validate_blame, validate_numbers
 from evalshift_cli.models.client import ModelClient
 from tests.unit.insights_factories import (
     SEVERITY_REASON,
@@ -607,3 +607,168 @@ async def test_an_echoed_failed_budgets_key_is_rejected_and_retried(
 
     assert insight.verdict_summary == "The latency ceiling of +30% was exceeded."
     assert fake_client.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# The blame validator
+# ---------------------------------------------------------------------------
+
+_HELD = ["Trace-rule violations", "Cost increase"]
+
+
+def test_blame_catches_the_shipped_sentence() -> None:
+    text = (
+        "The migration failed because the target model exceeded the latency ceiling "
+        "of +30% and failed to meet the budget for Trace-rule violations."
+    )
+    assert validate_blame(text, _HELD) == ["Trace-rule violations"]
+
+
+def test_blame_catches_advice_to_address_a_held_budget() -> None:
+    text = (
+        "Investigate the cause of the latency increase and address the Trace-rule "
+        "violations before re-evaluating."
+    )
+    assert validate_blame(text, _HELD) == ["Trace-rule violations"]
+
+
+def test_a_held_budget_may_be_called_within() -> None:
+    assert validate_blame("Trace-rule violations stayed within budget.", _HELD) == []
+
+
+def test_a_contrast_clause_separates_the_blame() -> None:
+    text = "Latency increase was exceeded while Trace-rule violations stayed within budget."
+    assert validate_blame(text, _HELD) == []
+
+
+def test_a_sentence_boundary_separates_the_blame() -> None:
+    text = "The latency ceiling was exceeded. Trace-rule violations and Cost increase held."
+    assert validate_blame(text, _HELD) == []
+
+
+def test_a_negated_blame_is_not_blame() -> None:
+    assert validate_blame("The Trace-rule violations budget was not breached.", _HELD) == []
+    assert validate_blame("No breach of Cost increase was observed.", _HELD) == []
+
+
+def test_blame_matches_case_and_hyphen_variants() -> None:
+    assert validate_blame("the run failed on trace rule violations", _HELD) == [
+        "Trace-rule violations"
+    ]
+
+
+def test_a_budget_not_in_the_held_list_may_be_blamed() -> None:
+    assert validate_blame("Latency increase was breached.", _HELD) == []
+
+
+def test_every_misblamed_budget_is_returned_once_in_list_order() -> None:
+    text = (
+        "Cost increase was exceeded and Trace-rule violations were violated; Cost increase failed."
+    )
+    assert validate_blame(text, _HELD) == ["Trace-rule violations", "Cost increase"]
+
+
+# ---------------------------------------------------------------------------
+# Blame in a generation: retry with the labels named, then the template
+# ---------------------------------------------------------------------------
+
+_SHIPPED_SUMMARY = (
+    "The migration failed because the target model exceeded the latency ceiling of "
+    "+30% and failed to meet the budget for Trace-rule violations."
+)
+
+
+async def test_a_fail_that_blames_a_held_budget_is_rejected_and_retried(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    sample_run["decision"] = converter_decision()
+    fake_client.queue_responses(
+        _payload(verdict_summary=_SHIPPED_SUMMARY),
+        _payload(verdict_summary="The migration failed because the latency ceiling was exceeded."),
+    )
+    insight = await _generate(build_facts(**sample_run), fake_client)
+
+    assert insight.verdict_summary.endswith("latency ceiling was exceeded.")
+    assert fake_client.call_count == 2
+    assert (
+        "Your previous answer blamed budgets that held: Trace-rule violations."
+        in fake_client.prompts[1]
+    )
+
+
+async def test_a_misblaming_recommendation_is_rejected(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    sample_run["decision"] = converter_decision()
+    fake_client.queue_responses(
+        _payload(recommendation="Address the Trace-rule violations before re-evaluating."),
+        _payload(recommendation="Bring latency back under the ceiling, then re-run."),
+    )
+    insight = await _generate(build_facts(**sample_run), fake_client)
+
+    assert insight.recommendation == "Bring latency back under the ceiling, then re-run."
+    assert fake_client.call_count == 2
+
+
+async def test_two_misblaming_generations_fall_back_to_the_template(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    """The template already names the breached budget, so it is the safe floor."""
+    sample_run["decision"] = converter_decision()
+    bad = _payload(recommendation="Address the Trace-rule violations before re-evaluating.")
+    fake_client.queue_responses(bad, bad)
+    insight = await _generate(build_facts(**sample_run), fake_client)
+
+    assert insight.model == "none"
+    assert insight.recommendation.startswith(
+        "Do not migrate under the configured policy — the latency increase budget was breached."
+    )
+
+
+async def test_a_fail_may_mention_a_held_budget_without_blaming_it(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    sample_run["decision"] = converter_decision()
+    fake_client.queue_responses(
+        _payload(
+            verdict_summary=(
+                "The latency ceiling of +30% was exceeded; Trace-rule violations stayed "
+                "within budget."
+            )
+        )
+    )
+    await _generate(build_facts(**sample_run), fake_client)
+
+    assert fake_client.call_count == 1
+
+
+async def test_blame_is_not_checked_outside_a_fail(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    """The scan is scoped to a FAIL (Global Constraints): only a FAIL assigns a cause.
+
+    The sentence is false on a pass, but it accuses no budget of failing a
+    run that did not fail; the scope is pinned here so widening it is a
+    deliberate change.
+    """
+    fake_client.queue_responses(
+        _payload(verdict_summary="PASS although the Cost increase budget was exceeded.")
+    )
+    await _generate(build_facts(**sample_run), fake_client)
+
+    assert fake_client.call_count == 1
+
+
+async def test_an_invented_number_and_a_misblame_are_both_named_on_retry(
+    fake_client: FakeModelClient, sample_run: dict[str, Any]
+) -> None:
+    sample_run["decision"] = converter_decision()
+    fake_client.queue_responses(
+        _payload(verdict_summary=_SHIPPED_SUMMARY, economics_summary="Cost rose +43%."),
+        _payload(),
+    )
+    await _generate(build_facts(**sample_run), fake_client)
+
+    retry = fake_client.prompts[1]
+    assert "+43%" in retry
+    assert "blamed budgets that held: Trace-rule violations" in retry
