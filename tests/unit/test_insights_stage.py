@@ -188,6 +188,36 @@ def test_a_changed_insights_model_invalidates_the_cache(
     assert fake_client.call_count == 2
 
 
+def test_a_reanalysed_decision_invalidates_the_cache(
+    project: RunFixture, fake_client: FakeModelClient
+) -> None:
+    """A policy edit then ``analyze`` + ``report`` on the same run.
+
+    ``state.config_hash`` is fixed when the run is created, so it cannot see the
+    edit: the report rendered the new verdict beside the cached narrative's old
+    one -- "FAIL under the configured policy" next to a PASS verdict block.
+    """
+    _report(project, client=fake_client)
+    _write_policy(project, "  max_overall_regression_rate: 0.0\n")
+    _persist_decision(project)
+
+    _report(project, client=fake_client)
+    assert fake_client.call_count == 2
+
+
+def test_rescored_records_invalidate_the_cache(
+    project: RunFixture, fake_client: FakeModelClient
+) -> None:
+    """``evaluate`` again on the same run (a new key, an edited evaluator)."""
+    _report(project, client=fake_client)
+    scores = project.run_dir / "scores.jsonl"
+    rows = [line for line in scores.read_text(encoding="utf-8").splitlines() if line.strip()]
+    scores.write_text("\n".join(rows[:-1]) + "\n", encoding="utf-8")
+
+    _report(project, client=fake_client)
+    assert fake_client.call_count == 2
+
+
 # ---------------------------------------------------------------------------
 # The envelope
 # ---------------------------------------------------------------------------

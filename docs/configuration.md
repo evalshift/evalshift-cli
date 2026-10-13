@@ -428,8 +428,11 @@ regenerated if it contains a numeric token that was not supplied. Two
 bad generations fall back to deterministic templated prose.
 
 - One model call per run (a second only on a rejected generation),
-  cached in `insights.json` and keyed on the run's `config_hash` plus
-  the model id — re-running `report` or `push` costs nothing.
+  cached in `insights.json` and keyed on the run's `config_hash`, the
+  model id and the figures the narrative describes — re-running `report`
+  or `push` costs nothing, while re-running `evaluate` or `analyze` on the
+  same run after an `evalshift.yaml` edit regenerates it on the next
+  `report`.
 - Skip it with `--insights/--no-insights` on `report` and `compare`. It is
   also skipped when no API key is configured for the chosen model, and
   when the run has no usable `evalshift.yaml`.

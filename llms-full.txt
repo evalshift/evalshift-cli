@@ -228,6 +228,8 @@ evalshift report RUN_ID [-c CONFIG] [--open] [--insights/--no-insights (default 
   as their labels (max_tool_divergence -> "Tool-selection divergence"; map in
   analysis/policy.py BUDGET_LABELS) with the yaml field kept as a secondary code hint in the
   budget-failures table only. report.json and the bundle keep the machine labels.
+  decision.failure_categories counts each label per distinct (prompt, example), never per
+  row (tool_selection stamps TOOL_SELECTION_DRIFT on its conformance and divergence rows).
 evalshift compare [run flags] [--gate SEVS] [--policy-gate] [--open] [--push]
     [--insights/--no-insights (default on)]
   doctor -> run -> evaluate -> analyze -> report under one live progress display, for one
@@ -1250,12 +1252,15 @@ Model: defaults.insights_model, falling back to defaults.judge_model.
   Heuristic safety net by design: it catches the shipped phrasing and close variants, the
   prompt rule is the primary fix; a false match costs the retry (shared with invented-number
   rejections) and a repeated one ships the templated prose, which has no findings. Cached
-  narratives do not regenerate (key = config_hash + model, not the CLI version): delete
-  insights.json to rewrite an existing run's prose.
+  narratives regenerate only when a figure moves (key = config_hash + model + FACTS digest,
+  not the CLI version): delete insights.json to rewrite an existing run's prose.
 - Prompt input: the pre-rendered FACTS block plus the worst 8 regressions by worst_delta_score
   (input + both outputs, each truncated to 2000 chars). Same data exposure as llm_judge.
 - Cost: 1 model call per run (2 on a rejected generation). Cached in insights.json keyed on
-  state.config_hash + model id, so re-running report/push is free; either moving = cache miss.
+  state.config_hash + model id + a digest of the FACTS block, so re-running report/push is
+  free; any moving = cache miss. state.config_hash is fixed at run creation, so the FACTS
+  digest is what catches evaluate/analyze re-run on the same run after a yaml edit. push
+  ships whatever the last report cached.
 - Skipped, never an error: silently on --no-insights; with a warning when there is no provider
   API key for the chosen model or no loadable evalshift.yaml. Any generation failure is
   swallowed and leaves the narrative absent — a narrative NEVER fails a run.
