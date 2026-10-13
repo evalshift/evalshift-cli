@@ -1534,7 +1534,12 @@ def _blocking_regressions(comparisons: list[ComparisonResult]) -> list[BlockingR
 
 
 def _failure_categories(records: list[EvalRecord]) -> list[FailureCategoryCount]:
-    """Count each failure category over the rows that carry it.
+    """Count each failure category over the distinct examples that carry it.
+
+    Per example, not per row: one example can write several rows carrying the
+    same category -- ``tool_selection`` flags ``TOOL_SELECTION_DRIFT`` on its
+    conformance *and* its divergence row -- and the narrative built on these
+    counts reads them as "(N examples)".
 
     ``INVARIANT_VIOLATION`` is the exception: every ``trace_invariants`` row
     carries it when the target broke a rule, advisory or not, source too or
@@ -1544,13 +1549,14 @@ def _failure_categories(records: list[EvalRecord]) -> list[FailureCategoryCount]
     :func:`_invariant_violation_counts` over the blocking rows, so the two can
     never disagree.
     """
-    counter: Counter[str] = Counter()
+    examples: dict[str, set[tuple[str, str]]] = {}
     for r in records:
         raw = r.metadata.get("failure_categories", [])
         if isinstance(raw, list):
             for item in raw:
                 if isinstance(item, str) and item and item != INVARIANT_VIOLATION:
-                    counter[item] += 1
+                    examples.setdefault(item, set()).add((r.prompt_id, r.example_id))
+    counter: Counter[str] = Counter({category: len(ids) for category, ids in examples.items()})
     violated, _ = _invariant_violation_counts([r for r in records if r.blocking])
     if violated:
         counter[INVARIANT_VIOLATION] = violated

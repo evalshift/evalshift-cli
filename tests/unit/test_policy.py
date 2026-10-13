@@ -3016,6 +3016,27 @@ class TestInvariantFailureCategory:
         assert INVARIANT_VIOLATION not in {c.category for c in decision.failure_categories}
 
 
+class TestFailureCategoryCountsExamples:
+    def test_one_example_flagged_by_two_axes_counts_once(self) -> None:
+        """The narrative reads "Different tools chosen (N examples)".
+
+        ``tool_selection`` writes a conformance *and* a divergence row per
+        example, and both carry ``TOOL_SELECTION_DRIFT`` when the target picked
+        another tool -- counting rows read "2 examples" for one example.
+        """
+        decision = _decide(
+            [
+                _conformance_record("e1", 1.0, 0.0),
+                _divergence_record("e1", 0.0),
+                _divergence_record("e2", 0.0),
+                _conformance_record("e3", 1.0, 1.0),
+                _divergence_record("e3", 1.0),
+            ],
+        )
+        counts = {c.category: c.count for c in decision.failure_categories}
+        assert counts[TOOL_SELECTION_DRIFT] == 2
+
+
 _SKIPPED_SEMANTIC = SkippedEvaluator(
     evaluator_name="semantic.cosine",
     kind="semantic",

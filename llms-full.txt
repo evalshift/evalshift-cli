@@ -228,6 +228,8 @@ evalshift report RUN_ID [-c CONFIG] [--open] [--insights/--no-insights (default 
   as their labels (max_tool_divergence -> "Tool-selection divergence"; map in
   analysis/policy.py BUDGET_LABELS) with the yaml field kept as a secondary code hint in the
   budget-failures table only. report.json and the bundle keep the machine labels.
+  decision.failure_categories counts each label per distinct (prompt, example), never per
+  row (tool_selection stamps TOOL_SELECTION_DRIFT on its conformance and divergence rows).
 evalshift compare [run flags] [--gate SEVS] [--policy-gate] [--open] [--push]
     [--insights/--no-insights (default on)]
   doctor -> run -> evaluate -> analyze -> report under one live progress display, for one

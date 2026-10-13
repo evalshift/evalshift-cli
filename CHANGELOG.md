@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Failure categories count examples, not scored rows. `tool_selection` stamps
+  `TOOL_SELECTION_DRIFT` on both its conformance and its divergence row, so one example
+  that picked another tool read "Different tools chosen (2 examples)" in the narrative
+  and 2 in the report's top regression causes. Each label is now counted once per
+  distinct example, as `INVARIANT_VIOLATION` already was.
+
 ## [1.4.2] - 2026-10-12
 
 ### Fixed
