@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-10-13
+
 ### Fixed
 
 - Failure categories count examples, not scored rows. `tool_selection` stamps
