@@ -26,6 +26,7 @@ import json
 import logging
 import os
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -94,7 +95,11 @@ def ensure_insight(
     try:
         state = read_state(run_dir)
         model = cfg.defaults.insights_model or cfg.defaults.judge_model
-        config_hash = insights_config_hash(run_config_hash=state.config_hash, model=model)
+        # Built before the lookup because the facts are part of the key.
+        facts = build_run_facts(run_dir, state=state)
+        config_hash = insights_config_hash(
+            run_config_hash=state.config_hash, model=model, facts=facts
+        )
 
         cached = load_cached_insight(run_dir, config_hash=config_hash)
         if cached is not None:
@@ -109,7 +114,6 @@ def ensure_insight(
             )
             return None
 
-        facts = build_run_facts(run_dir, state=state)
         insight = asyncio.run(
             generate_insight(facts, model=model, client=client or ModelClient()),
         )
@@ -121,16 +125,36 @@ def ensure_insight(
     return insight
 
 
-def insights_config_hash(*, run_config_hash: str, model: str) -> str:
+def insights_config_hash(*, run_config_hash: str, model: str, facts: Facts) -> str:
     """The cache key for a run's narrative.
 
     ``run_config_hash`` is the run's own ``state.config_hash`` — the canonical
-    config plus the suite path — which moves whenever anything the figures are
-    derived from moves. The model id is folded in on top because provenance is
-    part of the narrative: prose attributed to a model that no longer writes it
-    is stale even when every figure in it still holds.
+    config plus the suite path. It is fixed when the run is created, so it
+    cannot see what moves the figures afterwards: ``evaluate`` and ``analyze``
+    re-read ``evalshift.yaml`` on every invocation, and a newer CLI re-analyses
+    an old run differently. ``facts`` is everything the narrative may refer to,
+    so folding it in makes any of those a miss — a policy edit followed by
+    ``analyze`` + ``report`` once rendered "FAIL under the configured policy"
+    beside a PASS verdict block — while a plain re-render still hits. The model
+    id is folded in on top because provenance is part of the narrative: prose
+    attributed to a model that no longer writes it is stale even when every
+    figure in it still holds.
     """
-    return _sha256({"config_hash": run_config_hash, "model": model})
+    return _sha256(
+        {"config_hash": run_config_hash, "model": model, "facts": _facts_digest(facts)},
+    )
+
+
+def _facts_digest(facts: Facts) -> str:
+    """A stable hash of ``facts``; frozensets are sorted so the order is fixed."""
+    canonical = json.dumps(
+        asdict(facts),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=lambda value: sorted(value) if isinstance(value, frozenset) else str(value),
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _sha256(value: Any) -> str:
@@ -169,8 +193,9 @@ def read_bundle_insight(run_dir: Path) -> dict[str, Any] | None:
     Re-serialised through :class:`~evalshift_cli.insights.models.Insight` rather
     than handed over as read: a hand-edited cache file cannot then smuggle a
     key past the server's ``extra="forbid"`` model. Validity of the cache is
-    not checked — a narrative written for an earlier config still describes
-    this run's artifacts, and ``report`` is what refreshes it.
+    not checked here: ``report`` is what refreshes it (see
+    :func:`insights_config_hash`), so a push straight after a re-``analyze``,
+    with no ``report`` between, ships the narrative the last report wrote.
     """
     envelope = _read_envelope(run_dir)
     if envelope is None:

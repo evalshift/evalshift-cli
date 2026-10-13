@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that picked another tool read "Different tools chosen (2 examples)" in the narrative
   and 2 in the report's top regression causes. Each label is now counted once per
   distinct example, as `INVARIANT_VIOLATION` already was.
+- The cached run narrative no longer outlives the figures it describes. `insights.json`
+  was keyed on the run's `config_hash`, which is fixed when the run is created, while
+  `evaluate` and `analyze` re-read `evalshift.yaml` every time: loosening a budget and
+  re-running `analyze` + `report` rendered a PASS verdict beside a cached "FAIL under the
+  configured policy" paragraph. The key now also covers the narrative's facts (scores,
+  analysis and the persisted decision), so any change to them regenerates it on the next
+  `report`; a plain re-render still reuses it. Existing caches miss once and regenerate.
 
 ## [1.4.2] - 2026-10-12
 
