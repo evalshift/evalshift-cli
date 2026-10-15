@@ -290,6 +290,34 @@ class TestEndToEnd:
         assert (runs[0] / "scores.jsonl").exists()
         assert (runs[0] / "analysis.json").exists()
 
+    def test_all_asks_for_a_star_on_a_terminal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        _scaffold(tmp_path)
+        _patch_client(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"], env={"TTY_COMPATIBLE": "1"})
+
+        assert result.exit_code == 0, result.output
+        assert "github.com/evalshift/evalshift-cli" in result.output
+
+    def test_all_no_star_request_when_piped(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        _scaffold(tmp_path)
+        _patch_client(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["all", "--yes"], env={"TTY_COMPATIBLE": "0"})
+
+        assert result.exit_code == 0, result.output
+        assert "github.com/evalshift/evalshift-cli" not in result.output
+
     def test_all_prints_warnings_under_the_pipeline_block(
         self,
         monkeypatch: pytest.MonkeyPatch,

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `evalshift report` and `evalshift compare` end with a one-line request to star the
+  project on GitHub, with the repo link. It prints on interactive terminals only, so CI
+  logs, the GitHub Action's output and anything piped stay free of it.
+
 ## [1.4.3] - 2026-10-13
 
 ### Fixed

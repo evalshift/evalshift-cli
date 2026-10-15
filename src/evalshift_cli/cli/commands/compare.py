@@ -33,6 +33,7 @@ from rich.live import Live
 from rich.text import Text
 
 from evalshift_cli.analysis.statistics import ComparisonResult
+from evalshift_cli.cli.commands._star import print_star_prompt
 from evalshift_cli.cli.commands._suites import (
     SUITE_FILENAME,
     AmbiguousSuiteError,
@@ -748,6 +749,7 @@ def compare_command(
     console.print(f"[dim]run   [/dim] [bold cyan]{run_result.run_id}[/bold cyan]")
     console.print(f"[dim]suite [/dim] {run_slug}")
     console.print(f"[dim]report[/dim] {report_result.html_path}")
+    print_star_prompt(console)
 
     if push:
         try:
