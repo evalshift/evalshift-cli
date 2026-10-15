@@ -215,6 +215,8 @@ evalshift analyze RUN_ID [-c CONFIG] [--gate SEVS] [--policy-gate]
 evalshift report RUN_ID [-c CONFIG] [--open] [--insights/--no-insights (default on)]
   -> report.html + report.json (+ insights.json). --no-insights skips the narrative and its
   one extra LLM call. See "Run insights".
+  On an interactive terminal only, report and compare end with one GitHub-star request
+  line (https://github.com/evalshift/evalshift-cli); piped/CI output never carries it.
   report.html layout: header (run id, source->target, suite, examples/calls, spend) ->
   verdict / advisory-signal / economics panels -> six-cell run strip (examples, calls,
   failed/truncated, total cost, latency delta, mean score delta) -> recommendations +

@@ -185,6 +185,10 @@ evalshift report <run-id> --open
 (`--from/--to`, `--config`, `--suite`, `--suite-name`, `--yes`, `--resume`,
 `--gate`, `--policy-gate`, `--open`, `--push`).
 
+When run in a terminal, `report` and `compare` finish with a one-line request
+to star [the repo on GitHub](https://github.com/evalshift/evalshift-cli). It is
+skipped whenever output is piped or captured, so CI logs stay clean.
+
 One invocation compares two models on **one** suite. It picks the suite for
 you when `evalshift.yaml` wires exactly one; with several, name it with
 `--suite-name` (the error lists a ready-to-run command per suite). To cover

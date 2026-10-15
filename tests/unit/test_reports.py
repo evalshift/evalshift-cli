@@ -1061,6 +1061,36 @@ class TestReportCommand:
         assert (run_dir / REPORT_HTML_FILENAME).exists()
         assert (run_dir / REPORT_JSON_FILENAME).exists()
 
+    def test_asks_for_a_star_on_a_terminal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        cwd, run_id = _scaffold_full_run(tmp_path)
+        (cwd / "evalshift.yaml").write_text(
+            "prompts:\n  - {id: greet, detection: manual, content: hi}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(cwd)
+        result = runner.invoke(
+            app, ["report", run_id, "--no-insights"], env={"TTY_COMPATIBLE": "1"}
+        )
+        assert result.exit_code == 0, result.stdout
+        assert "github.com/evalshift/evalshift-cli" in result.stdout
+
+    def test_no_star_request_when_piped(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        cwd, run_id = _scaffold_full_run(tmp_path)
+        (cwd / "evalshift.yaml").write_text(
+            "prompts:\n  - {id: greet, detection: manual, content: hi}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(cwd)
+        result = runner.invoke(
+            app, ["report", run_id, "--no-insights"], env={"TTY_COMPATIBLE": "0"}
+        )
+        assert result.exit_code == 0, result.stdout
+        assert "github.com/evalshift/evalshift-cli" not in result.stdout
+
     def test_missing_analysis_exits_one_with_hint(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

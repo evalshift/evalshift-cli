@@ -901,6 +901,7 @@ Prints a red doctor-style **broken eval harness** row when the *source* model fa
 `-c/--config` · `--gate <severities>` · `--policy-gate`
 
 **`evalshift report <run-id>`** — render `report.html` + `report.json`. `-c/--config` · `--open` · `--insights/--no-insights` (default on; one extra LLM call — see [Run insights](#run-insights))
+On an interactive terminal, `report` and `compare` end with one line asking for a GitHub star, with the repo link. It is not printed when output is piped or captured (CI, the GitHub Action), so logs and step summaries never carry it.
 
 **`evalshift compare`** — full pipeline under one live display: two models, **one** suite. It takes a single `--suite-name`/`--suite`, auto-selects when exactly one suite is wired, and prints a ready-to-run command per suite when several are. It does not run every suite — loop over the names, or use one CI job per suite. Formerly `all`; that name is hidden but still works, since scaffolded `EVALSHIFT.md` files reference it.
 All `run` flags, plus `--gate` · `--policy-gate` · `--open` · `--push` · `--insights/--no-insights`

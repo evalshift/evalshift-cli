@@ -15,6 +15,7 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
+from evalshift_cli.cli.commands._star import print_star_prompt
 from evalshift_cli.cli.commands.doctor import CONFIG_FILENAME
 from evalshift_cli.config.loader import ConfigError, load_config
 from evalshift_cli.insights.stage import ensure_insight
@@ -159,6 +160,7 @@ def report(
 
     console.print(f"[green]✓[/green] {result.html_path}")
     console.print(f"[green]✓[/green] {result.json_path}")
+    print_star_prompt(console)
 
     if open_browser:
         webbrowser.open(result.html_path.resolve().as_uri())
