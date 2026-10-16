@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 from evalshift_cli.captures.remote import RemoteStore, RemoteStoreUnavailable
 from evalshift_cli.captures.store_uri import StoreURI
 from evalshift_cli.cli.commands import capture as capture_module
-from evalshift_cli.cli.commands.init import render_minimal_config
+from evalshift_cli.cli.commands.init import CAPTURES_SCAFFOLD, render_minimal_config
 from evalshift_cli.cli.main import app
 from evalshift_cli.suite.loader import load_jsonl
 from tests.unit.fake_remote_store import FakeRemoteStore, populated_store
@@ -24,7 +24,7 @@ def _invoke(args: list[str], base: Path) -> Any:
 
 
 def _write_config(path: Path, *, store: str | None = "s3://acme-evals/support-agent") -> Path:
-    text = render_minimal_config(profile="model-upgrade")
+    text = render_minimal_config(profile="model-upgrade").replace(CAPTURES_SCAFFOLD + "\n", "")
     if store is not None:
         text += f"\ncaptures:\n  store: {store}\n"
     path.write_text(text, encoding="utf-8")
@@ -228,10 +228,10 @@ def test_invalid_init_config_with_captures_only_in_comments_stays_silent(
     tmp_path: Path, remote: FakeRemoteStore, command: str
 ) -> None:
     # `evalshift init` output mentions "captures" in comments; that is not a store request.
+    # Its top-level `captures:` block is stripped so only the comments remain.
     config = tmp_path / "evalshift.yaml"
-    config.write_text(
-        render_minimal_config(profile="model-upgrade") + "\ntypo_key: 1\n", encoding="utf-8"
-    )
+    text = render_minimal_config(profile="model-upgrade").replace(CAPTURES_SCAFFOLD + "\n", "")
+    config.write_text(text + "\ntypo_key: 1\n", encoding="utf-8")
     assert b"captures" in config.read_bytes()
     result = _invoke([command, "--config", str(config)], tmp_path)
     assert result.exit_code == 0, result.output

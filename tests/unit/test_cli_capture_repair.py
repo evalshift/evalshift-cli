@@ -18,7 +18,7 @@ from evalshift_cli.captures.models import PromotedCase
 from evalshift_cli.captures.remote import RemoteStore
 from evalshift_cli.captures.store_uri import StoreURI
 from evalshift_cli.cli.commands import capture as capture_module
-from evalshift_cli.cli.commands.init import render_minimal_config
+from evalshift_cli.cli.commands.init import CAPTURES_SCAFFOLD, render_minimal_config
 from evalshift_cli.cli.main import app
 from evalshift_cli.suite.models import SuiteExample
 from tests.unit.fake_remote_store import (
@@ -84,7 +84,8 @@ def store(monkeypatch: pytest.MonkeyPatch) -> FakeRemoteStore:
 def _config(base: Path) -> Path:
     path = base / "evalshift.yaml"
     path.write_text(
-        render_minimal_config(profile="model-upgrade") + "\ncaptures:\n  store: s3://b/p\n",
+        render_minimal_config(profile="model-upgrade").replace(CAPTURES_SCAFFOLD + "\n", "")
+        + "\ncaptures:\n  store: s3://b/p\n",
         encoding="utf-8",
     )
     return path

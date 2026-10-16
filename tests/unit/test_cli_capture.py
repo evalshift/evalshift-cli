@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
 from evalshift_cli.captures.toolset import EMPTY_TOOLSET_FINGERPRINT, fingerprint_tools
 from evalshift_cli.cli.commands.capture import _build_suite_entries, _declared_tool_properties
-from evalshift_cli.cli.commands.init import render_minimal_config
+from evalshift_cli.cli.commands.init import CAPTURES_SCAFFOLD, render_minimal_config
 from evalshift_cli.cli.main import app
 from evalshift_cli.config.loader import load_config
 from evalshift_cli.suite.loader import load_jsonl
@@ -21,8 +21,13 @@ runner = CliRunner()
 
 
 def _write_min_config(path: Path) -> None:
-    """Write a minimal init-style config (with the managed suites markers)."""
-    path.write_text(render_minimal_config(profile="model-upgrade"), encoding="utf-8")
+    """Write a minimal init-style config (with the managed suites markers).
+
+    Without the scaffold's capture limits: these tests pin unbounded sync, and their
+    fixtures' June 2026 captures are older than the scaffold's 14d max_age.
+    """
+    text = render_minimal_config(profile="model-upgrade").replace(CAPTURES_SCAFFOLD + "\n", "")
+    path.write_text(text, encoding="utf-8")
 
 
 def _write_empty_capture(base: Path, *, capture_id: str, suite: str) -> Path:
