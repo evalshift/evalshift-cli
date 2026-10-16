@@ -143,7 +143,7 @@ fresh captures arrive (see [Bounded suites](configuration.md#bounded-suites)).
 ```bash
 evalshift capture list                  # what was recorded (--json for machine output)
 evalshift capture fetch                 # mirror new captures from captures.store
-evalshift capture sync                  # promote ALL captures → suites + wire evalshift.yaml
+evalshift capture sync                  # promote captures → suites + wire evalshift.yaml
 evalshift capture promote cap_ab12 --as refund_case_1
 evalshift capture diff cap_ab12 cap_cd34
 evalshift capture clean                 # delete already-promoted capture files

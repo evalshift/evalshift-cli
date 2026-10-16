@@ -2,6 +2,13 @@
 
 **Date:** 2026-10-16 · **Status:** approach A approved in chat, spec for maintainer review · **Repos:** evalshift-cli (behaviour + docs); evalshift-sdk, evalshift-action, evalshift-server, evalshift-client (nothing — follow-ups recorded)
 
+> **Implemented; this spec predates the code.** Where the shipped behaviour differs, the
+> deviations are listed in the plan's "Execution notes"
+> (`docs/superpowers/plans/2026-10-16-bounded-capture-suites.md`). Example output strings below
+> (§3, §6, §7, §8) were written before implementation and are not the CLI's exact text. The
+> source and the user docs (`docs/configuration.md#bounded-suites`, `DOCS.md`, `llms-full.txt`)
+> are authoritative.
+
 ## Problem
 
 A team that ships captures to a bucket (`EVALSHIFT_CAPTURE_STORE`) and switches
@@ -167,8 +174,9 @@ route, content keys. `SuitePlan`: groups to add, `(case name, reason)` to retire
 - **Trim:** if `excess > 0` once `S` is exhausted (a legacy or over-cap suite), retire from `F`: the
   most-represented route each time, oldest first within it. `P` is never trimmed; if `|P| > max_cases`
   sync warns and keeps them.
-- **Unknown capture time:** when ordering retirement (c) or the trim, a case whose capture time is
-  unknown (neither `captured_at` nor `promoted_at` parses) counts as the oldest.
+- **Unknown capture time:** a case whose capture time is unknown (neither `captured_at` nor
+  `promoted_at` parses) counts as the oldest when ordering the model-stale group (b) and the trim.
+  An age-stale case (c) always has a known time.
 
 Without `max_cases`: every eligible candidate is added (today's behaviour, minus too-old /
 other-model captures when those filters are set), and nothing is retired.

@@ -1085,14 +1085,15 @@ captures:
 | Field       | Type                              | Default | Description |
 | ----------- | --------------------------------- | ------- | ----------- |
 | `store`     | string (URI)                      | (none)  | Object store the SDK writes to. `capture sync` and `capture list` fetch new captures and toolset sidecars from it into the local directory first; `capture fetch` does only that step. |
-| `max_age`   | duration (`30m`, `24h`, `14d`; > 0) | (none)  | Captures recorded longer ago than this never enter a suite, and promoted cases that old are stale: `capture sync` replaces them as fresh captures arrive. Also the window `capture sync` fetches from `store`. Omit for no age limit. |
+| `max_age`   | duration (`30m`, `24h`, `14d`; > 0) | (none)  | Captures recorded longer ago than this never enter a suite through `capture sync` (`capture promote` ignores the limits), and promoted cases that old are stale: `capture sync` replaces them as fresh captures arrive. Also the window `capture sync` fetches from `store`. Omit for no age limit. |
 | `max_cases` | int (≥ 1)                         | (none)  | The most cases `capture sync` keeps in each captured suite. Omit and suites grow with every sync. |
 
 Setting either `max_age` or `max_cases` turns [bounded suites](#bounded-suites) on. Both work
 without `store`: they govern how captures become suites, whether the captures came from disk or
-from a bucket. A `max_age` that is not a duration fails to load with
-`captures.max_age: expected a duration like 30m, 24h or 14d`. A bare number is rejected too,
-because it would silently mean seconds.
+from a bucket. A `max_age` that is not a duration fails to load; `evalshift validate` reports it as
+`captures.max_age: Value error, expected a duration like 30m, 24h or 14d`, followed by the value
+it got (`, got '2w'`). A bare number such as `14` is rejected the same way, because it would
+silently mean seconds.
 
 CLI versions before 1.3.0 reject the `captures:` key, and versions before this release reject
 `max_age` and `max_cases` (the config is strict). Bump the CLI, and a pinned GitHub Action's
@@ -1147,7 +1148,7 @@ migration, cases recorded on the old model keep gating CI as if they were still 
 `max_age` and `max_cases` keep each captured suite a capped, route-balanced sample of recent
 production on `defaults.source_model`, refreshed by `capture sync` and a reviewed PR.
 
-**Opt-in.** Every behaviour on this page applies only when `max_age` or `max_cases` is set.
+**Opt-in.** Every behaviour in this section applies only when `max_age` or `max_cases` is set.
 `defaults.source_model` alone changes nothing, since nearly every config sets it. Without the two
 keys, sync promotes and keeps exactly what it did before. The one change that applies either way:
 promoted case files now record `captured_at` (the capture's `created_at`, verbatim) and
@@ -1196,11 +1197,12 @@ empty a suite nor freeze it.
 3. **Retire stale cases to make room, not because they are stale.** A stale case whose question an
    added capture asks again is retired outright: the new case replaces it, and the suite never
    holds the same content twice. Any other stale case leaves only while the suite is over
-   `max_cases`: cases recorded on another model first, then the oldest. A suite with nothing to
+   `max_cases`: cases recorded on another model first, then the oldest (among the other-model
+   cases, one whose capture time is unknown counts as the oldest). A suite with nothing to
    replace its stale cases keeps them, up to the cap, and `doctor` and `compare` say so (below).
 4. **Trim what is still over.** A suite promoted before the limits existed, or after `max_cases`
-   was lowered, loses fresh cases from its most-represented route, oldest first. A case whose
-   capture time is unknown counts as the oldest.
+   was lowered, loses fresh cases from its most-represented route, oldest first. A fresh case
+   whose capture time is unknown counts as the oldest.
 
 Cases a human marked `provenance: reviewed` on any expected tool call are never retired or
 trimmed. If they alone exceed the cap, sync keeps them and warns
@@ -1237,7 +1239,8 @@ filtered.
 #### Fetch window
 
 With `max_age` set and `store` configured, the automatic fetch that `capture sync` runs skips
-objects last written more than `max_age` ago. The summary names the cutoff:
+captures last written more than `max_age` ago. Toolset sidecars missing locally are always
+fetched, whatever their age. The summary names the cutoff:
 `fetched 40 capture(s) and 0 toolset(s) from s3://… (skipped 4 promoted, 11 older than
 captures.max_age (14d))`. `--since` overrides it. `capture list` and `capture fetch` do not apply
 it. The fetch does not sample: a listing gives only key, time and size, and a turn without its own
@@ -1287,7 +1290,7 @@ the base). The CLI consumes them via the `capture` commands:
 ```shell
 evalshift capture list                          # see what the SDK recorded
 evalshift capture fetch                         # (captures.store only) mirror new captures locally
-evalshift capture sync --input-var query        # promote every capture + wire suites:
+evalshift capture sync --input-var query        # promote captures + wire suites:
 evalshift run --suite-name support_agent --yes  # score a candidate model against it
 evalshift capture clean                         # prune already-promoted captures
 ```
@@ -1305,9 +1308,10 @@ references. Each deletion asks first; `--yes`/`-y` skips both prompts.
 under `.evalshift/captures/` into golden suites at
 `.evalshift/suites/<suite>/golden.jsonl` **and** injects the resulting
 `suites:` block into `evalshift.yaml` between the managed marker comments.
-With `captures.max_age` or `captures.max_cases` set, it promotes a capped,
-route-balanced sample of recent captures instead, and retires stale cases as
-fresh ones replace them (see [Bounded suites](#bounded-suites)).
+With `captures.max_age` set, captures older than it are not promoted; with
+`captures.max_cases` set, it promotes a capped, route-balanced sample instead,
+and retires stale cases as fresh ones replace them (see
+[Bounded suites](#bounded-suites)).
 
 Each suite's entry is generated from what that suite's own rows contain, tool
 evaluators included, so nothing has to be wired by hand:

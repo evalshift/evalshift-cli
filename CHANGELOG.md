@@ -10,32 +10,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Bounded capture suites.** Two optional settings under `captures:`,
-  `max_age: 14d` and `max_cases: 200`, keep each captured suite a capped,
-  route-balanced sample of recent production on `defaults.source_model`.
-  Setting either one turns the feature on. `capture sync` then promotes only
-  captures recorded within `max_age` on the source model. With `max_cases`
-  set, it never grows a suite past the cap and swaps stale cases (too old, or
-  recorded on another model) for fresh captures as they arrive. A stale case
-  whose question a fresh capture asks again is retired at once. Any other
-  stale case leaves only to make room, so a suite that has nothing to replace
-  it with never shrinks. A conversation enters whole or not at all. Cases a
-  human marked `provenance: reviewed` are never retired. The same captures
-  give the same suite on any machine, and syncing again with nothing new
-  changes no file. `max_cases` also trims suites sync did not build: suites
-  promoted by hand with `capture promote`, and suites whose entry is
-  `managed: false` (that flag freezes the YAML entry, not the case files).
-  Model ids match on bare names: lower-cased, provider prefix and trailing
-  snapshot date dropped, no alias lookup. If none of a suite's cases and
-  captures was recorded on `defaults.source_model`, sync warns
-  (`none of N case(s) and capture(s) were recorded on <model> …; not filtering
-  by model — check defaults.source_model`) and does not filter that suite by
-  model rather than empty it. `max_age` also bounds what `capture sync`'s
-  automatic fetch downloads from `captures.store`; `--since` still overrides
-  it, and `capture list` and `capture fetch` are unchanged. Sync prints one
-  line per suite: `alpha: 200 cases — kept 150, retired 50 (32 older than
-  14d, 18 on another model), added 50 of 2940 eligible; not eligible: …`.
-  A suite whose case files cannot be read is left untouched, with a warning,
-  and the other suites still sync.
+  `max_age: 14d` and `max_cases: 200`, together keep each captured suite a
+  capped, route-balanced sample of recent production on
+  `defaults.source_model`. Setting either one turns the feature on; without
+  them `capture sync` behaves as before.
+- **Filter.** With either limit set, `capture sync` promotes only captures
+  recorded on `defaults.source_model`, and with `max_age` set, only captures
+  recorded within it. Model ids match on bare names: lower-cased, provider
+  prefix and trailing snapshot date dropped, no alias lookup. `max_age` alone
+  caps nothing. `capture promote` ignores the limits.
+- **Plan.** With `max_cases` set, sync never grows a suite past the cap and
+  swaps stale cases (too old, or recorded on another model) for fresh
+  captures as they arrive. A stale case leaves at once when a fresh capture of
+  the same question is added in its place; with no free slot nothing is
+  added and the stale case stays. Any other stale case leaves only to make
+  room, so a suite that has nothing to replace it with never shrinks. A
+  conversation enters whole or not at all. Cases a human marked
+  `provenance: reviewed` are never retired. The same captures give the same
+  suite on any machine, and syncing again with nothing new changes no file.
+  `max_cases` also trims suites sync did not build: suites promoted by hand
+  with `capture promote`, and suites whose entry is `managed: false` (that
+  flag freezes the YAML entry, not the case files). A suite whose case files
+  cannot be read is left untouched, with a warning, and the other suites
+  still sync.
+- **Guardrail.** If none of a suite's cases and captures was recorded on
+  `defaults.source_model`, sync warns (`none of N case(s) and capture(s) were
+  recorded on <model> …; not filtering by model — check
+  defaults.source_model`) and does not filter that suite by model rather than
+  empty it.
+- **Fetch.** `max_age` also bounds which captures `capture sync`'s automatic
+  fetch downloads from `captures.store` (toolset sidecars are always
+  fetched); `--since` still overrides it, and `capture list` and
+  `capture fetch` are unchanged.
+- **Output.** Sync prints one line per suite: `alpha: 200 cases — kept 150,
+  retired 50 (32 older than 14d, 18 on another model), added 50 of 2940
+  eligible; not eligible: …`.
 - `doctor` gains `suite freshness` rows for each `source: captured` suite when
   either limit is set: `ok` (`alpha: 200 cases, captured 2d–12d ago`), or one
   `warn` per finding — the newest case is older than `max_age`, cases were

@@ -96,7 +96,7 @@ together or not at all: one larger than the suite's free slots is skipped,
 never split (see [Bounded suites](configuration.md#bounded-suites)).
 
 ```bash
-evalshift capture sync                              # promote every capture,
+evalshift capture sync                              # promote captures,
                                                       #   wire suites: into evalshift.yaml
 evalshift run --suite-name support_agent --yes       # score a candidate model against it
 ```

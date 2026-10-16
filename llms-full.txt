@@ -466,9 +466,10 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
     fewest cases so far that still has a group that fits (ties by route name); within a route,
     sha256(group key) order. Retire: a stale case whose content key an added turn replays is
     retired OUTRIGHT, even under the cap (no duplicate content; also under --keep-duplicates);
-    other stale cases only while over max_cases: model-stale first, then oldest (unknown time =
-    oldest), ties by name -- a suite never shrinks because it went stale. Still over: trim fresh
-    cases from the most-represented route, oldest first. Reviewed over the cap -> kept + "<suite>:
+    no free slot -> nothing added -> the stale twin stays. Other stale cases only while over
+    max_cases: model-stale first (oldest first, unknown time = oldest), then age-stale oldest
+    first, ties by name -- a suite never shrinks because it went stale. Still over: trim fresh
+    cases from the most-represented route, oldest first (unknown time = oldest). Reviewed over the cap -> kept + "<suite>:
     N reviewed case(s) over captures.max_cases M; reviewed cases are never retired, so it stays
     over." Dedup seed: a stale non-reviewed case gives up its content claim (max_cases set only),
     so a fresh re-capture of its question can replace it. Same captures -> same suite on any
@@ -481,8 +482,8 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
       added 50 of 2940 eligible; not eligible: 812 older than 14d, 40 on another model"
     (retired reasons also "N over max_cases"; kept = cases that stay; eligible = candidates after
     dedup). max_age alone: "  planner: not eligible: 812 older than 14d", only when non-empty.
-    Fetch window: with max_age set, sync's AUTOMATIC fetch skips objects whose last_modified is
-    before now - max_age ("(skipped 4 promoted, 11 older than captures.max_age (14d))"); --since
+    Fetch window: with max_age set, sync's AUTOMATIC fetch skips CAPTURES whose last_modified is
+    before now - max_age; toolset sidecars missing locally are always fetched ("(skipped 4 promoted, 11 older than captures.max_age (14d))"); --since
     overrides it; capture list / capture fetch do not apply it. No sampling at fetch time (a
     listing has key/time/size only; history rebuild needs sibling turns) -- volume inside the
     window is EVALSHIFT_SAMPLE_RATE's job. Committed case files supply the promoted-id skip list,
@@ -900,11 +901,16 @@ captures:
   pip install boto3 (s3://; AWS_ENDPOINT_URL covers MinIO/R2/B2), google-cloud-storage (gs://),
   azure-storage-blob azure-identity (az://). Credentials: each provider's default chain only.
   max_age: duration|null = null   # N + m|h|d (30m, 24h, 14d), > 0; parsed to a timedelta. Bad
-  #   value -> "captures.max_age: expected a duration like 30m, 24h or 14d" (a bare number is
-  #   rejected too: it would silently mean seconds). Captures older than this never enter a suite;
-  #   promoted cases that old are stale. Also sync's fetch window.
+  #   value -> validate prints "captures.max_age: Value error, expected a duration like 30m,
+  #   24h or 14d" (+ ", got '2w'" for a string; a bare number is rejected too: it would
+  #   silently mean seconds). Captures older than this never enter a suite through capture
+  #   sync (capture promote ignores the limits); promoted cases that old are stale. Also sync's
+  #   fetch window.
   max_cases: int>=1|null = null   # most cases capture sync keeps in EACH captured suite
-  # Setting either turns bounded suites on (see capture sync); both valid without store. No
+  # Setting either turns bounded suites on (see capture sync): max_age filters what enters a
+  # suite and marks old cases stale; max_cases caps and route-balances each suite; with either
+  # set, captures/cases on another model than defaults.source_model are filtered/stale too.
+  # max_age alone caps nothing. Both valid without store. No
   # per-suite override. Not in defaults on purpose: the hosted eval_config_hash hashes defaults
   # and does not hash captures. compute_config_hash (resume) covers the whole config, so a
   # --resume across the upgrade that added these fields reports a mismatch. Older CLIs reject
