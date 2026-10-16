@@ -27,6 +27,8 @@ def test_same_model_matches_prefix_case_and_snapshot_variants(a: str, b: str) ->
     [
         ("claude-sonnet-5", "claude-sonnet-5-5"),
         ("gpt-5", "gpt-5-mini"),
+        ("gpt-4o", "gpt-5"),
+        ("gpt-4o-mini", "gpt-5-mini"),
         ("", "claude-sonnet-5"),
         ("m", "claude-sonnet-5"),
     ],

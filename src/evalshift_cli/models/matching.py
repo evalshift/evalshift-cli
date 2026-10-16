@@ -1,9 +1,11 @@
 """Whether two model ids name the same model, for capture-suite staleness.
 
-A capture records whatever id the provider echoed back -- often a dated snapshot
-(``claude-sonnet-5-20260301``) or a provider-prefixed id -- while ``defaults.source_model``
-is usually the bare alias. Matching errs toward "same": a false match keeps a stale case a
-little longer, a false mismatch would retire good ones.
+A capture records the ``model`` the application passed in its request -- which may be a dated
+snapshot (``claude-sonnet-5-20260301``) or a provider-prefixed id -- while
+``defaults.source_model`` is usually the bare alias. Matching compares bare names only: the
+model registry's forward aliases (``gpt-5`` -> ``openai/gpt-4o``) would conflate distinct
+models, and a source model spelled as a registry-only alias trips the guardrail warning rather
+than matching silently.
 """
 
 from __future__ import annotations
@@ -11,8 +13,6 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Iterable
-
-from evalshift_cli.models.registry import resolve_model
 
 _SNAPSHOT_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
 
@@ -24,12 +24,10 @@ def bare_model_name(model_id: str) -> str:
 
 
 def same_model(a: str, b: str) -> bool:
-    """True when ``a`` and ``b`` share a bare name or resolve to one registry id."""
+    """True when ``a`` and ``b`` are both non-blank and share a bare name."""
     if not a.strip() or not b.strip():
         return False
-    if bare_model_name(a) == bare_model_name(b):
-        return True
-    return resolve_model(a).id == resolve_model(b).id
+    return bare_model_name(a) == bare_model_name(b)
 
 
 def model_filter_applies(recorded: Iterable[str], source_model: str | None) -> bool:

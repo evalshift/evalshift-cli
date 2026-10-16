@@ -93,11 +93,11 @@ One clock instant `now` per sync run (a module-level `_now()` so tests can pin i
   `same_model(source_model, defaults.source_model)` is false. Only when bounded suites are on (§1)
   and `defaults.source_model` is set.
 
-`same_model(a, b)` — new `models/matching.py`, no config import. True when either:
-
-1. the **bare names** are equal, where bare = lowercase, drop everything up to the last `/`, then
-   strip one trailing snapshot date `-YYYYMMDD` or `-YYYY-MM-DD`; or
-2. `resolve_model(a).id == resolve_model(b).id` (registry aliases).
+`same_model(a, b)` — new `models/matching.py`, no config import. True when the **bare names** are
+equal, where bare = lowercase, drop everything up to the last `/`, then strip one trailing
+snapshot date `-YYYYMMDD` or `-YYYY-MM-DD`. Matching is on bare names only — no registry lookup —
+because the registry's forward aliases (`gpt-5` → `openai/gpt-4o`) would make distinct models
+match.
 
 | a | b | match | via |
 | --- | --- | --- | --- |
