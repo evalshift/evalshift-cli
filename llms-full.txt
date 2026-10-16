@@ -154,6 +154,9 @@ evalshift init [-f/--force] [-d/--directory DIR] [--ci] [--wire-agents/--no-wire
   Without --ci, warns after writing when an existing .github/workflows/*.yml pins an older or
   newer evalshift-version than this CLI, or none (advisory, exit 0; see CI pin drift). --ci writes
   the pin itself and does not warn about the file it just wrote.
+  Also scaffolds `captures: {max_age: 14d, max_cases: 200}` (store: commented out) between
+  migration_policy and the managed region, so new projects get bounded suites (see capture
+  sync). Existing configs are never rewritten; doctor's `captures limits` row nudges them.
   PROFILE budgets (regression/critical/equivalence/arg-drift/tool-divergence/
   trace-rule-violations/cost/latency; every profile pins trace-rule violations at 0):
     model-upgrade (default): .30/1/.75/.20/.20/0/.30/.30 (= MigrationPolicy defaults)
@@ -195,6 +198,22 @@ evalshift doctor
   "... (skipped until then)" for an advisory one; one ok
   "judge and embedding models have API keys" otherwise; no row without a loadable config.
   compare's doctor stage ignores this row (its own suite-scoped preflight decides).
+  `captures limits` row: warn (exit 0) when captures.store is set and captures.max_cases is
+  not -- "suites grow with every capture sync; set captures.max_cases and captures.max_age"
+  ("...; set captures.max_cases" when max_age is already set): max_age alone never caps a
+  suite's size.
+  `suite freshness` rows: ONLY with captures.max_age or captures.max_cases set, one per
+  `source: captured` entry in suites: whose dir holds case files. Reads the PromotedCase files
+  committed beside golden.jsonl (captured_at, else promoted_at; source_model). ok "alpha: 200
+  cases, captured 2d–12d ago"; else one warn (exit 0, never fail) per finding:
+    "alpha: newest case captured 23d ago (captures.max_age 14d); refresh with evalshift capture sync"
+    "alpha: 18 of 200 cases recorded on another model than <defaults.source_model>; evalshift
+      capture sync replaces them as new captures arrive"
+    "alpha: no case recorded on <defaults.source_model> (seen: <model> ×N); check
+      defaults.source_model, or record new captures"   (the guardrail case: nothing matches)
+    "alpha: 2940 cases, over captures.max_cases 200; evalshift capture sync trims it"
+    "alpha: N case file(s) could not be read; the counts leave them out"
+  Measured against defaults.source_model, models matched on bare names (see capture sync).
 evalshift run [-f/--from MODEL] [-t/--to MODEL] [-c CONFIG] [-s/--suite FILE]
     [--suite-name NAME] [--resume] [-y/--yes]
   Paired run over (prompt x example x {source,target}). --from/--to override
@@ -237,6 +256,11 @@ evalshift compare [run flags] [--gate SEVS] [--policy-gate] [--open] [--push]
   doctor -> run -> evaluate -> analyze -> report under one live progress display, for one
   suite. Auto-selects the suite when exactly one is wired; with several, pass --suite-name
   (there is no run-every-suite mode -- loop in the shell or use a CI matrix job per suite).
+  Freshness: with captures.max_age or captures.max_cases set, prints doctor's `suite
+  freshness` findings as `⚠` lines above the verdict (compare drops doctor warn rows, so it
+  computes them itself) -- for the suite it runs when named with --suite-name OR auto-selected
+  (single wired suite) and `source: captured`; NOT for --suite <path>. Measured against
+  defaults.source_model, not --from. This is how a CI-only team learns its suite is stale.
 
 Hosted:
 evalshift login [--token es_...] [--host URL] [--no-browser] [--timeout SECS=900]
@@ -328,6 +352,7 @@ Captures (read from .evalshift/captures/ under CWD, or $EVALSHIFT_DIR; with capt
 in evalshift.yaml, list/sync first mirror the bucket into it):
 evalshift capture list [SUITE] [--json] [-c CONFIG] [--offline]
   With captures.store set, runs fetch first (limited to SUITE when given) unless --offline.
+  captures.max_age does NOT bound list's fetch (only sync's).
   With --json, stdout is pure JSON: the fetch summary and every warning go to stderr.
 evalshift capture fetch [--suite S] [--since 30m|24h|7d|ISO] [-c CONFIG]
   Mirrors captures.store into <base>: lists toolsets/ then captures/, downloads only objects
@@ -348,7 +373,8 @@ evalshift capture fetch [--suite S] [--since 30m|24h|7d|ISO] [-c CONFIG]
   naming pip install boto3 | google-cloud-storage | azure-storage-blob azure-identity (az://
   needs both; one command installs them). No captures.store, or no evalshift.yaml -> exit 1;
   an invalid evalshift.yaml -> its load error, exit 1; an unreadable or non-UTF-8 one -> a one-line
-  "could not read <path>" error, exit 1. Has no --offline flag.
+  "could not read <path>" error, exit 1. Has no --offline flag. captures.max_age does NOT
+  bound it; only sync's automatic fetch applies the max_age window.
 evalshift capture promote CAPTURE_ID [--as CASE_ID] [--suite S] [--input-var NAME=input]
     [--tag T]... [--strict-args] [--names-only] [--tool-count] [--rounds first(default)|all]
     [--allow-errored] [-f/--force]
@@ -396,12 +422,75 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   cannot be rebuilt without its capture: run --repair BEFORE a plain sync on such suites
   (fresh clone, after capture clean), or a duplicate capture may be promoted -- the duplicate
   warning after --repair names it.
-  Promotes EVERY capture: groups by conversation_id, orders by turn_index, one SuiteExample per
+  Promotes EVERY capture (with captures limits set: a bounded sample, see BOUNDED SUITES below):
+  groups by conversation_id, orders by turn_index, one SuiteExample per
   turn; writes .evalshift/suites/<suite>/golden.jsonl and rewrites the managed suites: block in
   evalshift.yaml (between ">>> evalshift suites" markers). Content-duplicate captures skipped by
   default (duplicates inflate n, corrupt paired stats); --keep-duplicates opts out. Dedup is
   seeded from cases already promoted in the suite dir, so it spans sync runs.
   Reports "wired generation config for N case(s)" when promoted captures carried one.
+  BOUNDED SUITES (captures.max_age: duration 30m|24h|14d > 0; captures.max_cases: int >= 1; both
+  default unset). OPT-IN: every rule below applies only when at least one is set;
+  defaults.source_model alone changes nothing; without them sync promotes/keeps exactly what it
+  did before. ALWAYS (limits or not): PromotedCase gains captured_at (envelope created_at,
+  verbatim) + source_model (first model_call's model_id, the call a replay re-sends); sync
+  backfills empty ones on existing cases whose capture is local (only those two fields; the
+  summary adds ", backfilled capture time and model on N case(s)"). SuiteExample/golden.jsonl
+  unchanged.
+    Config: sync loads evalshift.yaml under --offline too. Unreadable/invalid -> no limits; when
+    the file has a top-level captures: key it prints (online AND offline) "could not read <path>
+    (<reason>); syncing without captures.max_age / captures.max_cases."
+    Staleness (one `now` per sync): too old / age-stale = recorded before now - max_age (case:
+    captured_at, else promoted_at -- an upper bound, so a legacy case is retired later, never
+    earlier; neither parseable -> never too old). Other model / model-stale = recorded model
+    known and != defaults.source_model. Match on BARE names only: lower-case, drop everything up
+    to the last '/', strip one trailing -YYYYMMDD or -YYYY-MM-DD. NO registry/alias lookup
+    (forward aliases like gpt-5 -> openai/gpt-4o would conflate distinct models), so a friendly
+    alias as source_model does not match what the app sends -> guardrail.
+    Guardrail, per suite: when >= 1 of its cases + unpromoted captures recorded a model and none
+    matches defaults.source_model, the model filter is OFF for that suite and sync warns
+    "<suite>: none of N case(s) and capture(s) were recorded on <source_model> (seen: <m> ×N,
+    ...); not filtering by model — check defaults.source_model". A wrong source_model, or a
+    rollout before its first new-model capture, never empties or freezes a suite.
+    Eligible = not yet promoted, passes the usual filters (no events, blocked, errored, dup), not
+    too old, not other model. max_age alone: ineligible captures are not promoted; nothing is
+    retired; a fresh re-capture of a stale case's question is skipped as a DUPLICATE.
+    Plan (max_cases set; pure, deterministic, no RNG): planned suites = those with local captures
+    PLUS every <base>/suites/<dir>/ holding case files (so an over-cap suite is trimmed with no
+    new captures; includes suites promoted by hand with `capture promote` and suites whose entry
+    is managed: false -- that flag freezes the YAML entry, not the case files); --suite narrows.
+    Kept cases: reviewed (any expected tool call provenance: reviewed -> NEVER retired), fresh,
+    stale. Unit = conversation group (conversation_id; a lone capture is its own group), added
+    whole or skipped (next group tried). slots = max_cases - reviewed - fresh; repeatedly add the
+    next group of the route (sorted round-1 expected tool names; none is its own route) with the
+    fewest cases so far that still has a group that fits (ties by route name); within a route,
+    sha256(group key) order. Retire: a stale case whose content key an added turn replays is
+    retired OUTRIGHT, even under the cap (no duplicate content; also under --keep-duplicates);
+    other stale cases only while over max_cases: model-stale first, then oldest (unknown time =
+    oldest), ties by name -- a suite never shrinks because it went stale. Still over: trim fresh
+    cases from the most-represented route, oldest first. Reviewed over the cap -> kept + "<suite>:
+    N reviewed case(s) over captures.max_cases M; reviewed cases are never retired, so it stays
+    over." Dedup seed: a stale non-reviewed case gives up its content claim (max_cases set only),
+    so a fresh re-capture of its question can replace it. Same captures -> same suite on any
+    machine; re-running with nothing new changes no file. Retired case files are deleted, then
+    golden.jsonl is rebuilt. A suite whose case files cannot be read is LEFT UNTOUCHED (golden.jsonl
+    and suites entry as they were): "<suite>: could not read its promoted cases (<ErrorType>);
+    left it unchanged." -- other suites still sync.
+    Output, after the summary line, one line per planned suite (zero counts left out):
+      "  planner: 200 cases — kept 150, retired 50 (32 older than 14d, 18 on another model),
+      added 50 of 2940 eligible; not eligible: 812 older than 14d, 40 on another model"
+    (retired reasons also "N over max_cases"; kept = cases that stay; eligible = candidates after
+    dedup). max_age alone: "  planner: not eligible: 812 older than 14d", only when non-empty.
+    Fetch window: with max_age set, sync's AUTOMATIC fetch skips objects whose last_modified is
+    before now - max_age ("(skipped 4 promoted, 11 older than captures.max_age (14d))"); --since
+    overrides it; capture list / capture fetch do not apply it. No sampling at fetch time (a
+    listing has key/time/size only; history rebuild needs sibling turns) -- volume inside the
+    window is EVALSHIFT_SAMPLE_RATE's job. Committed case files supply the promoted-id skip list,
+    so a fresh checkout downloads only new captures inside the window.
+    Route balancing is coverage-weighted, not traffic-weighted: rate budgets are measured over a
+    balanced sample. The CLI never writes to or deletes from the bucket; expire the captures/
+    prefix (not toolsets/, which committed suites reference) with a lifecycle rule after a period
+    >= max_age.
   After writing (or printing the block to paste) warns on CI pin drift: a workflow step
   `uses: evalshift/evalshift-action@...` whose evalshift-version is older than this CLI or
   absent gets a warning naming workflow + job and the `evalshift-version: "<v>"` to set; pins
@@ -810,6 +899,17 @@ captures:
   trailing slash stripped; default none = local disk only. Client libraries are plain packages:
   pip install boto3 (s3://; AWS_ENDPOINT_URL covers MinIO/R2/B2), google-cloud-storage (gs://),
   azure-storage-blob azure-identity (az://). Credentials: each provider's default chain only.
+  max_age: duration|null = null   # N + m|h|d (30m, 24h, 14d), > 0; parsed to a timedelta. Bad
+  #   value -> "captures.max_age: expected a duration like 30m, 24h or 14d" (a bare number is
+  #   rejected too: it would silently mean seconds). Captures older than this never enter a suite;
+  #   promoted cases that old are stale. Also sync's fetch window.
+  max_cases: int>=1|null = null   # most cases capture sync keeps in EACH captured suite
+  # Setting either turns bounded suites on (see capture sync); both valid without store. No
+  # per-suite override. Not in defaults on purpose: the hosted eval_config_hash hashes defaults
+  # and does not hash captures. compute_config_hash (resume) covers the whole config, so a
+  # --resume across the upgrade that added these fields reports a mismatch. Older CLIs reject
+  # both keys AND case files carrying captured_at/source_model: bump the CLI everywhere capture
+  # commands run, and the CI action's evalshift-version; CI compare reads golden.jsonl only.
 
 Model ids: built-in registry provides aliases/metadata but NEVER gates — LiteLLM is the
 call-time authority; any LiteLLM-supported model works. Unknown ids pass through with provider
@@ -1467,7 +1567,13 @@ content leaves the machine.
   paired statistics); --keep-duplicates opts out. The dedup key is the built example's replayed
   content (inputs + history), NOT the envelope input_hash (the SDK salts that with
   conversation_id and derives it from the agent's bound args). Seeded from already-promoted
-  cases, so dedup spans sync runs.
+  cases, so dedup spans sync runs. With captures.max_cases set, a stale non-reviewed case does
+  not seed it (its fresh re-capture replaces it).
+- Bounded capture sync (captures.max_age / captures.max_cases set): a suite never shrinks
+  because it went stale (stale cases leave only to make room or to be replaced by their fresh
+  twin); reviewed cases are never retired; a conversation is added whole or not at all; the
+  plan is deterministic, and syncing again with nothing new changes no file; a
+  defaults.source_model no capture ran on filters nothing (guardrail warning).
 - Slices: every distinct example tag is a slice under its own name, plus "all"; each evaluator is
   analyzed overall AND per slice; per-slice budgets go under migration_policy.slices keyed by the
   tag and inherit unset fields from the top level. Nothing to configure: there is no top-level
@@ -1538,6 +1644,10 @@ migration_policy: {max_overall_regression_rate: 0.30, max_critical_regressions: 
   # ^ the model-upgrade profile = the MigrationPolicy field defaults. init does NOT
   #   scaffold tool_argument_drift_floor; it is inherited at 0.9. Tighter presets:
   #   --profile cost-reduction|quantization|provider-switch|local-model.
+captures:                          # init scaffolds the limits (store: commented out)
+  max_age: 14d
+  max_cases: 200
+  # store: s3://<bucket>/<prefix>
 # project: your-org/your-project   # hosted only; init scaffolds it commented out
 suites: {}                         # init writes the managed region LAST, after
                                    # migration_policy: it is the only part a command

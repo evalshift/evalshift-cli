@@ -158,13 +158,17 @@ route, content keys. `SuitePlan`: groups to add, `(case name, reason)` to retire
 - **Fill:** `slots = max(0, max_cases − |P| − |F|)`. Repeatedly pick the route with the fewest cases
   in `P ∪ F ∪ added` among routes that still have a group that fits (ties → route string), add its
   next group, until slots or groups run out.
-- **Retire (replacement only):** `excess = |P| + |F| + |added| + |S| − max_cases`. While
-  `excess > 0`, retire from `S` in this order: (a) a stale case whose content key equals an added
-  turn's (its own replacement), (b) model-stale, (c) age-stale oldest first; ties by name. A stale
-  case is thus only ever retired to make room — **a suite never shrinks because it went stale.**
+- **Retire (replacement only):** first, unconditionally, every stale case whose content key equals
+  an added turn's is retired — its own replacement, even when the suite is under its cap (§6 "no
+  duplicate content" wins). Then `excess = |P| + |F| + |added| + |S remaining| − max_cases`, and
+  while `excess > 0`, retire from the remaining `S` in this order: (b) model-stale, (c) age-stale
+  oldest first; ties by name. A stale case is thus only ever retired to make room or to give way
+  to its fresh twin — **a suite never shrinks because it went stale.**
 - **Trim:** if `excess > 0` once `S` is exhausted (a legacy or over-cap suite), retire from `F`: the
   most-represented route each time, oldest first within it. `P` is never trimmed; if `|P| > max_cases`
   sync warns and keeps them.
+- **Unknown capture time:** when ordering retirement (c) or the trim, a case whose capture time is
+  unknown (neither `captured_at` nor `promoted_at` parses) counts as the oldest.
 
 Without `max_cases`: every eligible candidate is added (today's behaviour, minus too-old /
 other-model captures when those filters are set), and nothing is retired.

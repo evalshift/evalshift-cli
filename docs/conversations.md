@@ -91,6 +91,10 @@ exchanges are absent), and the system prompt is only recovered when at least
 one turn in the conversation recorded a full messages list. Prefer the
 messages-list convention above when you can.
 
+With `captures.max_cases` set, a conversation's new turns enter a suite
+together or not at all: one larger than the suite's free slots is skipped,
+never split (see [Bounded suites](configuration.md#bounded-suites)).
+
 ```bash
 evalshift capture sync                              # promote every capture,
                                                       #   wire suites: into evalshift.yaml

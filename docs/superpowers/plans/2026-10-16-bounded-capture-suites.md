@@ -3080,3 +3080,18 @@ gh pr create --title "feat(capture): bounded capture suites (captures.max_age / 
 ```
 
 The maintainer merges the PR; the release (version bump, tag) is a separate PR.
+
+## Execution notes
+
+What shipped differs from the tasks above in these ways (controller rulings during Tasks 1–10; the spec and the user docs describe the shipped behaviour):
+
+1. Model matching (Task 3): `same_model` compares bare names only (lower-cased, provider prefix dropped, one trailing `-YYYYMMDD` / `-YYYY-MM-DD` dropped). The registry/alias fallback shown in Task 3 was removed, so a `defaults.source_model` spelled as an alias trips the guardrail warning.
+2. Planner (Task 6): a stale case whose content an added capture replays is retired outright, even under the cap; other stale cases leave only while `excess > 0`. A case with an unknown capture time counts as oldest when ordering retirement and trim (spec §5 amended).
+3. Dedup with limits (Task 8): a stale case gives up its content claim only when `max_cases` is set and the case is not reviewed; with `max_age` alone a fresh re-capture of a stale case's question is skipped as a duplicate.
+4. Twin retirement applies under `--keep-duplicates` too.
+5. Fetch window (Task 7): only `capture sync`'s automatic fetch follows `max_age`; `capture list` and `capture fetch` do not; `--since` overrides it.
+6. Limits warning (Task 7): `could not read {path} ({reason}); syncing without captures.max_age / captures.max_cases.` prints online too, not only under `--offline`.
+7. With `max_cases` set, sync also trims suites it did not build: hand-promoted suites and suites whose entry is `managed: false`. Reviewed cases are never retired.
+8. A suite directory whose case files cannot be read is left untouched (its `golden.jsonl` and `suites:` entry stay); sync warns and continues.
+9. doctor `captures limits` row (Task 9, per spec §7): warns when `captures.store` is set and `captures.max_cases` is not, with `suites grow with every capture sync; set captures.max_cases and captures.max_age`, or `…; set captures.max_cases` when only `max_age` is set.
+10. compare freshness lines (Task 9): printed for the suite compare runs when named with `--suite-name` or auto-selected (single wired suite), not for `--suite <path>`; measured against `defaults.source_model`, not `--from`.

@@ -117,15 +117,28 @@ EVALSHIFT_CAPTURE=1 EVALSHIFT_CAPTURE_STORE=s3://acme-evals/support-agent python
 
 The SDK ships each capture (and its toolset sidecar) to the bucket on a background thread,
 fail-open; see the SDK docs for the `SIGTERM` / Lambda flush note. Bucket retention is a
-lifecycle rule; `EVALSHIFT_MAX_CAPTURES` applies to local disk only.
+lifecycle rule (expire the `captures/` prefix after a period ≥ `captures.max_age`);
+`EVALSHIFT_MAX_CAPTURES` applies to local disk only. `captures.max_age` / `captures.max_cases`
+in `evalshift.yaml` keep the suites built from the bucket bounded (see
+[configuration](configuration.md#bounded-suites)).
 
 ## 3. Promote captures into suites
 
 Run the CLI from the directory holding `.evalshift/` (or set `EVALSHIFT_DIR`).
-If the captures live in a bucket, name it once in `evalshift.yaml`
-(`captures: {store: s3://acme-evals/support-agent}`) and install the provider's client library
-(`pip install boto3`, `google-cloud-storage` or `azure-storage-blob azure-identity`); `list` and
-`sync` then fetch new captures first. `evalshift capture fetch` does only that step.
+If the captures live in a bucket, name it once in `evalshift.yaml` and install the provider's
+client library (`pip install boto3`, `google-cloud-storage` or `azure-storage-blob azure-identity`);
+`list` and `sync` then fetch new captures first. `evalshift capture fetch` does only that step.
+
+```yaml
+captures:
+  store: s3://acme-evals/support-agent   # optional: where the SDK ships captures
+  max_age: 14d                           # only captures from the last 14 days enter a suite
+  max_cases: 200                         # each suite holds at most 200 cases
+```
+
+`evalshift init` scaffolds the two limits. With them set, `sync` keeps each suite a capped,
+route-balanced sample of recent captures on `defaults.source_model`, and replaces stale cases as
+fresh captures arrive (see [Bounded suites](configuration.md#bounded-suites)).
 
 ```bash
 evalshift capture list                  # what was recorded (--json for machine output)
