@@ -28,6 +28,7 @@ from evalshift_cli.captures.promote import (
     capture_provenance,
     duplicate_turn_warnings,
     example_content_key,
+    iter_promoted_case_files,
     rebuild_golden_jsonl,
     retire_promoted_case,
     write_promoted_case,
@@ -3031,8 +3032,36 @@ class TestRetirePromotedCase:
             example=SuiteExample(id="cap_1", tools=[]),
         )
         path = write_promoted_case(case, base=tmp_path)
-        assert retire_promoted_case("alpha", "cap_1", base=tmp_path) is True
+        assert retire_promoted_case(path) is True
         assert not path.exists()
 
     def test_an_absent_case_is_not_an_error(self, tmp_path: Path) -> None:
-        assert retire_promoted_case("alpha", "cap_nope", base=tmp_path) is False
+        assert retire_promoted_case(tmp_path / "suites" / "alpha" / "cap_nope.json") is False
+
+    def test_deletes_only_the_file_it_is_given_when_two_share_a_name(self, tmp_path: Path) -> None:
+        case = PromotedCase(
+            name="cap_1",
+            suite="alpha",
+            from_capture="cap_1",
+            example=SuiteExample(id="cap_1", tools=[]),
+        )
+        original = write_promoted_case(case, base=tmp_path)
+        copy = original.with_name("copy.json")
+        copy.write_bytes(original.read_bytes())
+        [(_, first), (_, second)] = iter_promoted_case_files(original.parent)
+        assert first.name == second.name == "cap_1"
+
+        assert retire_promoted_case(copy) is True
+        assert original.exists()
+        assert not copy.exists()
+
+    def test_iter_promoted_case_files_pairs_each_case_with_its_file(self, tmp_path: Path) -> None:
+        case = PromotedCase(
+            name="cap_1",
+            suite="alpha",
+            from_capture="cap_1",
+            example=SuiteExample(id="cap_1", tools=[]),
+        )
+        path = write_promoted_case(case, base=tmp_path)
+        renamed = path.rename(path.with_name("refund_case.json"))
+        assert iter_promoted_case_files(path.parent) == [(renamed, case)]

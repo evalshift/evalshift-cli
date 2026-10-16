@@ -12,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from evalshift_cli.cli.commands import capture as capture_module
+from evalshift_cli.cli.commands._suites import parse_suites_region
 from evalshift_cli.cli.commands.init import CAPTURES_SCAFFOLD, render_minimal_config
 from evalshift_cli.cli.main import app
 from evalshift_cli.suite.loader import load_jsonl
@@ -499,3 +500,218 @@ def test_force_replaces_a_stale_twin_whatever_the_capture_order(
     _sync(tmp_path, "--force")
 
     assert _cases(tmp_path) == {"b_new"}
+
+
+def _mark_reviewed(path: Path) -> None:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["example"]["expected_tools"] = [{"tool_name": "lookup", "provenance": "reviewed"}]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_a_copied_case_file_never_redirects_a_retirement_to_the_reviewed_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for i in range(3):
+        _put(tmp_path, f"cap_{i}")
+    _config(tmp_path / "evalshift.yaml", max_cases=4)
+    _at(monkeypatch, 12)
+    _sync(tmp_path)
+    suite = tmp_path / "suites" / "alpha"
+    original = suite / "cap_0.json"
+    # A copy whose question was edited but whose "name" still says cap_0.
+    variant = json.loads(original.read_text(encoding="utf-8"))
+    variant["example"]["id"] = "variant"
+    variant["example"]["inputs"] = {"input": "a variant question?"}
+    (suite / "variant.json").write_text(json.dumps(variant), encoding="utf-8")
+    _mark_reviewed(original)
+    _config(tmp_path / "evalshift.yaml", max_cases=3)
+
+    result = _sync(tmp_path)
+
+    assert original.exists()
+    assert "reviewed" in original.read_text(encoding="utf-8")
+    assert len(_cases(tmp_path)) == 3
+    assert "alpha: 3 cases — kept 3, retired 1 (1 over max_cases), added 0 of 0 eligible" in (
+        _flat(result)
+    )
+
+
+def test_a_renamed_case_file_is_retired_from_where_it_lives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for i in range(3):
+        _put(tmp_path, f"cap_{i}")
+    _config(tmp_path / "evalshift.yaml")
+    _at(monkeypatch, 12)
+    _sync(tmp_path)
+    suite = tmp_path / "suites" / "alpha"
+    (suite / "cap_0.json").rename(suite / "refund_case.json")
+    _config(tmp_path / "evalshift.yaml", max_cases=2)
+
+    first = _sync(tmp_path)
+    second = _sync(tmp_path)
+
+    assert len(_cases(tmp_path)) == 2
+    assert "alpha: 2 cases — kept 2, retired 1 (1 over max_cases)" in _flat(first)
+    assert "alpha: 2 cases — kept 2, retired 0," in _flat(second)
+
+
+def test_a_retirement_that_deletes_nothing_is_not_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for i in range(3):
+        _put(tmp_path, f"cap_{i}")
+    _config(tmp_path / "evalshift.yaml")
+    _at(monkeypatch, 12)
+    _sync(tmp_path)
+    _config(tmp_path / "evalshift.yaml", max_cases=2)
+    monkeypatch.setattr(capture_module, "retire_promoted_case", lambda *a, **k: False)
+
+    result = _sync(tmp_path)
+
+    assert len(_cases(tmp_path)) == 3
+    flat = _flat(result)
+    assert "alpha: 3 cases — kept 3, retired 0, added 0 of 0 eligible" in flat
+    assert "alpha: could not delete cap_0.json; not counted as retired." in flat
+
+
+def test_a_capture_whose_case_name_is_taken_neither_adds_nor_retires_its_twin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _put(tmp_path, "old", text="where is order 1?")
+    _put(tmp_path, "other", text="something else?")
+    _config(tmp_path / "evalshift.yaml")
+    _at(monkeypatch, 12)
+    _sync(tmp_path)
+    suite = tmp_path / "suites" / "alpha"
+    # `other`'s case now lives under the name a later capture is given.
+    moved = json.loads((suite / "other.json").read_text(encoding="utf-8"))
+    moved["name"] = "new"
+    (suite / "other.json").unlink()
+    (suite / "new.json").write_text(json.dumps(moved), encoding="utf-8")
+    _put(tmp_path, "new", text="where is order 1?", created_at=WEEK_3)
+    _at(monkeypatch, 30)
+
+    result = _sync(tmp_path)
+
+    assert _cases(tmp_path) == {"old", "new"}
+    assert json.loads((suite / "new.json").read_text(encoding="utf-8"))["from_capture"] == "other"
+    flat = _flat(result)
+    assert "alpha: 2 cases — kept 2, retired 0, added 0 of 0 eligible" in flat
+    assert "skipped 3 already-promoted" in flat  # old, other, and new (its name is taken)
+
+
+def test_a_write_that_fails_neither_counts_as_added_nor_retires_its_twin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _put(tmp_path, "old", text="where is order 1?")
+    _config(tmp_path / "evalshift.yaml")
+    _at(monkeypatch, 12)
+    _sync(tmp_path)
+    _put(tmp_path, "new", text="where is order 1?", created_at=WEEK_3)
+    _at(monkeypatch, 30)
+    real_write = capture_module.write_promoted_case
+
+    def write(case: Any, **kwargs: Any) -> Path:
+        if case.name == "new":  # another process wrote it first
+            raise FileExistsError(case.name)
+        return real_write(case, **kwargs)
+
+    monkeypatch.setattr(capture_module, "write_promoted_case", write)
+
+    result = _sync(tmp_path)
+
+    assert _cases(tmp_path) == {"old"}
+    flat = _flat(result)
+    assert "alpha: 1 cases — kept 1, retired 0, added 0 of 1 eligible" in flat
+    assert "promoted 0 capture(s)" in flat
+
+
+def test_a_renamed_legacy_case_is_backfilled_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for i in range(2):
+        _put(tmp_path, f"cap_{i}")
+    _config(tmp_path / "evalshift.yaml", max_cases=5)
+    _at(monkeypatch, 12)
+    _sync(tmp_path)
+    suite = tmp_path / "suites" / "alpha"
+    legacy = json.loads((suite / "cap_0.json").read_text(encoding="utf-8"))
+    legacy.pop("captured_at")
+    legacy.pop("source_model")
+    (suite / "cap_0.json").unlink()
+    (suite / "refund_case.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+    result = _sync(tmp_path)
+
+    assert _cases(tmp_path) == {"refund_case", "cap_1"}
+    assert json.loads((suite / "refund_case.json").read_text(encoding="utf-8"))["captured_at"]
+    assert "backfilled capture time and model on 1 case(s)" in _flat(result)
+
+
+def test_a_duplicate_kept_beside_a_replaceable_case_still_blocks_a_fresh_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Two cases share their content (kept with --keep-duplicates): a_old is replaceable,
+    # b_old is reviewed. A fresh copy would duplicate b_old, which never leaves.
+    _put(tmp_path, "a_old", text="where is order 1?")
+    _put(tmp_path, "b_old", text="where is order 1?")
+    _config(tmp_path / "evalshift.yaml", max_age=None, max_cases=None)
+    _at(monkeypatch, 12)
+    _sync(tmp_path, "--keep-duplicates")
+    _mark_reviewed(tmp_path / "suites" / "alpha" / "b_old.json")
+    _put(tmp_path, "c_new", text="where is order 1?", created_at=WEEK_3)
+    _config(tmp_path / "evalshift.yaml")
+    _at(monkeypatch, 30)
+
+    result = _sync(tmp_path)
+
+    assert "c_new" not in _cases(tmp_path)
+    assert "skipped 1 duplicate capture(s)" in _flat(result)
+
+
+def _wired(tmp_path: Path) -> set[str]:
+    text = (tmp_path / "evalshift.yaml").read_text(encoding="utf-8")
+    return set(parse_suites_region(text))
+
+
+def test_a_suite_dir_without_captures_is_not_wired_back_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for i in range(3):
+        _put(tmp_path, f"a_{i}", suite="alpha")
+        _put(tmp_path, f"o_{i}", suite="old")
+    _config(tmp_path / "evalshift.yaml", max_age=None, max_cases=None)
+    _at(monkeypatch, 12)
+    _sync(tmp_path)
+    # The team drops `old`: its captures and its suites entry go, its directory stays.
+    for path in (tmp_path / "captures" / "old").glob("*.json"):
+        path.unlink()
+    _config(tmp_path / "evalshift.yaml", max_cases=2)
+
+    _sync(tmp_path)
+
+    assert _wired(tmp_path) == {"alpha"}
+    assert len(_cases(tmp_path, "old")) == 2
+    assert len(load_jsonl(tmp_path / "suites" / "old" / "golden.jsonl").examples) == 2
+
+
+def test_a_wired_suite_without_captures_stays_wired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for i in range(3):
+        _put(tmp_path, f"a_{i}", suite="alpha")
+        _put(tmp_path, f"o_{i}", suite="old")
+    config = _config(tmp_path / "evalshift.yaml", max_age=None, max_cases=None)
+    _at(monkeypatch, 12)
+    _sync(tmp_path)
+    for path in (tmp_path / "captures" / "old").glob("*.json"):
+        path.unlink()
+    config.write_text(
+        config.read_text(encoding="utf-8") + "\ncaptures:\n  max_cases: 2\n", encoding="utf-8"
+    )
+
+    _sync(tmp_path)
+
+    assert _wired(tmp_path) == {"alpha", "old"}
+    assert len(_cases(tmp_path, "old")) == 2

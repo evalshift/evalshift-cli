@@ -1520,6 +1520,11 @@ def promoted_suite_dir(suite: str, *, base: Path | None = None) -> Path:
     return suites_root(base) / _safe_segment(suite)
 
 
+def promoted_case_path(case: PromotedCase, *, base: Path | None = None) -> Path:
+    """Where :func:`write_promoted_case` writes ``case``: ``<base>/suites/<suite>/<name>.json``."""
+    return promoted_suite_dir(case.suite, base=base) / f"{_safe_segment(case.name)}.json"
+
+
 def write_promoted_case(
     case: PromotedCase,
     *,
@@ -1531,13 +1536,21 @@ def write_promoted_case(
     Raises:
         FileExistsError: if the target exists and ``force`` is False.
     """
-    suite_dir = promoted_suite_dir(case.suite, base=base)
-    suite_dir.mkdir(parents=True, exist_ok=True)
-    path = suite_dir / f"{_safe_segment(case.name)}.json"
+    path = promoted_case_path(case, base=base)
+    path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and not force:
         raise FileExistsError(path)
-    path.write_text(case.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    rewrite_promoted_case(path, case)
     return path
+
+
+def rewrite_promoted_case(path: Path, case: PromotedCase) -> None:
+    """Write ``case`` over the case file at ``path``, wherever its ``name`` would put it.
+
+    For a case read from ``path`` (:func:`iter_promoted_case_files`): a file a user renamed,
+    or copied without changing ``name``, is updated where it lives, never next to it.
+    """
+    path.write_text(case.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
 
 def capture_provenance(envelope: CaptureEnvelope) -> tuple[str, str]:
@@ -1550,15 +1563,18 @@ def capture_provenance(envelope: CaptureEnvelope) -> tuple[str, str]:
     return envelope.created_at, first.model_id if first is not None else ""
 
 
-def retire_promoted_case(suite: str, name: str, *, base: Path | None = None) -> bool:
-    """Delete ``<base>/suites/<suite>/<name>.json``; ``False`` when it was already gone.
+def retire_promoted_case(path: Path) -> bool:
+    """Delete the case file at ``path``; ``False`` when nothing was deleted.
 
-    The caller rebuilds ``golden.jsonl`` afterwards (:func:`rebuild_golden_jsonl`).
+    ``path`` is the file the case was read from (:func:`iter_promoted_case_files`), never one
+    derived from its ``name``: a copied or renamed case file names another file, and deleting
+    by name would remove that one instead. ``False`` covers a file already gone and one that
+    could not be deleted. The caller rebuilds ``golden.jsonl`` afterwards
+    (:func:`rebuild_golden_jsonl`).
     """
-    path = promoted_suite_dir(suite, base=base) / f"{_safe_segment(name)}.json"
     try:
         path.unlink()
-    except FileNotFoundError:
+    except OSError:
         return False
     return True
 
@@ -1582,18 +1598,30 @@ def example_content_key(example: SuiteExample) -> str:
     )
 
 
+def iter_promoted_case_files(suite_dir: Path) -> list[tuple[Path, PromotedCase]]:
+    """Load every promoted case file in ``suite_dir`` with the path it was read from.
+
+    The path, not the case's ``name``, is what identifies a case on disk: a renamed file keeps
+    its old ``name``, and two copied files can share one.
+
+    Raises:
+        pydantic.ValidationError: if a case file is not a valid ``PromotedCase``.
+    """
+    cases: list[tuple[Path, PromotedCase]] = []
+    for path in sorted(suite_dir.glob("*.json")):
+        if path.name == GOLDEN_FILENAME:
+            continue
+        cases.append((path, PromotedCase.model_validate_json(path.read_text(encoding="utf-8"))))
+    return cases
+
+
 def iter_promoted_cases(suite_dir: Path) -> list[PromotedCase]:
     """Load every promoted case file in ``suite_dir`` (``golden.jsonl`` excluded).
 
     Raises:
         pydantic.ValidationError: if a case file is not a valid ``PromotedCase``.
     """
-    cases: list[PromotedCase] = []
-    for path in sorted(suite_dir.glob("*.json")):
-        if path.name == GOLDEN_FILENAME:
-            continue
-        cases.append(PromotedCase.model_validate_json(path.read_text(encoding="utf-8")))
-    return cases
+    return [case for _, case in iter_promoted_case_files(suite_dir)]
 
 
 def rebuild_golden_jsonl(suite_dir: Path) -> Path:
@@ -1624,10 +1652,13 @@ __all__ = [
     "capture_provenance",
     "duplicate_turn_warnings",
     "example_content_key",
+    "iter_promoted_case_files",
     "iter_promoted_cases",
+    "promoted_case_path",
     "promoted_suite_dir",
     "rebuild_golden_jsonl",
     "recover_from_messages",
     "retire_promoted_case",
+    "rewrite_promoted_case",
     "write_promoted_case",
 ]
