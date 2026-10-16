@@ -245,6 +245,23 @@ def _load_promoted(suite: str, *, base: Path | None) -> tuple[list[PromotedCase]
         return [], type(exc).__name__
 
 
+def _with_provenance(case: PromotedCase, envelope: CaptureEnvelope) -> PromotedCase:
+    """``case`` with an empty ``captured_at`` / ``source_model`` filled from ``envelope``.
+
+    ``envelope`` is the case's own capture. A field already set is kept, and nothing else on
+    the case changes; ``case`` itself comes back when there is nothing to fill.
+    """
+    if case.captured_at and case.source_model:
+        return case
+    captured_at, source_model = capture_provenance(envelope)
+    return case.model_copy(
+        update={
+            "captured_at": case.captured_at or captured_at,
+            "source_model": case.source_model or source_model,
+        }
+    )
+
+
 def _backfill_provenance(
     cases: list[PromotedCase],
     envelopes: Mapping[str, CaptureEnvelope],
@@ -261,16 +278,10 @@ def _backfill_provenance(
     rewritten = 0
     for case in cases:
         envelope = envelopes.get(case.from_capture)
-        if envelope is None or (case.captured_at and case.source_model):
+        if envelope is None:
             out.append(case)
             continue
-        captured_at, source_model = capture_provenance(envelope)
-        filled = case.model_copy(
-            update={
-                "captured_at": case.captured_at or captured_at,
-                "source_model": case.source_model or source_model,
-            }
-        )
+        filled = _with_provenance(case, envelope)
         if filled == case:
             out.append(case)
             continue
@@ -1318,7 +1329,11 @@ def capture_sync(
                                     "store, so its history can't be rebuilt",
                                 )
                                 continue
-                            write_promoted_case(case, base=base, force=True)
+                            # ``backed`` was loaded before this suite's backfill ran, so the
+                            # repaired case would otherwise drop the provenance just written.
+                            write_promoted_case(
+                                _with_provenance(case, envelope), base=base, force=True
+                            )
                             repaired_here.append(case.name)
                     continue
             if built.blocked is not None:

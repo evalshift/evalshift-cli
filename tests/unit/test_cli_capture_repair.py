@@ -6,6 +6,7 @@ list went through ``str()``. The store fixture plays S3; ``--base`` plays a fres
 
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -322,6 +323,29 @@ def test_repair_twice_is_a_no_op(tmp_path: Path, store: FakeRemoteStore) -> None
     second = _sync(tmp_path, "--repair")
     assert second.exit_code == 0, second.output
     assert "no promoted cases need repair." in _out(second)
+    assert case.read_bytes() == after_first
+
+
+def test_repair_keeps_the_capture_provenance_it_backfills(
+    tmp_path: Path, store: FakeRemoteStore
+) -> None:
+    """A 1.3.0-era case has no provenance; repairing it must not drop what sync backfilled."""
+    case = _write_case(tmp_path, "cap_1")
+    legacy = json.loads(case.read_text(encoding="utf-8"))
+    del legacy["captured_at"], legacy["source_model"]
+    case.write_text(json.dumps(legacy), encoding="utf-8")
+    _put(store, "cap_1")
+
+    first = _sync(tmp_path, "--repair")
+
+    assert first.exit_code == 0, first.output
+    assert "repaired 1 case(s)" in _out(first)
+    assert _stored(case).captured_at == "2026-06-16T12:00:00+00:00"
+    assert _stored(case).source_model == "m"
+    after_first = case.read_bytes()
+    second = _sync(tmp_path)
+    assert second.exit_code == 0, second.output
+    assert "backfilled" not in _out(second)
     assert case.read_bytes() == after_first
 
 

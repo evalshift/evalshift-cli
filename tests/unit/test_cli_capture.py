@@ -2335,6 +2335,13 @@ def test_sync_backfills_a_case_written_before_the_fields_existed(tmp_path: Path)
     assert case.source_model == "claude-sonnet-5"
     assert case.promoted_at == legacy["promoted_at"]
     assert "backfilled capture time and model on 1 case(s)" in " ".join(result.stdout.split())
+    after_backfill = case_path.read_bytes()
+
+    again = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert again.exit_code == 0, again.stdout
+    assert "backfilled" not in again.stdout
+    assert case_path.read_bytes() == after_backfill
 
 
 def test_promote_records_when_and_on_what_the_capture_ran(tmp_path: Path) -> None:
