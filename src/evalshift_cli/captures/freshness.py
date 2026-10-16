@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal
 
 from evalshift_cli.captures.models import PromotedCase
-from evalshift_cli.captures.staleness import case_instant
+from evalshift_cli.captures.staleness import case_instant, is_reviewed
 from evalshift_cli.models.matching import describe_models, model_filter_applies, same_model
 from evalshift_cli.utils.duration import format_duration
 
@@ -110,12 +110,17 @@ def suite_freshness(
         if model_filter_applies(models, source_model):
             other = sum(1 for m in models if m and not same_model(m, source_model))
             if other:
+                # Sync retires a stale case only to make room under max_cases.
+                advice = (
+                    "evalshift capture sync replaces them as new captures arrive"
+                    if max_cases is not None
+                    else "set captures.max_cases for evalshift capture sync to replace them"
+                )
                 findings.append(
                     FreshnessFinding(
                         "stale_model",
                         f"{suite}: {other} of {len(cases)} cases recorded on another model "
-                        f"than {source_model}; evalshift capture sync replaces them as new "
-                        "captures arrive",
+                        f"than {source_model}; {advice}",
                     )
                 )
         else:
@@ -128,11 +133,17 @@ def suite_freshness(
                 )
             )
     if max_cases is not None and len(cases) > max_cases:
+        reviewed = sum(1 for c in cases if is_reviewed(c.example))
+        # Reviewed cases never leave, so a trim stops at them.
+        trim = (
+            f"evalshift capture sync trims it only down to its {reviewed} reviewed case(s)"
+            if reviewed > max_cases
+            else "evalshift capture sync trims it"
+        )
         findings.append(
             FreshnessFinding(
                 "over_cap",
-                f"{suite}: {len(cases)} cases, over captures.max_cases {max_cases}; "
-                "evalshift capture sync trims it",
+                f"{suite}: {len(cases)} cases, over captures.max_cases {max_cases}; {trim}",
             )
         )
     return SuiteFreshness(

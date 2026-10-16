@@ -1348,7 +1348,14 @@ def capture_sync(
     offline: _OfflineOption = False,
     base: _BaseOption = None,
 ) -> None:
-    """Promote every capture into a suite and wire the suites: block into evalshift.yaml."""
+    """Promote captures into suites and wire the suites: block into evalshift.yaml.
+
+    Without limits, every capture is promoted. With captures.max_cases set,
+    each suite keeps at most that many cases, swapping stale ones (older than
+    captures.max_age, or recorded on another model than defaults.source_model)
+    for fresh captures; reviewed cases are never retired. captures.max_age
+    keeps older captures out of a suite.
+    """
     console = Console()
     _check_rounds(rounds)
     limits = _sync_limits(config_path, console=console, warn=True)

@@ -502,6 +502,14 @@ def test_force_replaces_a_stale_twin_whatever_the_capture_order(
     assert _cases(tmp_path) == {"b_new"}
 
 
+def test_help_describes_bounded_suites() -> None:
+    result = runner.invoke(app, ["capture", "sync", "--help"])
+    flat = " ".join(result.stdout.split())
+    assert "Promote every capture" not in flat
+    assert "captures.max_age" in flat
+    assert "captures.max_cases" in flat
+
+
 def _mark_reviewed(path: Path) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     data["example"]["expected_tools"] = [{"tool_name": "lookup", "provenance": "reviewed"}]

@@ -70,7 +70,7 @@ JUDGE_FAMILY_CHECK: Final = "judge family"
 # Row name for the judge / embedding key check (one row per keyless model).
 EVALUATOR_KEYS_CHECK: Final = "evaluator keys"
 # Row names for the bounded-suite checks: one ``suite freshness`` row per captured suite (or
-# per finding), and a ``captures limits`` nudge when a bucket is set without limits.
+# per finding), and a ``captures limits`` nudge when a store is set without max_cases.
 SUITE_FRESHNESS_CHECK: Final = "suite freshness"
 CAPTURES_LIMITS_CHECK: Final = "captures limits"
 # The capture SDK: a declared dependency of this package, and the owner of the

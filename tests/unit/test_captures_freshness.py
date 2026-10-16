@@ -9,7 +9,7 @@ from typing import Any
 from evalshift_cli.captures.freshness import SuiteFreshness, suite_freshness
 from evalshift_cli.captures.models import PromotedCase
 from evalshift_cli.captures.promote import write_promoted_case
-from evalshift_cli.suite.models import SuiteExample
+from evalshift_cli.suite.models import ExpectedToolCall, SuiteExample
 
 NOW = datetime(2026, 10, 16, 12, tzinfo=UTC)
 
@@ -77,8 +77,20 @@ def test_cases_on_another_model_are_counted(tmp_path: Path) -> None:
     _write(tmp_path, 1, days=1, model="claude-sonnet-4-5")
     [finding] = _check(tmp_path).findings
     assert finding.kind == "stale_model"
-    assert finding.message.startswith(
-        "alpha: 1 of 2 cases recorded on another model than claude-sonnet-5"
+    assert finding.message == (
+        "alpha: 1 of 2 cases recorded on another model than claude-sonnet-5; "
+        "evalshift capture sync replaces them as new captures arrive"
+    )
+
+
+def test_without_max_cases_nothing_replaces_cases_on_another_model(tmp_path: Path) -> None:
+    # Sync only retires a case to make room under max_cases; max_age alone never replaces one.
+    _write(tmp_path, 0, days=1)
+    _write(tmp_path, 1, days=1, model="claude-sonnet-4-5")
+    [finding] = _check(tmp_path, max_cases=None).findings
+    assert finding.message == (
+        "alpha: 1 of 2 cases recorded on another model than claude-sonnet-5; "
+        "set captures.max_cases for evalshift capture sync to replace them"
     )
 
 
@@ -95,6 +107,32 @@ def test_a_suite_over_its_cap_is_reported(tmp_path: Path) -> None:
     [finding] = _check(tmp_path, max_cases=2).findings
     assert finding.message == (
         "alpha: 3 cases, over captures.max_cases 2; evalshift capture sync trims it"
+    )
+
+
+def test_an_over_cap_suite_is_trimmed_only_down_to_its_reviewed_cases(tmp_path: Path) -> None:
+    reviewed = [ExpectedToolCall(tool_name="lookup", provenance="reviewed")]
+    for i in range(4):
+        write_promoted_case(
+            PromotedCase(
+                name=f"cap_{i}",
+                suite="alpha",
+                from_capture=f"cap_{i}",
+                captured_at=(NOW - timedelta(days=1)).isoformat(),
+                source_model="claude-sonnet-5",
+                example=SuiteExample(
+                    id=f"cap_{i}",
+                    inputs={"input": f"q{i}"},
+                    toolset_ref="sha256:" + "cd" * 32,
+                    expected_tools=reviewed if i < 3 else None,
+                ),
+            ),
+            base=tmp_path,
+        )
+    [finding] = _check(tmp_path, max_cases=2).findings
+    assert finding.message == (
+        "alpha: 4 cases, over captures.max_cases 2; "
+        "evalshift capture sync trims it only down to its 3 reviewed case(s)"
     )
 
 
