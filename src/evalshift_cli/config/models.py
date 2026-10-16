@@ -15,14 +15,23 @@ gives us real validation and keeps ``mypy --strict`` happy.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Annotated, Any, Literal, Self
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from evalshift_cli.captures.store_uri import STORE_URI_FORMS, parse_store_uri
 from evalshift_cli.suite.tags import RESERVED_SLICE_NAME
+from evalshift_cli.utils.duration import DURATION_FORMS, parse_duration
 
 # Default judge model used across the config when none is specified.
 # Centralised here so a single edit propagates everywhere. Gemini's
@@ -816,6 +825,15 @@ class Retention(_StrictModel):
     run_ttl_days: int | None = Field(default=None, ge=1)
 
 
+def _duration_from_yaml(value: object) -> object:
+    """``captures.max_age`` is written ``14d``; a bare number would silently mean seconds."""
+    if value is None or isinstance(value, timedelta):
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"expected a duration like {DURATION_FORMS}")
+    return parse_duration(value)
+
+
 class CapturesConfig(_StrictModel):
     """Where the capture SDK's recordings live, beyond the local ``.evalshift/`` directory.
 
@@ -830,9 +848,23 @@ class CapturesConfig(_StrictModel):
             ``az://<account>/<container>/<prefix>``. Credentials come from the provider's
             default chain, never from this file; a URI carrying ``@`` or ``?`` is rejected.
             ``None`` (the default) means local disk only.
+        max_age: Captures recorded longer ago than this (``30m``, ``24h``, ``14d``) never enter a
+            suite, and promoted cases that old are stale: ``capture sync`` replaces them as fresh
+            captures arrive. Also the fetch window. ``None`` (the default): no age limit.
+        max_cases: The most cases ``capture sync`` keeps in each captured suite. ``None`` (the
+            default): suites grow with every sync. Setting either limit turns bounded suites on.
     """
 
     store: str | None = None
+    max_age: Annotated[timedelta | None, BeforeValidator(_duration_from_yaml)] = None
+    max_cases: int | None = Field(default=None, ge=1)
+
+    @field_validator("max_age")
+    @classmethod
+    def _positive_max_age(cls, value: timedelta | None) -> timedelta | None:
+        if value is not None and value <= timedelta(0):
+            raise ValueError(f"must be greater than 0 (expected a duration like {DURATION_FORMS})")
+        return value
 
     @field_validator("store")
     @classmethod

@@ -40,6 +40,7 @@ from rich.text import Text
 
 from evalshift_cli.captures.reader import captures_root, toolsets_root
 from evalshift_cli.captures.store_uri import StoreURI, package_for_module
+from evalshift_cli.utils.duration import parse_duration
 
 #: Largest object a fetch will download. Captures are kilobytes; this is a safety stop.
 MAX_OBJECT_BYTES = 32 * 1024 * 1024
@@ -47,7 +48,6 @@ MAX_OBJECT_BYTES = 32 * 1024 * 1024
 # Always used with ``fullmatch``: ``$`` also matches before a trailing newline.
 _CAPTURE_NAME = re.compile(r"[A-Za-z0-9_-]+\.json")
 _TOOLSET_NAME = re.compile(r"[0-9a-f]{64}\.json")
-_DURATION = re.compile(r"(\d+)([mhd])")
 
 #: How to fix credentials, per store scheme, for a list or download failure.
 _CREDENTIALS_HINT: dict[str, str] = {
@@ -230,12 +230,13 @@ def parse_since(text: str, *, now: datetime | None = None) -> datetime:
     """
     reference = now if now is not None else datetime.now(UTC)
     cleaned = text.strip()
-    match = _DURATION.fullmatch(cleaned)
     try:
-        if match:
-            amount, unit = int(match.group(1)), match.group(2)
-            delta = {"m": timedelta(minutes=1), "h": timedelta(hours=1), "d": timedelta(days=1)}
-            return reference - delta[unit] * amount
+        delta: timedelta | None = parse_duration(cleaned)
+    except ValueError:
+        delta = None
+    try:
+        if delta is not None:
+            return reference - delta
         parsed = datetime.fromisoformat(cleaned)
     except (ValueError, OverflowError) as exc:  # OverflowError: a duration reaching before year 1
         raise ValueError(

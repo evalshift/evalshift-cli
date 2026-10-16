@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -96,3 +97,41 @@ def test_loader_error_never_echoes_a_secret_store(
     for secret in secrets:
         assert secret not in plain
         assert secret not in rendered
+
+
+def test_limits_default_to_off() -> None:
+    cfg = EvalShiftConfig(prompts=[_PROMPT])
+    assert cfg.captures.max_age is None
+    assert cfg.captures.max_cases is None
+
+
+def test_limits_parse_without_a_store() -> None:
+    cfg = EvalShiftConfig(prompts=[_PROMPT], captures={"max_age": "14d", "max_cases": 200})
+    assert cfg.captures.max_age == timedelta(days=14)
+    assert cfg.captures.max_cases == 200
+    assert cfg.captures.store is None
+
+
+@pytest.mark.parametrize("value", ["2w", "14", 14, "0d", "P14D"])
+def test_max_age_rejects_anything_but_a_positive_duration(value: object) -> None:
+    with pytest.raises(ValidationError, match="max_age"):
+        EvalShiftConfig(prompts=[_PROMPT], captures={"max_age": value})
+
+
+@pytest.mark.parametrize("value", [0, -5])
+def test_max_cases_must_be_positive(value: int) -> None:
+    with pytest.raises(ValidationError, match="max_cases"):
+        EvalShiftConfig(prompts=[_PROMPT], captures={"max_cases": value})
+
+
+def test_loader_reports_max_age_error_at_its_location(tmp_path: Path) -> None:
+    path = tmp_path / "evalshift.yaml"
+    path.write_text(
+        "prompts:\n  - id: p\n    detection: manual\n    content: hi\ncaptures:\n  max_age: 2w\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError) as info:
+        load_config(path)
+    [detail] = info.value.details
+    assert detail.location == "captures.max_age"
+    assert "30m, 24h or 14d" in detail.message
