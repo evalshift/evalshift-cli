@@ -311,14 +311,21 @@ def _backfill_provenance(
 
 
 def _suites_with_cases(*, base: Path | None, only: str | None) -> set[str]:
-    """Suites under ``<base>/suites/`` holding at least one case file (``only`` narrows)."""
+    """Directory names under ``<base>/suites/`` holding at least one case file.
+
+    A name is the suite's sanitised directory name (``team/support`` -> ``team_support``), not
+    necessarily the suite name its cases record. ``only`` (a suite name) narrows to its directory.
+    """
     root = suites_root(base)
     if not root.is_dir():
         return set()
+    only_dir = promoted_suite_dir(only, base=base).name if only is not None else None
     return {
         path.name
         for path in root.iterdir()
-        if path.is_dir() and any(path.glob("*.json")) and (only is None or path.name == only)
+        if path.is_dir()
+        and any(path.glob("*.json"))
+        and (only_dir is None or path.name == only_dir)
     }
 
 
@@ -1425,8 +1432,10 @@ def capture_sync(
 
     planned = set(records_by_suite)
     if limits.max_cases is not None:
-        # An over-cap suite is trimmed even when no new capture arrived for it.
-        planned |= _suites_with_cases(base=base, only=suite)
+        # An over-cap suite is trimmed even when no new capture arrived for it. A directory
+        # already planned under the suite name its captures record is not planned again.
+        captured_dirs = {promoted_suite_dir(name, base=base).name for name in records_by_suite}
+        planned |= _suites_with_cases(base=base, only=suite) - captured_dirs
     suites_seen |= planned
     for suite_name in sorted(planned):
         suite_records = records_by_suite.get(suite_name, [])
@@ -1438,6 +1447,15 @@ def capture_sync(
             console.print(f"[yellow]⚠[/yellow] {suite_name}: {warning}")
         envelopes = {r.envelope.capture_id: r.envelope for r in suite_records}
         kept_cases, unreadable = _load_promoted(suite_name, base=base)
+        recorded_names = {c.suite for c in kept_cases}
+        if not suite_records and len(recorded_names) == 1:
+            # A suite planned from its directory alone goes by the name its cases record
+            # (``team/support``, not its directory ``team_support``), as its suites entry does.
+            (recorded_name,) = recorded_names
+            if promoted_suite_dir(recorded_name, base=base).name == suite_name:
+                suites_seen.discard(suite_name)
+                suites_seen.add(recorded_name)
+                suite_name = recorded_name
         if unreadable is None:
             kept_cases, rewritten = _backfill_provenance(kept_cases, envelopes, base=base)
             backfilled += rewritten
@@ -1446,6 +1464,9 @@ def capture_sync(
                 f"[yellow]⚠[/yellow] {escape(suite_name)}: could not read its promoted cases "
                 f"({unreadable}); left it unchanged.",
             )
+            # Not rebuilt either: its golden.jsonl and suites entry stay as they are, and the
+            # other suites still sync.
+            suites_seen.discard(suite_name)
             continue
         kept_from = {c.from_capture for c in kept_cases}
         stale_by_name: dict[str, StaleReason | None] = {}
@@ -1473,6 +1494,7 @@ def capture_sync(
             if limits.max_cases is not None
             else set()
         )
+        replaceable_from = {c.from_capture for c in kept_cases if c.name in replaceable}
         ineligible: Counter[str] = Counter()
         pending: list[PromotedCase] = []
         built_pairs = build_conversation_examples(suite_records, opts, base=base)
@@ -1610,7 +1632,10 @@ def capture_sync(
             if not keep_duplicates and owner is not None and owner != envelope.capture_id:
                 skipped_duplicates += 1
                 continue
-            seen_examples.setdefault(content_key, envelope.capture_id)
+            if envelope.capture_id not in replaceable_from:
+                # A replaceable stale case refreshed under --force still leaves its content
+                # to a fresh twin, whichever capture id sorts first.
+                seen_examples.setdefault(content_key, envelope.capture_id)
             for warning in built.warnings:
                 console.print(f"[yellow]⚠[/yellow] {envelope.capture_id}: {warning}")
             captured_at, source_model = capture_provenance(envelope)

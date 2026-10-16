@@ -387,14 +387,115 @@ def test_a_suite_whose_cases_cannot_be_read_is_left_alone(
     _config(tmp_path / "evalshift.yaml", max_age=None, max_cases=None)
     _at(monkeypatch, 12)
     _sync(tmp_path)
+    golden = tmp_path / "suites" / "alpha" / "golden.jsonl"
+    before = golden.read_bytes()
     (tmp_path / "suites" / "alpha" / "broken.json").write_text("{", encoding="utf-8")
     _put(tmp_path, "cap_new")
     _config(tmp_path / "evalshift.yaml", max_cases=2)
 
-    result = runner.invoke(
-        app,
-        ["capture", "sync", "--config", str(tmp_path / "evalshift.yaml"), "--base", str(tmp_path)],
-    )
+    result = _sync(tmp_path)
 
     assert _cases(tmp_path) == {"cap_0", "cap_1", "cap_2", "broken"}
+    assert golden.read_bytes() == before
     assert "alpha: could not read its promoted cases" in _flat(result)
+
+
+def test_a_stray_unreadable_suite_does_not_stop_the_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for i in range(5):
+        _put(tmp_path, f"cap_{i}")
+    _config(tmp_path / "evalshift.yaml", max_age=None, max_cases=None)
+    _at(monkeypatch, 12)
+    _sync(tmp_path)
+    for path in (tmp_path / "captures" / "alpha").glob("*.json"):
+        path.unlink()
+    stray = tmp_path / "suites" / "aaa" / "notes.json"
+    stray.parent.mkdir(parents=True)
+    stray.write_text('{"note": "not a case"}', encoding="utf-8")
+    _config(tmp_path / "evalshift.yaml", max_cases=3)
+
+    result = _sync(tmp_path)
+
+    assert len(_cases(tmp_path)) == 3
+    assert len(load_jsonl(tmp_path / "suites" / "alpha" / "golden.jsonl").examples) == 3
+    assert not (tmp_path / "suites" / "aaa" / "golden.jsonl").exists()
+    flat = _flat(result)
+    assert "aaa: could not read its promoted cases" in flat
+    assert "✓ promoted 0 capture(s) into 1 suite(s)" in flat
+    assert "alpha: 3 cases — kept 3, retired 2 (2 over max_cases)" in flat
+    assert "  aaa:" not in (tmp_path / "evalshift.yaml").read_text(encoding="utf-8")
+
+
+def _put_team_support(base: Path, cid: str) -> None:
+    """A capture of suite ``team/support``, in the directory the SDK sanitises it to."""
+    sidecar = base / "toolsets" / f"{TOOLSET_HEX}.json"
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_bytes(TOOLSET_PAYLOAD)
+    path = base / "captures" / "team_support" / f"{cid}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        capture_payload(
+            cid,
+            "team/support",
+            model_input=f"question {cid}?",
+            created_at=WEEK_1,
+            model_id="claude-sonnet-5-20260301",
+        )
+    )
+
+
+def test_a_suite_named_with_a_slash_is_planned_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for i in range(4):
+        _put_team_support(tmp_path, f"cap_{i}")
+    _config(tmp_path / "evalshift.yaml")
+    _at(monkeypatch, 12)
+    _sync(tmp_path)
+    _put_team_support(tmp_path, "cap_new")
+
+    result = _sync(tmp_path)
+
+    assert len(_cases(tmp_path, "team_support")) == 3
+    flat = _flat(result)
+    assert flat.count("cases — kept") == 1
+    assert "team/support: 3 cases — kept 3" in flat
+    config = (tmp_path / "evalshift.yaml").read_text(encoding="utf-8")
+    assert "team_support:" not in config
+    assert config.count("team/support") >= 1
+
+
+def test_a_suite_named_with_a_slash_keeps_its_name_without_captures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for i in range(5):
+        _put_team_support(tmp_path, f"cap_{i}")
+    _config(tmp_path / "evalshift.yaml", max_age=None, max_cases=None)
+    _at(monkeypatch, 12)
+    _sync(tmp_path)
+    for path in (tmp_path / "captures" / "team_support").glob("*.json"):
+        path.unlink()
+    _config(tmp_path / "evalshift.yaml", max_cases=3)
+
+    result = _sync(tmp_path, "--suite", "team/support")
+
+    assert len(_cases(tmp_path, "team_support")) == 3
+    assert "team/support: 3 cases — kept 3, retired 2 (2 over max_cases)" in _flat(result)
+    assert "team_support:" not in (tmp_path / "evalshift.yaml").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("old", ["a_old", "z_old"])
+def test_force_replaces_a_stale_twin_whatever_the_capture_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old: str
+) -> None:
+    _put(tmp_path, old, text="where is order 1?")
+    _config(tmp_path / "evalshift.yaml")
+    _at(monkeypatch, 12)
+    _sync(tmp_path)
+    _put(tmp_path, "b_new", text="where is order 1?", created_at=WEEK_3)
+    _at(monkeypatch, 30)
+
+    _sync(tmp_path, "--force")
+
+    assert _cases(tmp_path) == {"b_new"}
