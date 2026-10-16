@@ -81,6 +81,21 @@ def test_is_reviewed_reads_any_expectation() -> None:
     assert not is_reviewed(_example())
 
 
+def test_is_reviewed_reads_every_round() -> None:
+    # A mark in a later round pins the case too: is_reviewed guards deletion.
+    captured = ExpectedToolCall(tool_name="a", provenance="captured")
+    reviewed = ExpectedToolCall(tool_name="b", provenance="reviewed")
+    example = SuiteExample(
+        id="c",
+        toolset_ref=_REF,
+        expected_tools=[captured],
+        expected_tool_rounds=[[captured], [reviewed]],
+    )
+    assert is_reviewed(example)
+    unreviewed = example.model_copy(update={"expected_tool_rounds": [[captured], [captured]]})
+    assert not is_reviewed(unreviewed)
+
+
 def test_route_is_the_sorted_union_of_expected_tool_names() -> None:
     assert examples_route([_example("b", "a")]) == "a,b"
     assert examples_route([_example("a"), _example("c")]) == "a,c"
