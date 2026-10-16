@@ -17,7 +17,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -41,6 +42,7 @@ from evalshift_cli.captures.promote import (
     promoted_suite_dir,
     rebuild_golden_jsonl,
     recover_from_messages,
+    retire_promoted_case,
     write_promoted_case,
 )
 from evalshift_cli.captures.reader import (
@@ -72,6 +74,15 @@ from evalshift_cli.captures.repair import (
     stringified_content,
     stringified_warnings,
 )
+from evalshift_cli.captures.selection import CandidateGroup, KeptCase, SuitePlan, plan_suite
+from evalshift_cli.captures.staleness import (
+    StalenessRules,
+    StaleReason,
+    case_instant,
+    examples_route,
+    is_reviewed,
+    parse_instant,
+)
 from evalshift_cli.captures.store_uri import parse_store_uri
 from evalshift_cli.cli.commands._suites import (
     derive_suite_evaluators,
@@ -83,6 +94,7 @@ from evalshift_cli.cli.commands._suites import (
 from evalshift_cli.cli.commands.doctor import CONFIG_FILENAME
 from evalshift_cli.config.loader import ConfigError, load_config
 from evalshift_cli.config.models import SuiteEvaluatorsOverride
+from evalshift_cli.models.matching import describe_models, model_filter_applies
 from evalshift_cli.suite.loader import SuiteError, load_jsonl
 from evalshift_cli.traces.diff import diff_traces
 from evalshift_cli.traces.models import ModelCallEvent, ToolCallEvent
@@ -296,6 +308,98 @@ def _backfill_provenance(
         out.append(filled)
         rewritten += 1
     return out, rewritten
+
+
+def _suites_with_cases(*, base: Path | None, only: str | None) -> set[str]:
+    """Suites under ``<base>/suites/`` holding at least one case file (``only`` narrows)."""
+    root = suites_root(base)
+    if not root.is_dir():
+        return set()
+    return {
+        path.name
+        for path in root.iterdir()
+        if path.is_dir() and any(path.glob("*.json")) and (only is None or path.name == only)
+    }
+
+
+def _suite_rules(
+    suite: str,
+    limits: _SyncLimits,
+    *,
+    now: datetime,
+    recorded_models: list[str],
+    console: Console,
+) -> StalenessRules:
+    """One suite's staleness rules, with the model guardrail applied (spec §3)."""
+    source = limits.source_model
+    if source and not model_filter_applies(recorded_models, source):
+        known = [m for m in recorded_models if m]
+        if known:
+            console.print(
+                f"[yellow]⚠[/yellow] {escape(suite)}: none of {len(known)} case(s) and "
+                f"capture(s) were recorded on {escape(source)} "
+                f"(seen: {escape(describe_models(known))}); not filtering by model — "
+                "check defaults.source_model",
+                soft_wrap=True,
+            )
+        source = None
+    return StalenessRules(now=now, max_age=limits.max_age, source_model=source)
+
+
+def _candidate_groups(pending: Sequence[PromotedCase]) -> list[CandidateGroup]:
+    """Group pending cases by conversation (a lone case is its own group), turn order kept."""
+    turns: dict[str, list[PromotedCase]] = {}
+    for case in pending:
+        key = (
+            f"conversation:{case.conversation_id}"
+            if case.conversation_id
+            else f"capture:{case.name}"
+        )
+        turns.setdefault(key, []).append(case)
+    return [
+        CandidateGroup(
+            key=key,
+            capture_ids=tuple(c.name for c in cases),
+            route=examples_route(c.example for c in cases),
+            content_keys=frozenset(example_content_key(c.example) for c in cases),
+        )
+        for key, cases in turns.items()
+    ]
+
+
+def _reason_counts(counts: Counter[str], *, max_age: timedelta | None) -> str:
+    """``2 older than 14d, 1 on another model, 3 over max_cases``; zero counts left out."""
+    labels = {
+        "age": f"older than {format_duration(max_age)}" if max_age is not None else "too old",
+        "model": "on another model",
+        "over_cap": "over max_cases",
+    }
+    return ", ".join(f"{counts[k]} {labels[k]}" for k in ("age", "model", "over_cap") if counts[k])
+
+
+def _plan_line(
+    suite: str,
+    plan: SuitePlan | None,
+    *,
+    kept: int,
+    eligible: int,
+    ineligible: Counter[str],
+    max_age: timedelta | None,
+) -> str | None:
+    """The per-suite summary line (spec §6); ``plan`` is ``None`` with ``max_age`` alone."""
+    not_eligible = _reason_counts(ineligible, max_age=max_age)
+    if plan is None:
+        return f"  {suite}: not eligible: {not_eligible}" if not_eligible else None
+    retired: Counter[str] = Counter(reason for _, reason in plan.retire)
+    detail = _reason_counts(retired, max_age=max_age)
+    stayed = kept - len(plan.retire)
+    return (
+        f"  {suite}: {stayed + plan.added_cases} cases — kept {stayed}, "
+        f"retired {len(plan.retire)}"
+        + (f" ({detail})" if detail else "")
+        + f", added {plan.added_cases} of {eligible} eligible"
+        + (f"; not eligible: {not_eligible}" if not_eligible else "")
+    )
 
 
 def _repair_selection(*, base: Path | None, suite: str | None, console: Console) -> RepairSelection:
@@ -1265,7 +1369,9 @@ def capture_sync(
     records = iter_captures(suite=suite, base=base, on_error=_warn_unreadable(console))
     if repair:
         _warn_unrepairable(selection, records, console=console)
-    if not records:
+    if not records and not (
+        limits.max_cases is not None and _suites_with_cases(base=base, only=suite)
+    ):
         where = f" for suite {suite!r}" if suite else ""
         console.print(f"[dim]no captures found{where} under .evalshift/captures/.[/dim]")
         return
@@ -1294,6 +1400,7 @@ def capture_sync(
     repaired = 0
     left_for_repair = 0
     backfilled = 0
+    plan_lines: list[str] = []
     backed_by = selection.cases_by_capture()
     suites_seen: set[str] = set()
     # (suite, content key) -> the name of the case that owns that content,
@@ -1316,20 +1423,60 @@ def capture_sync(
         suites_seen.add(envelope.suite)
         records_by_suite.setdefault(envelope.suite, []).append(record)
 
-    for suite_name in sorted(records_by_suite):
+    planned = set(records_by_suite)
+    if limits.max_cases is not None:
+        # An over-cap suite is trimmed even when no new capture arrived for it.
+        planned |= _suites_with_cases(base=base, only=suite)
+    suites_seen |= planned
+    for suite_name in sorted(planned):
+        suite_records = records_by_suite.get(suite_name, [])
         # Per-suite, not global: a conversation_id is only unique within the
         # suite that recorded it, same reason the grouping above is per-suite.
         for warning in duplicate_turn_warnings(
-            [r.envelope for r in records_by_suite[suite_name]],
+            [r.envelope for r in suite_records],
         ):
             console.print(f"[yellow]⚠[/yellow] {suite_name}: {warning}")
-        envelopes = {r.envelope.capture_id: r.envelope for r in records_by_suite[suite_name]}
+        envelopes = {r.envelope.capture_id: r.envelope for r in suite_records}
         kept_cases, unreadable = _load_promoted(suite_name, base=base)
         if unreadable is None:
             kept_cases, rewritten = _backfill_provenance(kept_cases, envelopes, base=base)
             backfilled += rewritten
-        built_pairs = build_conversation_examples(records_by_suite[suite_name], opts, base=base)
-        local_ids = {r.envelope.capture_id for r in records_by_suite[suite_name]}
+        if unreadable is not None and limits.active:
+            console.print(
+                f"[yellow]⚠[/yellow] {escape(suite_name)}: could not read its promoted cases "
+                f"({unreadable}); left it unchanged.",
+            )
+            continue
+        kept_from = {c.from_capture for c in kept_cases}
+        stale_by_name: dict[str, StaleReason | None] = {}
+        rules: StalenessRules | None = None
+        if limits.active:
+            recorded = [c.source_model for c in kept_cases] + [
+                capture_provenance(r.envelope)[1]
+                for r in suite_records
+                if r.envelope.capture_id not in kept_from
+            ]
+            rules = _suite_rules(
+                suite_name, limits, now=now, recorded_models=recorded, console=console
+            )
+            stale_by_name = {
+                c.name: rules.stale_reason(case_instant(c), c.source_model) for c in kept_cases
+            }
+        # Only the planner retires a stale twin, and never a reviewed one; any other stale
+        # case keeps its content, or a fresh copy would be promoted beside it.
+        replaceable = (
+            {
+                c.name
+                for c in kept_cases
+                if stale_by_name.get(c.name) is not None and not is_reviewed(c.example)
+            }
+            if limits.max_cases is not None
+            else set()
+        )
+        ineligible: Counter[str] = Counter()
+        pending: list[PromotedCase] = []
+        built_pairs = build_conversation_examples(suite_records, opts, base=base)
+        local_ids = {r.envelope.capture_id for r in suite_records}
         # Re-exercising an agent on the same data records duplicate captures.
         # Promoting both would duplicate the example, double n, and inflate
         # every downstream p-value/effect size. Dedup keys on the *built
@@ -1337,7 +1484,12 @@ def capture_sync(
         # `example_content_key` for why not the envelope input_hash — and is
         # seeded from the cases already on disk so it spans sync runs.
         if not keep_duplicates:
-            seen_examples.update(_promoted_content_owners(suite_name, base=base, console=console))
+            owners = _promoted_content_owners(suite_name, base=base, console=console)
+            # A replaceable stale case does not claim its content: the same question captured
+            # fresh replaces it (spec §5, rule 3).
+            seen_examples.update(
+                (key, owner) for key, owner in owners.items() if owner not in replaceable
+            )
             # A repair candidate's rebuilt content belongs to the candidate, whichever capture
             # is built first: the disk seed above only holds its stringified content, so
             # without this claim a capture replaying the same turn would promote as a new case.
@@ -1441,6 +1593,15 @@ def capture_sync(
                 else:
                     skipped_errored += 1
                 continue
+            if rules is not None and envelope.capture_id not in kept_from:
+                captured_at, recorded_model = capture_provenance(envelope)
+                reason = rules.stale_reason(parse_instant(captured_at), recorded_model)
+                if reason is not None:
+                    ineligible[reason] += 1
+                    continue
+            if limits.max_cases is not None and envelope.capture_id in kept_from and not force:
+                skipped_existing += 1
+                continue
             content_key = (suite_name, example_content_key(built.example))
             owner = seen_examples.get(content_key)
             # `sync` writes the case under the capture id, so an owner of that
@@ -1469,6 +1630,9 @@ def capture_sync(
                 source_model=source_model,
                 example=built.example,
             )
+            if limits.max_cases is not None and envelope.capture_id not in kept_from:
+                pending.append(case)
+                continue
             try:
                 write_promoted_case(case, base=base, force=force)
                 promoted += 1
@@ -1479,6 +1643,62 @@ def capture_sync(
         if repaired_here:
             repaired += len(repaired_here)
             _warn_repaired_duplicates(suite_name, repaired_here, base=base, console=console)
+        suite_line: str | None = None
+        if limits.max_cases is not None:
+            plan = plan_suite(
+                [
+                    KeptCase(
+                        name=c.name,
+                        instant=case_instant(c),
+                        stale=stale_by_name.get(c.name),
+                        reviewed=is_reviewed(c.example),
+                        route=examples_route([c.example]),
+                        content_key=example_content_key(c.example),
+                    )
+                    for c in kept_cases
+                ],
+                _candidate_groups(pending),
+                max_cases=limits.max_cases,
+            )
+            chosen = {cid for group in plan.add for cid in group.capture_ids}
+            for case in pending:
+                if case.name not in chosen:
+                    continue
+                try:
+                    write_promoted_case(case, base=base, force=force)
+                except FileExistsError:
+                    skipped_existing += 1
+                    continue
+                promoted += 1
+                if case.example.generation_config:
+                    wired_generation += 1
+            for name, _reason in plan.retire:
+                retire_promoted_case(suite_name, name, base=base)
+            if plan.reviewed_over_cap:
+                console.print(
+                    f"[yellow]⚠[/yellow] {escape(suite_name)}: {plan.reviewed_over_cap} "
+                    f"reviewed case(s) over captures.max_cases {limits.max_cases}; reviewed "
+                    "cases are never retired, so it stays over.",
+                )
+            suite_line = _plan_line(
+                suite_name,
+                plan,
+                kept=len(kept_cases),
+                eligible=len(pending),
+                ineligible=ineligible,
+                max_age=limits.max_age,
+            )
+        elif limits.active:
+            suite_line = _plan_line(
+                suite_name,
+                None,
+                kept=len(kept_cases),
+                eligible=0,
+                ineligible=ineligible,
+                max_age=limits.max_age,
+            )
+        if suite_line is not None:
+            plan_lines.append(suite_line)
 
     suite_paths: dict[str, Path] = {}
     suite_evaluators: dict[str, SuiteEvaluatorsOverride | None] = {}
@@ -1541,6 +1761,8 @@ def capture_sync(
     if left_for_repair:
         summary += f", left {left_for_repair} case(s) for --repair"
     console.print(summary + ".")
+    for line in plan_lines:
+        console.print(escape(line), soft_wrap=True)
 
     if not suite_paths:
         return
