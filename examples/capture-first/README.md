@@ -16,10 +16,10 @@ or the evaluators — was typed by hand.
 | Path | Where it came from |
 | --- | --- |
 | `agent.py` | Hand-written. A deterministic on-call triage agent instrumented with `@capture.agent`, `@capture.tool` and `record_model_call`. No LLM is called. |
-| `evalshift.yaml` | `evalshift init --provider gemini --no-wire-agents`, then `evalshift capture sync`. Unedited — the only difference from a fresh `init` is the filled-in managed region at the bottom. |
+| `evalshift.yaml` | `evalshift init --provider gemini --no-wire-agents`, its `captures:` block deleted (see step 2), then `evalshift capture sync`. Otherwise unedited — the only other difference from a fresh `init` is the filled-in managed region at the bottom. |
 | `.evalshift/captures/oncall_triage/cap_*.json` | Written by the SDK when `agent.py` ran with `EVALSHIFT_CAPTURE=1`. Three alerts, three captures. |
 | `.evalshift/toolsets/56503f6d….json` | Written by the SDK. One content-addressed sidecar holding the four tool schemas the router model was offered; every capture and every promoted case points at it by hash. |
-| `.evalshift/suites/oncall_triage/cap_*.json` | Written by `evalshift capture sync`. One auditable promoted case per capture, carrying its provenance. |
+| `.evalshift/suites/oncall_triage/cap_*.json` | Written by `evalshift capture sync`. One auditable promoted case per capture, carrying its provenance: the capture it came from, when it was recorded (`captured_at`) and on which model (`source_model`). |
 | `.evalshift/suites/oncall_triage/golden.jsonl` | Written by `evalshift capture sync`, regenerated from the case files above. This is what `run` reads. |
 | `.gitignore` | Hand-written, and explained below. |
 
@@ -83,6 +83,31 @@ The prompt is the whole reason `prompts:` is still required in a capture-first
 project: a promoted case carries the *rendered* prompt, so replaying it means
 echoing that string back verbatim.
 
+`init` also writes a `captures:` block, just above that region:
+
+```yaml
+captures:
+  max_age: 14d
+  max_cases: 200
+  # store: s3://<bucket>/<prefix>
+```
+
+**Delete it here**, with the comment above it. The block keeps each captured
+suite a capped sample of recent captures recorded on `defaults.source_model`,
+but the captures checked in here are demo recordings: they are older than
+`max_age`, and were recorded on a placeholder model id (`demo/triage-router`),
+not on `defaults.source_model`. With the block in place, `sync` promotes none of
+them:
+
+```
+⚠ oncall_triage: none of 3 case(s) and capture(s) were recorded on gemini-3.1-flash-lite-preview (seen: demo/triage-router ×3); not filtering by model — check defaults.source_model
+✓ promoted 0 capture(s) into 0 suite(s).
+  oncall_triage: 0 cases — kept 0, retired 0, added 0 of 0 eligible; not eligible: 3 older than 14d
+```
+
+A real project, recording fresh captures on the model it runs, keeps the block —
+see [Bounded suites](../../docs/configuration.md#bounded-suites).
+
 ### 3. Promote the captures
 
 ```bash
@@ -95,8 +120,8 @@ evalshift capture sync
 run: evalshift compare --suite-name oncall_triage --to <candidate>
 ```
 
-`sync` promotes every capture, rebuilds `golden.jsonl`, and rewrites the managed
-region with an entry per suite:
+With no `captures:` limits, `sync` promotes every capture, rebuilds
+`golden.jsonl`, and rewrites the managed region with an entry per suite:
 
 ```yaml
 # >>> evalshift suites (managed by `evalshift capture sync`) >>>
@@ -193,7 +218,9 @@ test run`, and results stay flagged uncertain below n=20. A suite this small
 demonstrates the wiring, not a verdict. A real capture-first suite grows by
 leaving the SDK instrumentation in place and re-running `capture sync`; sync
 de-duplicates on replayed content, seeded from the cases already on disk, so
-repeated syncs add cases without inflating *n*.
+repeated syncs add cases without inflating *n*. With the `captures:` limits
+`init` scaffolds, each sync also keeps the suite a capped, fresh sample instead
+of letting it grow without end.
 
 ## Why `.evalshift/` is committed here
 

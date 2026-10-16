@@ -155,7 +155,8 @@ evalshift compare --suite-name support_agent --to <candidate-model>
 See [docs/sdk.md](docs/sdk.md) for the full capture contract, and
 [`examples/capture-first/`](examples/capture-first/) for those three commands
 checked in end to end — the instrumented agent, the captures it wrote, the
-promoted suite, and the `suites:` block `capture sync` filled in. Can't
+promoted suite, and the `suites:` block `capture sync` filled in (its demo
+captures are old, so its config drops the `captures:` limits `init` writes). Can't
 instrument the agent? A hand-written `golden.jsonl` works just as well — see
 [Getting started](docs/getting-started.md).
 
