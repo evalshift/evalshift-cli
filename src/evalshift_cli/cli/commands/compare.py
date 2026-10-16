@@ -24,15 +24,18 @@ import os
 import webbrowser
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
+from rich.markup import escape
 from rich.text import Text
 
 from evalshift_cli.analysis.statistics import ComparisonResult
+from evalshift_cli.captures.freshness import suite_freshness
 from evalshift_cli.cli.commands._star import print_star_prompt
 from evalshift_cli.cli.commands._suites import (
     SUITE_FILENAME,
@@ -62,7 +65,7 @@ from evalshift_cli.cli.commands.evaluate import (
 )
 from evalshift_cli.cli.commands.report import run_report
 from evalshift_cli.config.loader import ConfigError, load_config
-from evalshift_cli.config.models import EvaluatorsConfig
+from evalshift_cli.config.models import EvalShiftConfig, EvaluatorsConfig
 from evalshift_cli.evaluators.keys import LLM_JUDGE_KIND, SEMANTIC_EVALUATOR_NAME, EvaluatorKeyGap
 from evalshift_cli.evaluators.tool_loader import ToolLoaderError
 from evalshift_cli.hosted.push import PushError, push_local_run
@@ -351,6 +354,42 @@ def _warn_if_legacy_name(ctx: typer.Context) -> None:
     )
 
 
+def _freshness_lines(
+    cfg: EvalShiftConfig, suite_name: str | None, suite_path: Path, source_model: str
+) -> list[str]:
+    """``⚠`` lines for a stale captured suite (spec §7).
+
+    compare drops doctor's ``warn`` rows, so it asks for the findings itself. Only for a suite
+    selected by name whose entry is ``source: captured``, and only with a capture limit set.
+
+    Args:
+        cfg: The loaded configuration.
+        suite_name: The ``--suite-name`` selected, or ``None`` for a suite given by path.
+        suite_path: The resolved ``golden.jsonl``; its case files sit beside it.
+        source_model: The source model this compare runs, which cases should be recorded on.
+
+    Returns:
+        One Rich-markup line per finding; empty when there is nothing to say.
+    """
+    captures = cfg.captures
+    if suite_name is None or (captures.max_age is None and captures.max_cases is None):
+        return []
+    entry = cfg.suites.get(suite_name)
+    if entry is None or entry.source != "captured":
+        return []
+    fresh = suite_freshness(
+        suite_name,
+        suite_path.parent,
+        max_age=captures.max_age,
+        max_cases=captures.max_cases,
+        source_model=source_model,
+        now=datetime.now(UTC),
+    )
+    if fresh is None:
+        return []
+    return [f"[yellow]⚠[/yellow] {escape(f.message)}" for f in fresh.findings]
+
+
 def compare_command(
     ctx: typer.Context,
     source: Annotated[
@@ -498,6 +537,7 @@ def compare_command(
     except SuiteError as exc:
         console.print(exc.format_rich())
         raise typer.Exit(code=1) from exc
+    freshness = _freshness_lines(cfg, suite_name, suite_path, source_model)
 
     run_slug = derive_suite_slug(suite_name=suite_name, suite_path=suite_path)
 
@@ -716,6 +756,11 @@ def compare_command(
     if evaluate_result.tool_free_warnings:
         for line in evaluate_result.tool_free_warnings:
             console.print(line)
+        console.print()
+    # And again: a stale suite gates on ground truth production no longer produces.
+    if freshness:
+        for line in freshness:
+            console.print(line, soft_wrap=True)
         console.print()
     collapsed_note = format_collapsed_slices(analyze_result.collapsed_slices)
     if collapsed_note is not None:
