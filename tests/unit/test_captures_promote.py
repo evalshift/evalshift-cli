@@ -25,15 +25,17 @@ from evalshift_cli.captures.promote import (
     _tool_rounds,
     build_conversation_examples,
     build_example_from_capture,
+    capture_provenance,
     duplicate_turn_warnings,
     example_content_key,
     rebuild_golden_jsonl,
+    retire_promoted_case,
     write_promoted_case,
 )
 from evalshift_cli.captures.reader import CaptureRecord
 from evalshift_cli.captures.toolset import EMPTY_TOOLSET_FINGERPRINT
 from evalshift_cli.suite.loader import load_jsonl
-from evalshift_cli.suite.models import HistoryToolCall
+from evalshift_cli.suite.models import HistoryToolCall, SuiteExample
 
 FIXTURES = Path(__file__).parent / "fixtures" / "captures"
 MULTI_ROUND_CAPTURE = FIXTURES / "multi_round_tools.json"
@@ -2999,3 +3001,38 @@ def test_an_invalid_case_in_a_conversation_does_not_seed_later_turns() -> None:
     assert by_id["cap_abc"].blocked_reason == "invalid_case"
     assert by_id["cap_t1"].blocked is None
     assert by_id["cap_t1"].example.history == []
+
+
+class TestCaptureProvenance:
+    def test_reads_created_at_and_the_first_model_calls_model(self) -> None:
+        envelope = _envelope(
+            events=[
+                _model_call(0, model_input="hi", model_id="claude-sonnet-5-20260301"),
+                _model_call(1, model_input="again", model_id="claude-haiku-5"),
+                _final("done", 2),
+            ],
+            created_at="2026-10-01T12:00:00+00:00",
+        )
+        assert capture_provenance(envelope) == (
+            "2026-10-01T12:00:00+00:00",
+            "claude-sonnet-5-20260301",
+        )
+
+    def test_a_capture_without_a_model_call_has_no_model(self) -> None:
+        assert capture_provenance(_envelope(events=[_final("done", 0)]))[1] == ""
+
+
+class TestRetirePromotedCase:
+    def test_deletes_the_case_file(self, tmp_path: Path) -> None:
+        case = PromotedCase(
+            name="cap_1",
+            suite="alpha",
+            from_capture="cap_1",
+            example=SuiteExample(id="cap_1", tools=[]),
+        )
+        path = write_promoted_case(case, base=tmp_path)
+        assert retire_promoted_case("alpha", "cap_1", base=tmp_path) is True
+        assert not path.exists()
+
+    def test_an_absent_case_is_not_an_error(self, tmp_path: Path) -> None:
+        assert retire_promoted_case("alpha", "cap_nope", base=tmp_path) is False

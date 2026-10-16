@@ -55,7 +55,7 @@ def _write_empty_capture(base: Path, *, capture_id: str, suite: str) -> Path:
 
 
 def _events(
-    *, tools: list[str], model_input: Any = "where is order 12345?"
+    *, tools: list[str], model_input: Any = "where is order 12345?", model_id: str = "m"
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = [
         {
@@ -63,7 +63,7 @@ def _events(
             "sequence_index": 0,
             "timestamp": "2026-06-16T12:00:00+00:00",
             "metadata": {},
-            "model_id": "m",
+            "model_id": model_id,
             "input": model_input,
             "output": "out",
             "toolset_ref": "sha256:" + "ab" * 32,
@@ -128,6 +128,7 @@ def _write_capture(
     conversation_id: str | None = None,
     turn_index: int | None = None,
     input_hash: str | None = None,
+    model_id: str = "m",
 ) -> Path:
     _write_toolset_sidecar(base)
     payload = {
@@ -147,7 +148,9 @@ def _write_capture(
             "events": events
             if events is not None
             else _events(
-                tools=tools if tools is not None else ["search_orders"], model_input=model_input
+                tools=tools if tools is not None else ["search_orders"],
+                model_input=model_input,
+                model_id=model_id,
             ),
         },
         "conversation_id": conversation_id,
@@ -2291,3 +2294,56 @@ def test_promote_invalid_case_refusal_does_not_suggest_allow_errored(tmp_path: P
     assert "could not be turned into a valid case" in out
     assert "--allow-errored" not in out
     assert not (tmp_path / "suites" / "alpha" / "cap_bad.json").exists()
+
+
+def test_sync_records_when_and_on_what_each_capture_ran(tmp_path: Path) -> None:
+    _write_capture(
+        tmp_path,
+        capture_id="cap_1",
+        suite="alpha",
+        created_at="2026-10-01T09:30:00+00:00",
+        model_id="claude-sonnet-5-20260301",
+    )
+    config = tmp_path / "evalshift.yaml"
+    _write_min_config(config)
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    case = PromotedCase.model_validate_json(
+        (tmp_path / "suites" / "alpha" / "cap_1.json").read_text(encoding="utf-8")
+    )
+    assert case.captured_at == "2026-10-01T09:30:00+00:00"
+    assert case.source_model == "claude-sonnet-5-20260301"
+
+
+def test_sync_backfills_a_case_written_before_the_fields_existed(tmp_path: Path) -> None:
+    _write_capture(tmp_path, capture_id="cap_1", suite="alpha", model_id="claude-sonnet-5")
+    config = tmp_path / "evalshift.yaml"
+    _write_min_config(config)
+    assert _invoke(["sync", "--config", str(config)], tmp_path).exit_code == 0
+    case_path = tmp_path / "suites" / "alpha" / "cap_1.json"
+    legacy = json.loads(case_path.read_text(encoding="utf-8"))
+    del legacy["captured_at"], legacy["source_model"]
+    case_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    case = PromotedCase.model_validate_json(case_path.read_text(encoding="utf-8"))
+    assert case.captured_at == "2026-06-16T12:00:00+00:00"
+    assert case.source_model == "claude-sonnet-5"
+    assert case.promoted_at == legacy["promoted_at"]
+    assert "backfilled capture time and model on 1 case(s)" in " ".join(result.stdout.split())
+
+
+def test_promote_records_when_and_on_what_the_capture_ran(tmp_path: Path) -> None:
+    _write_capture(tmp_path, capture_id="cap_1", model_id="gpt-5-2026-08-07")
+
+    assert _invoke(["promote", "cap_1", "--as", "case1"], tmp_path).exit_code == 0
+
+    case = PromotedCase.model_validate_json(
+        (tmp_path / "suites" / "support_agent" / "case1.json").read_text(encoding="utf-8")
+    )
+    assert case.source_model == "gpt-5-2026-08-07"
+    assert case.captured_at == "2026-06-16T12:00:00+00:00"

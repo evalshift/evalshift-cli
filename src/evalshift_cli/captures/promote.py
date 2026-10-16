@@ -1540,6 +1540,29 @@ def write_promoted_case(
     return path
 
 
+def capture_provenance(envelope: CaptureEnvelope) -> tuple[str, str]:
+    """``(captured_at, source_model)`` for a case promoted from ``envelope``.
+
+    ``source_model`` is the first ``model_call``'s ``model_id`` -- the call whose input a replay
+    re-sends -- or ``""`` when the capture recorded none.
+    """
+    first = next((e for e in envelope.trace.events if isinstance(e, ModelCallEvent)), None)
+    return envelope.created_at, first.model_id if first is not None else ""
+
+
+def retire_promoted_case(suite: str, name: str, *, base: Path | None = None) -> bool:
+    """Delete ``<base>/suites/<suite>/<name>.json``; ``False`` when it was already gone.
+
+    The caller rebuilds ``golden.jsonl`` afterwards (:func:`rebuild_golden_jsonl`).
+    """
+    path = promoted_suite_dir(suite, base=base) / f"{_safe_segment(name)}.json"
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
 def example_content_key(example: SuiteExample) -> str:
     """A stable key over the *replayed content* of ``example`` (inputs + history).
 
@@ -1598,11 +1621,13 @@ __all__ = [
     "RecoveredInput",
     "build_conversation_examples",
     "build_example_from_capture",
+    "capture_provenance",
     "duplicate_turn_warnings",
     "example_content_key",
     "iter_promoted_cases",
     "promoted_suite_dir",
     "rebuild_golden_jsonl",
     "recover_from_messages",
+    "retire_promoted_case",
     "write_promoted_case",
 ]

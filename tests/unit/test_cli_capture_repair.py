@@ -156,12 +156,16 @@ def _write_case(
             "conversation_id": conversation_id,
         }
     )
+    # Provenance matches what ``capture_payload`` records, so sync's backfill leaves the
+    # file alone and the byte-for-byte "untouched" checks below measure repair only.
     case = PromotedCase(
         name=case_name,
         suite=suite,
         from_capture=capture_id,
         example=example,
         conversation_id=conversation_id,
+        captured_at="2026-06-16T12:00:00+00:00",
+        source_model="m",
     )
     path = base / "suites" / suite / f"{case_name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)

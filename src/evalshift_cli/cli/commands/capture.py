@@ -33,6 +33,7 @@ from evalshift_cli.captures.promote import (
     PromoteOptions,
     build_conversation_examples,
     build_example_from_capture,
+    capture_provenance,
     duplicate_turn_warnings,
     example_content_key,
     iter_promoted_cases,
@@ -227,6 +228,56 @@ def _promoted_content_owners(
     for case in cases:
         owners.setdefault((suite, example_content_key(case.example)), case.name)
     return owners
+
+
+def _load_promoted(suite: str, *, base: Path | None) -> tuple[list[PromotedCase], str | None]:
+    """The suite's promoted cases, plus the error's type name when its files could not be read.
+
+    A suite with no directory yet has no cases. Only the exception's type name is kept: its
+    text can carry raw bytes of a case file.
+    """
+    suite_dir = promoted_suite_dir(suite, base=base)
+    if not suite_dir.is_dir():
+        return [], None
+    try:
+        return iter_promoted_cases(suite_dir), None
+    except (ValueError, OSError) as exc:  # pydantic's ValidationError is a ValueError
+        return [], type(exc).__name__
+
+
+def _backfill_provenance(
+    cases: list[PromotedCase],
+    envelopes: Mapping[str, CaptureEnvelope],
+    *,
+    base: Path | None,
+) -> tuple[list[PromotedCase], int]:
+    """Fill ``captured_at`` / ``source_model`` on cases written before the fields existed.
+
+    Only an empty field is filled, only from the case's own capture, and only while that
+    capture is local; nothing else on the case changes (``promoted_at`` included). Returns
+    the cases as they now stand and how many files were rewritten.
+    """
+    out: list[PromotedCase] = []
+    rewritten = 0
+    for case in cases:
+        envelope = envelopes.get(case.from_capture)
+        if envelope is None or (case.captured_at and case.source_model):
+            out.append(case)
+            continue
+        captured_at, source_model = capture_provenance(envelope)
+        filled = case.model_copy(
+            update={
+                "captured_at": case.captured_at or captured_at,
+                "source_model": case.source_model or source_model,
+            }
+        )
+        if filled == case:
+            out.append(case)
+            continue
+        write_promoted_case(filled, base=base, force=True)
+        out.append(filled)
+        rewritten += 1
+    return out, rewritten
 
 
 def _repair_selection(*, base: Path | None, suite: str | None, console: Console) -> RepairSelection:
@@ -721,6 +772,7 @@ def capture_promote(
                 "together.",
             )
 
+    captured_at, source_model = capture_provenance(envelope)
     case = PromotedCase(
         name=opts.name or envelope.capture_id,
         suite=envelope.suite,
@@ -733,6 +785,8 @@ def capture_promote(
         cost_source=built.cost_source,
         conversation_id=built.example.conversation_id,
         turn_index=built.example.turn_index,
+        captured_at=captured_at,
+        source_model=source_model,
         example=built.example,
     )
 
@@ -1146,6 +1200,7 @@ def capture_sync(
     skipped_invalid = 0
     repaired = 0
     left_for_repair = 0
+    backfilled = 0
     backed_by = selection.cases_by_capture()
     suites_seen: set[str] = set()
     # (suite, content key) -> the name of the case that owns that content,
@@ -1175,6 +1230,11 @@ def capture_sync(
             [r.envelope for r in records_by_suite[suite_name]],
         ):
             console.print(f"[yellow]⚠[/yellow] {suite_name}: {warning}")
+        envelopes = {r.envelope.capture_id: r.envelope for r in records_by_suite[suite_name]}
+        kept_cases, unreadable = _load_promoted(suite_name, base=base)
+        if unreadable is None:
+            kept_cases, rewritten = _backfill_provenance(kept_cases, envelopes, base=base)
+            backfilled += rewritten
         built_pairs = build_conversation_examples(records_by_suite[suite_name], opts, base=base)
         local_ids = {r.envelope.capture_id for r in records_by_suite[suite_name]}
         # Re-exercising an agent on the same data records duplicate captures.
@@ -1295,6 +1355,7 @@ def capture_sync(
             seen_examples.setdefault(content_key, envelope.capture_id)
             for warning in built.warnings:
                 console.print(f"[yellow]⚠[/yellow] {envelope.capture_id}: {warning}")
+            captured_at, source_model = capture_provenance(envelope)
             case = PromotedCase(
                 name=envelope.capture_id,
                 suite=envelope.suite,
@@ -1307,6 +1368,8 @@ def capture_sync(
                 cost_source=built.cost_source,
                 conversation_id=built.example.conversation_id,
                 turn_index=built.example.turn_index,
+                captured_at=captured_at,
+                source_model=source_model,
                 example=built.example,
             )
             try:
@@ -1340,6 +1403,8 @@ def capture_sync(
     summary = f"[green]✓[/green] promoted {promoted} capture(s) into {len(suite_paths)} suite(s)"
     if wired_generation:
         summary += f", wired generation config for {wired_generation} case(s)"
+    if backfilled:
+        summary += f", backfilled capture time and model on {backfilled} case(s)"
     if skipped_existing:
         summary += f", skipped {skipped_existing} already-promoted (use --force to overwrite)"
     if skipped_empty:
