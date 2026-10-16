@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_age: 14d` and `max_cases: 200`, together keep each captured suite a
   capped, route-balanced sample of recent production on
   `defaults.source_model`. Setting either one turns the feature on; without
-  them `capture sync` behaves as before.
+  them `capture sync` keeps and promotes exactly what it did before.
 - **Filter.** With either limit set, `capture sync` promotes only captures
   recorded on `defaults.source_model`, and with `max_age` set, only captures
   recorded within it. Model ids match on bare names: lower-cased, provider
@@ -22,9 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Plan.** With `max_cases` set, sync never grows a suite past the cap and
   swaps stale cases (too old, or recorded on another model) for fresh
   captures as they arrive. A stale case leaves at once when a fresh capture of
-  the same question is added in its place; with no free slot nothing is
-  added and the stale case stays. Any other stale case leaves only to make
-  room, so a suite that has nothing to replace it with never shrinks. A
+  the same question is added in its place; if its fresh copy is not added,
+  the stale case leaves only to make room, like any other stale case. So a
+  suite that has nothing to replace its stale cases with never shrinks. A
   conversation enters whole or not at all. Cases a human marked
   `provenance: reviewed` are never retired. The same captures give the same
   suite on any machine, and syncing again with nothing new changes no file.

@@ -1085,15 +1085,15 @@ captures:
 | Field       | Type                              | Default | Description |
 | ----------- | --------------------------------- | ------- | ----------- |
 | `store`     | string (URI)                      | (none)  | Object store the SDK writes to. `capture sync` and `capture list` fetch new captures and toolset sidecars from it into the local directory first; `capture fetch` does only that step. |
-| `max_age`   | duration (`30m`, `24h`, `14d`; > 0) | (none)  | Captures recorded longer ago than this never enter a suite through `capture sync` (`capture promote` ignores the limits), and promoted cases that old are stale: `capture sync` replaces them as fresh captures arrive. Also the window `capture sync` fetches from `store`. Omit for no age limit. |
+| `max_age`   | duration (`30m`, `24h`, `14d`; > 0) | (none)  | Captures recorded longer ago than this never enter a suite through `capture sync` (`capture promote` ignores the limits), and promoted cases that old are stale: with `max_cases` also set, `capture sync` replaces them as fresh captures arrive. Also the window `capture sync` fetches from `store`. Omit for no age limit. |
 | `max_cases` | int (≥ 1)                         | (none)  | The most cases `capture sync` keeps in each captured suite. Omit and suites grow with every sync. |
 
 Setting either `max_age` or `max_cases` turns [bounded suites](#bounded-suites) on. Both work
 without `store`: they govern how captures become suites, whether the captures came from disk or
 from a bucket. A `max_age` that is not a duration fails to load; `evalshift validate` reports it as
-`captures.max_age: Value error, expected a duration like 30m, 24h or 14d`, followed by the value
-it got (`, got '2w'`). A bare number such as `14` is rejected the same way, because it would
-silently mean seconds.
+`captures.max_age: Value error, expected a duration like 30m, 24h or 14d`, followed for a string by
+the value it got (`, got '2w'`). A bare number such as `14` is rejected too, without that suffix,
+because it would silently mean seconds.
 
 CLI versions before 1.3.0 reject the `captures:` key, and versions before this release reject
 `max_age` and `max_cases` (the config is strict). Bump the CLI, and a pinned GitHub Action's
@@ -1308,8 +1308,9 @@ references. Each deletion asks first; `--yes`/`-y` skips both prompts.
 under `.evalshift/captures/` into golden suites at
 `.evalshift/suites/<suite>/golden.jsonl` **and** injects the resulting
 `suites:` block into `evalshift.yaml` between the managed marker comments.
-With `captures.max_age` set, captures older than it are not promoted; with
-`captures.max_cases` set, it promotes a capped, route-balanced sample instead,
+With `captures.max_age` or `captures.max_cases` set, captures recorded on another
+model than `defaults.source_model` are not promoted; with `captures.max_age` set,
+neither are captures older than it; with `captures.max_cases` set, it promotes a capped, route-balanced sample instead,
 and retires stale cases as fresh ones replace them (see
 [Bounded suites](#bounded-suites)).
 

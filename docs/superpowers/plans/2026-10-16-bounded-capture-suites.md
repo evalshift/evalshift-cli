@@ -3086,7 +3086,7 @@ The maintainer merges the PR; the release (version bump, tag) is a separate PR.
 What shipped differs from the tasks above in these ways (controller rulings during Tasks 1–10; the spec and the user docs describe the shipped behaviour):
 
 1. Model matching (Task 3): `same_model` compares bare names only (lower-cased, provider prefix dropped, one trailing `-YYYYMMDD` / `-YYYY-MM-DD` dropped). The registry/alias fallback shown in Task 3 was removed, so a `defaults.source_model` spelled as an alias trips the guardrail warning.
-2. Planner (Task 6): a stale case whose content an added capture replays is retired outright, even under the cap; other stale cases leave only while `excess > 0`. A case with an unknown capture time counts as oldest when ordering retirement and trim (spec §5 amended).
+2. Planner (Task 6): a stale case whose content an added capture replays is retired outright, even under the cap; other stale cases leave only while `excess > 0`. A case with an unknown capture time counts as oldest when ordering the model-stale retirement group and the trim; an age-stale case always has a known time (spec §5 amended).
 3. Dedup with limits (Task 8): a stale case gives up its content claim only when `max_cases` is set and the case is not reviewed; with `max_age` alone a fresh re-capture of a stale case's question is skipped as a duplicate.
 4. Twin retirement applies under `--keep-duplicates` too.
 5. Fetch window (Task 7): only `capture sync`'s automatic fetch follows `max_age`; `capture list` and `capture fetch` do not; `--since` overrides it.

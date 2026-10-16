@@ -849,8 +849,9 @@ class CapturesConfig(_StrictModel):
             default chain, never from this file; a URI carrying ``@`` or ``?`` is rejected.
             ``None`` (the default) means local disk only.
         max_age: Captures recorded longer ago than this (``30m``, ``24h``, ``14d``) never enter a
-            suite, and promoted cases that old are stale: ``capture sync`` replaces them as fresh
-            captures arrive. Also the fetch window. ``None`` (the default): no age limit.
+            suite through ``capture sync``, and promoted cases that old are stale: with
+            ``max_cases`` also set, ``capture sync`` replaces them as fresh captures arrive. Also
+            the fetch window. ``None`` (the default): no age limit.
         max_cases: The most cases ``capture sync`` keeps in each captured suite. ``None`` (the
             default): suites grow with every sync. Setting either limit turns bounded suites on.
     """

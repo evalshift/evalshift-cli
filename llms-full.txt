@@ -422,7 +422,8 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   cannot be rebuilt without its capture: run --repair BEFORE a plain sync on such suites
   (fresh clone, after capture clean), or a duplicate capture may be promoted -- the duplicate
   warning after --repair names it.
-  Promotes EVERY capture (with captures limits set: a bounded sample, see BOUNDED SUITES below):
+  Promotes EVERY capture (with captures limits set: filtered by age/model, and capped with
+  max_cases -- see BOUNDED SUITES below):
   groups by conversation_id, orders by turn_index, one SuiteExample per
   turn; writes .evalshift/suites/<suite>/golden.jsonl and rewrites the managed suites: block in
   evalshift.yaml (between ">>> evalshift suites" markers). Content-duplicate captures skipped by
@@ -465,29 +466,31 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
     next group of the route (sorted round-1 expected tool names; none is its own route) with the
     fewest cases so far that still has a group that fits (ties by route name); within a route,
     sha256(group key) order. Retire: a stale case whose content key an added turn replays is
-    retired OUTRIGHT, even under the cap (no duplicate content; also under --keep-duplicates);
-    no free slot -> nothing added -> the stale twin stays. Other stale cases only while over
-    max_cases: model-stale first (oldest first, unknown time = oldest), then age-stale oldest
-    first, ties by name -- a suite never shrinks because it went stale. Still over: trim fresh
-    cases from the most-represented route, oldest first (unknown time = oldest). Reviewed over the cap -> kept + "<suite>:
-    N reviewed case(s) over captures.max_cases M; reviewed cases are never retired, so it stays
-    over." Dedup seed: a stale non-reviewed case gives up its content claim (max_cases set only),
-    so a fresh re-capture of its question can replace it. Same captures -> same suite on any
-    machine; re-running with nothing new changes no file. Retired case files are deleted, then
-    golden.jsonl is rebuilt. A suite whose case files cannot be read is LEFT UNTOUCHED (golden.jsonl
-    and suites entry as they were): "<suite>: could not read its promoted cases (<ErrorType>);
-    left it unchanged." -- other suites still sync.
+    retired OUTRIGHT, even under the cap (no duplicate content; also under --keep-duplicates); if
+    its fresh copy is not added, the stale case leaves only to make room, like any other stale
+    case. Other stale cases only while over max_cases: model-stale first (oldest first, unknown
+    time = oldest), then age-stale oldest first, ties by name -- a suite never shrinks because it
+    went stale. Still over: trim fresh cases from the most-represented route, oldest first
+    (unknown time = oldest). Reviewed over the cap -> kept + "<suite>: N reviewed case(s) over
+    captures.max_cases M; reviewed cases are never retired, so it stays over." Dedup seed: a stale
+    non-reviewed case gives up its content claim (max_cases set only), so a fresh re-capture of
+    its question can replace it. Same captures -> same suite on any machine; re-running with
+    nothing new changes no file. Retired case files are deleted, then golden.jsonl is rebuilt. A
+    suite whose case files cannot be read is LEFT UNTOUCHED (golden.jsonl and suites entry as they
+    were): "<suite>: could not read its promoted cases (<ErrorType>); left it unchanged." -- other
+    suites still sync.
     Output, after the summary line, one line per planned suite (zero counts left out):
       "  planner: 200 cases — kept 150, retired 50 (32 older than 14d, 18 on another model),
       added 50 of 2940 eligible; not eligible: 812 older than 14d, 40 on another model"
     (retired reasons also "N over max_cases"; kept = cases that stay; eligible = candidates after
     dedup). max_age alone: "  planner: not eligible: 812 older than 14d", only when non-empty.
     Fetch window: with max_age set, sync's AUTOMATIC fetch skips CAPTURES whose last_modified is
-    before now - max_age; toolset sidecars missing locally are always fetched ("(skipped 4 promoted, 11 older than captures.max_age (14d))"); --since
-    overrides it; capture list / capture fetch do not apply it. No sampling at fetch time (a
-    listing has key/time/size only; history rebuild needs sibling turns) -- volume inside the
-    window is EVALSHIFT_SAMPLE_RATE's job. Committed case files supply the promoted-id skip list,
-    so a fresh checkout downloads only new captures inside the window.
+    before now - max_age; toolset sidecars missing locally are always fetched ("(skipped 4
+    promoted, 11 older than captures.max_age (14d))"); --since overrides it; capture list /
+    capture fetch do not apply it. No sampling at fetch time (a listing has key/time/size only;
+    history rebuild needs sibling turns) -- volume inside the window is EVALSHIFT_SAMPLE_RATE's
+    job. Committed case files supply the promoted-id skip list, so a fresh checkout downloads only
+    new captures inside the window.
     Route balancing is coverage-weighted, not traffic-weighted: rate budgets are measured over a
     balanced sample. The CLI never writes to or deletes from the bucket; expire the captures/
     prefix (not toolsets/, which committed suites reference) with a lifecycle rule after a period
@@ -1699,7 +1702,7 @@ evalshift init --provider gemini            # minimal config only
 pip install evalshift-sdk                   # already a dependency of the CLI; alone in a capture-only agent
 EVALSHIFT_CAPTURE=1 python my_agent.py      # record captures via SDK instrumentation
 evalshift capture list
-evalshift capture sync                      # promote all -> .evalshift/suites/<suite>/golden.jsonl
+evalshift capture sync                      # promote -> .evalshift/suites/<suite>/golden.jsonl
 evalshift compare --suite-name <suite> --to gemini-3.1-pro-preview --gate critical,high --policy-gate
 
 # Tools from code — no separate sync step: capture what your agent actually calls
