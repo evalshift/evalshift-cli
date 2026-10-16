@@ -904,9 +904,10 @@ Each `expected_tools` entry carries `provenance`: `captured` (the default, and
 what `capture promote` / `capture sync` write) means its arguments were
 transcribed verbatim from the source model's own recorded call — nobody has
 checked that they are *right*. Set it to `reviewed` once a human has confirmed
-the row. Scoring is identical either way; the flag only controls whether the run
-discloses that its `against: expected` ground truth is source-derived (see
-[Agent migrations](agents.md#scoring-arguments-against-ground-truth)).
+the row (in a captured suite, in the case file; see
+[Bounded suites](#bounded-suites)). Scoring is identical either way; the flag
+only controls whether the run discloses that its `against: expected` ground
+truth is source-derived (see [Agent migrations](agents.md#scoring-arguments-against-ground-truth)).
 
 **`toolset_ref` (string) or `tools` (list) — required, exactly one of the
 two.** Every model call records the toolset it was offered, so every suite
@@ -1085,7 +1086,7 @@ captures:
 | Field       | Type                              | Default | Description |
 | ----------- | --------------------------------- | ------- | ----------- |
 | `store`     | string (URI)                      | (none)  | Object store the SDK writes to. `capture sync` and `capture list` fetch new captures and toolset sidecars from it into the local directory first; `capture fetch` does only that step. |
-| `max_age`   | duration (`30m`, `24h`, `14d`; > 0) | (none)  | Captures recorded longer ago than this never enter a suite through `capture sync` (`capture promote` ignores the limits), and promoted cases that old are stale: with `max_cases` also set, `capture sync` replaces them as fresh captures arrive. Also the window `capture sync` fetches from `store`. Omit for no age limit. |
+| `max_age`   | duration (`30m`, `24h`, `14d`; > 0, ≤ `36500d`) | (none)  | Captures recorded longer ago than this never enter a suite through `capture sync` (`capture promote` ignores the limits), and promoted cases that old are stale: with `max_cases` also set, `capture sync` replaces them as fresh captures arrive. Also the window `capture sync` fetches from `store`. Omit for no age limit. |
 | `max_cases` | int (≥ 1)                         | (none)  | The most cases `capture sync` keeps in each captured suite. Omit and suites grow with every sync. |
 
 Setting either `max_age` or `max_cases` turns [bounded suites](#bounded-suites) on. Both work
@@ -1093,7 +1094,9 @@ without `store`: they govern how captures become suites, whether the captures ca
 from a bucket. A `max_age` that is not a duration fails to load; `evalshift validate` reports it as
 `captures.max_age: Value error, expected a duration like 30m, 24h or 14d`, followed for a string by
 the value it got (`, got '2w'`). A bare number such as `14` is rejected too, without that suffix,
-because it would silently mean seconds.
+because it would silently mean seconds. So is a `max_age` above 100 years, which some write to mean
+"no limit": `captures.max_age: Value error, must be at most 36500d (100 years); omit
+captures.max_age for no age limit`.
 
 CLI versions before 1.3.0 reject the `captures:` key, and versions before this release reject
 `max_age` and `max_cases` (the config is strict). Bump the CLI, and a pinned GitHub Action's
@@ -1209,17 +1212,41 @@ trimmed. If they alone exceed the cap, sync keeps them and warns
 (`alpha: 3 reviewed case(s) over captures.max_cases 2; reviewed cases are never retired, so it
 stays over.`).
 
+In a captured suite, set the mark in the case file, `.evalshift/suites/<suite>/<case>.json`, on
+the calls under `example.expected_tools` (and under `example.expected_tool_rounds`, when the case
+has it), and commit that file. Not in `golden.jsonl`: sync regenerates it from the case files on
+every run, so a mark made there is gone after the next sync.
+
+```json
+"example": {
+  "id": "cap_0",
+  "expected_tools": [
+    {"tool_name": "issue_refund", "arguments": {"order_id": "A-1"}, "provenance": "reviewed"}
+  ]
+}
+```
+
+Sync knows a case by its file, not by the `name` inside it: retiring a case deletes the file it
+was read from, so a case file you renamed or copied is planned on its own. A deletion that fails
+is reported (`alpha: could not delete cap_0.json; not counted as retired.`) and left out of the
+counts. A new capture whose case file name is already taken in the suite is counted as already
+promoted and not added.
+
 With `max_cases` set, sync plans every suite directory under `.evalshift/suites/` that holds case
 files, even with no new captures, so an over-cap suite is trimmed on the next sync. That includes
 suites sync did not build: suites promoted by hand with `capture promote`, and suites whose
 `suites:` entry is `managed: false`. `managed: false` freezes the YAML entry, not the case files.
-`--suite` narrows the plan to one suite. A suite directory whose case files cannot be read is left
-untouched: its `golden.jsonl` and `suites:` entry stay as they are, sync warns
-(`alpha: could not read its promoted cases (ValidationError); left it unchanged.`), and the other
-suites still sync.
+`--suite` narrows the plan to one suite. A suite planned only because its directory holds case
+files (no capture of it this run) has its `golden.jsonl` rebuilt, but is wired into `suites:` only
+if it already has an entry there: a suite you took out of `suites:` stays out. A suite directory
+whose case files cannot be read is left untouched: its `golden.jsonl` and `suites:` entry stay as
+they are, sync warns (`alpha: could not read its promoted cases (ValidationError); left it
+unchanged.`), and the other suites still sync.
 
 Duplicates: with `max_cases` set, a stale case that is not reviewed gives up its claim on its
 content, so a fresh capture of the same question can replace it, under `--keep-duplicates` too.
+A case that stays keeps its claim, so if a suite already holds the same content twice, a fresh
+copy is still skipped as a duplicate.
 With `max_age` alone, nothing is ever retired: too-old and other-model captures are not promoted,
 and a fresh capture of a stale case's question is skipped as a duplicate.
 
@@ -1249,6 +1276,11 @@ downloaded. `EVALSHIFT_SAMPLE_RATE` on the agent governs the volume. On a fresh 
 committed case files tell the fetch which captures are already promoted, so only new ones inside
 the window are downloaded.
 
+On a fresh checkout or after `capture clean`, a conversation that straddles the `max_age` window
+loses its earlier turns to the fetch window. A later turn that does not record its own messages
+list then rebuilds a truncated history from the turns it has. Pass the full messages list to
+`capture.model_call` so each turn carries its own history.
+
 If `evalshift.yaml` cannot be read or does not validate, sync runs without the limits. When the
 file has a top-level `captures:` key, it says so, online or `--offline`:
 `could not read evalshift.yaml (1 schema problem found); syncing without captures.max_age /
@@ -1265,8 +1297,10 @@ measure against `defaults.source_model`, not `--from`.
   (`alpha: 200 cases, captured 2d–12d ago`), or one `warn` row per finding:
   - `alpha: newest case captured 23d ago (captures.max_age 14d); refresh with evalshift capture sync`
   - `alpha: 18 of 200 cases recorded on another model than claude-sonnet-5-5; evalshift capture sync replaces them as new captures arrive`
+    (without `max_cases`, which is what makes sync replace them: `…; set captures.max_cases for evalshift capture sync to replace them`)
   - `alpha: no case recorded on claude-sonnet-5-5 (seen: claude-sonnet-5-20260301 ×200); check defaults.source_model, or record new captures`
   - `alpha: 2940 cases, over captures.max_cases 200; evalshift capture sync trims it`
+    (when the reviewed cases alone exceed the cap: `…; evalshift capture sync trims it only down to its 230 reviewed case(s)`)
   - `alpha: 2 case file(s) could not be read; the counts leave them out`
 - `doctor` also adds a `captures limits` `warn` row when `store` is set and `max_cases` is not:
   `suites grow with every capture sync; set captures.max_cases and captures.max_age`, or

@@ -208,10 +208,13 @@ evalshift doctor
   cases, captured 2d–12d ago"; else one warn (exit 0, never fail) per finding:
     "alpha: newest case captured 23d ago (captures.max_age 14d); refresh with evalshift capture sync"
     "alpha: 18 of 200 cases recorded on another model than <defaults.source_model>; evalshift
-      capture sync replaces them as new captures arrive"
+      capture sync replaces them as new captures arrive"   (without max_cases: "...; set
+      captures.max_cases for evalshift capture sync to replace them")
     "alpha: no case recorded on <defaults.source_model> (seen: <model> ×N); check
       defaults.source_model, or record new captures"   (the guardrail case: nothing matches)
-    "alpha: 2940 cases, over captures.max_cases 200; evalshift capture sync trims it"
+    "alpha: 2940 cases, over captures.max_cases 200; evalshift capture sync trims it"   (reviewed
+      cases alone over the cap: "...; evalshift capture sync trims it only down to its N reviewed
+      case(s)")
     "alpha: N case file(s) could not be read; the counts leave them out"
   Measured against defaults.source_model, models matched on bare names (see capture sync).
 evalshift run [-f/--from MODEL] [-t/--to MODEL] [-c CONFIG] [-s/--suite FILE]
@@ -430,8 +433,8 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   default (duplicates inflate n, corrupt paired stats); --keep-duplicates opts out. Dedup is
   seeded from cases already promoted in the suite dir, so it spans sync runs.
   Reports "wired generation config for N case(s)" when promoted captures carried one.
-  BOUNDED SUITES (captures.max_age: duration 30m|24h|14d > 0; captures.max_cases: int >= 1; both
-  default unset). OPT-IN: every rule below applies only when at least one is set;
+  BOUNDED SUITES (captures.max_age: duration 30m|24h|14d, > 0, <= 36500d; captures.max_cases:
+  int >= 1; both default unset). OPT-IN: every rule below applies only when at least one is set;
   defaults.source_model alone changes nothing; without them sync promotes/keeps exactly what it
   did before. ALWAYS (limits or not): PromotedCase gains captured_at (envelope created_at,
   verbatim) + source_model (first model_call's model_id, the call a replay re-sends); sync
@@ -461,8 +464,17 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
     new captures; includes suites promoted by hand with `capture promote` and suites whose entry
     is managed: false -- that flag freezes the YAML entry, not the case files); --suite narrows.
     Kept cases: reviewed (any expected tool call provenance: reviewed -> NEVER retired), fresh,
-    stale. Unit = conversation group (conversation_id; a lone capture is its own group), added
-    whole or skipped (next group tried). slots = max_cases - reviewed - fresh; repeatedly add the
+    stale. Captured suites: the reviewed mark goes IN THE CASE FILE
+    <base>/suites/<suite>/<case>.json (example.expected_tools[], and
+    example.expected_tool_rounds when present), NEVER golden.jsonl: sync regenerates golden.jsonl
+    from the case files every run, so a mark there is lost. A case is its FILE, not its "name"
+    field: planned by file stem, a retirement deletes the file the case was read from (a renamed
+    or copied case file is planned on its own); a failed delete prints "<suite>: could not
+    delete <file>; not counted as retired." and is not counted. A capture whose case file name
+    is already taken is counted already-promoted and never planned; a planned write that fails
+    is not counted as added, and sync re-plans so its stale twin stays. Unit = conversation group
+    (conversation_id; a lone capture is its own group), added whole or skipped (next group
+    tried). slots = max_cases - reviewed - fresh; repeatedly add the
     next group of the route (sorted round-1 expected tool names; none is its own route) with the
     fewest cases so far that still has a group that fits (ties by route name); within a route,
     sha256(group key) order. Retire: a stale case whose content key an added turn replays is
@@ -474,11 +486,13 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
     (unknown time = oldest). Reviewed over the cap -> kept + "<suite>: N reviewed case(s) over
     captures.max_cases M; reviewed cases are never retired, so it stays over." Dedup seed: a stale
     non-reviewed case gives up its content claim (max_cases set only), so a fresh re-capture of
-    its question can replace it. Same captures -> same suite on any machine; re-running with
-    nothing new changes no file. Retired case files are deleted, then golden.jsonl is rebuilt. A
-    suite whose case files cannot be read is LEFT UNTOUCHED (golden.jsonl and suites entry as they
-    were): "<suite>: could not read its promoted cases (<ErrorType>); left it unchanged." -- other
-    suites still sync.
+    its question can replace it; every case that stays keeps its claim (a suite already holding
+    the content twice still skips the fresh copy). A suite planned only from its directory (no
+    capture this run) is rebuilt but wired into suites: only if it already has an entry. Same
+    captures -> same suite on any machine; re-running with nothing new changes no file. Retired
+    case files are deleted, then golden.jsonl is rebuilt. A suite whose case files cannot be read
+    is LEFT UNTOUCHED (golden.jsonl and suites entry as they were): "<suite>: could not read its
+    promoted cases (<ErrorType>); left it unchanged." -- other suites still sync.
     Output, after the summary line, one line per planned suite (zero counts left out):
       "  planner: 200 cases — kept 150, retired 50 (32 older than 14d, 18 on another model),
       added 50 of 2940 eligible; not eligible: 812 older than 14d, 40 on another model"
@@ -490,7 +504,10 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
     capture fetch do not apply it. No sampling at fetch time (a listing has key/time/size only;
     history rebuild needs sibling turns) -- volume inside the window is EVALSHIFT_SAMPLE_RATE's
     job. Committed case files supply the promoted-id skip list, so a fresh checkout downloads only
-    new captures inside the window.
+    new captures inside the window. On a fresh checkout or after capture clean, a conversation
+    straddling the window loses its earlier turns to it; a turn that does not record its own
+    messages list then rebuilds a TRUNCATED history -- pass the full messages list to
+    capture.model_call.
     Route balancing is coverage-weighted, not traffic-weighted: rate budgets are measured over a
     balanced sample. The CLI never writes to or deletes from the bucket; expire the captures/
     prefix (not toolsets/, which committed suites reference) with a lifecycle rule after a period
@@ -903,7 +920,8 @@ captures:
   trailing slash stripped; default none = local disk only. Client libraries are plain packages:
   pip install boto3 (s3://; AWS_ENDPOINT_URL covers MinIO/R2/B2), google-cloud-storage (gs://),
   azure-storage-blob azure-identity (az://). Credentials: each provider's default chain only.
-  max_age: duration|null = null   # N + m|h|d (30m, 24h, 14d), > 0; parsed to a timedelta. Bad
+  max_age: duration|null = null   # N + m|h|d (30m, 24h, 14d), > 0, <= 36500d (above -> "must be
+  #   at most 36500d (100 years); omit captures.max_age for no age limit"); a timedelta. Bad
   #   value -> validate prints "captures.max_age: Value error, expected a duration like 30m,
   #   24h or 14d" (+ ", got '2w'" for a string; a bare number is rejected too: it would
   #   silently mean seconds). Captures older than this never enter a suite through capture
@@ -962,6 +980,8 @@ estimated capture cost uses DeepSeek's API price.
                                          # model's own recorded call (promote/sync write this);
                                          # nobody checked it is RIGHT. Scoring identical either
                                          # way; only gates the disclosure recommendation.
+                                         # Captured suite: set reviewed in the case file
+                                         # (sync regenerates golden.jsonl from case files).
  "expected_tool_rounds": [[{...}]]|null, # full recorded agent loop, one list per model turn that
                                          # emitted tool calls; expected_tools is normally
                                          # expected_tool_rounds[0]. null for pre-v0.3 suites /
@@ -1577,7 +1597,7 @@ content leaves the machine.
   content (inputs + history), NOT the envelope input_hash (the SDK salts that with
   conversation_id and derives it from the agent's bound args). Seeded from already-promoted
   cases, so dedup spans sync runs. With captures.max_cases set, a stale non-reviewed case does
-  not seed it (its fresh re-capture replaces it).
+  not seed it (its fresh re-capture replaces it); every case that stays does.
 - Bounded capture sync (captures.max_age / captures.max_cases set): a suite never shrinks
   because it went stale (stale cases leave only to make room or to be replaced by their fresh
   twin); reviewed cases are never retired; a conversation is added whole or not at all; the
