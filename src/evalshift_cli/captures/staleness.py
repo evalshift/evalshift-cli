@@ -32,7 +32,10 @@ def parse_instant(text: str) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except OverflowError:  # an offset that pushes it past datetime.min / max
+        return None
 
 
 def case_instant(case: PromotedCase) -> datetime | None:

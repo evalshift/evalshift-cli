@@ -43,6 +43,7 @@ from evalshift_cli.cli.commands._suites import (
     UnknownSuiteNameError,
     derive_suite_slug,
     resolve_suite_path,
+    selected_suite_name,
 )
 from evalshift_cli.cli.commands.analyze import (
     GATE_SEVERITIES,
@@ -355,18 +356,22 @@ def _warn_if_legacy_name(ctx: typer.Context) -> None:
 
 
 def _freshness_lines(
-    cfg: EvalShiftConfig, suite_name: str | None, suite_path: Path, source_model: str
+    cfg: EvalShiftConfig, suite_name: str | None, suite_path: Path, source_model: str | None
 ) -> list[str]:
     """``⚠`` lines for a stale captured suite (spec §7).
 
-    compare drops doctor's ``warn`` rows, so it asks for the findings itself. Only for a suite
-    selected by name whose entry is ``source: captured``, and only with a capture limit set.
+    compare drops doctor's ``warn`` rows, so it asks for the findings itself. Only for a named
+    suite (``--suite-name`` or the single wired suite auto-selected) whose entry is
+    ``source: captured``, and only with a capture limit set.
 
     Args:
         cfg: The loaded configuration.
-        suite_name: The ``--suite-name`` selected, or ``None`` for a suite given by path.
+        suite_name: The selected suite's name (see
+            :func:`~evalshift_cli.cli.commands._suites.selected_suite_name`), or ``None`` for
+            a suite given by path.
         suite_path: The resolved ``golden.jsonl``; its case files sit beside it.
-        source_model: The source model this compare runs, which cases should be recorded on.
+        source_model: ``defaults.source_model``, which cases should be recorded on; ``None``
+            turns the model findings off.
 
     Returns:
         One Rich-markup line per finding; empty when there is nothing to say.
@@ -521,6 +526,8 @@ def compare_command(
         )
         raise typer.Exit(code=1)
 
+    # Before ``suite_path`` is rebound to the resolved file: the explicit --suite decides it.
+    selected_suite = selected_suite_name(suite_path=suite_path, suite_name=suite_name, cfg=cfg)
     try:
         suite_path = resolve_suite_path(
             suite_path=suite_path,
@@ -537,7 +544,9 @@ def compare_command(
     except SuiteError as exc:
         console.print(exc.format_rich())
         raise typer.Exit(code=1) from exc
-    freshness = _freshness_lines(cfg, suite_name, suite_path, source_model)
+    # Staleness is measured against defaults.source_model (spec §3), as doctor and sync do;
+    # --from only picks what this run calls.
+    freshness = _freshness_lines(cfg, selected_suite, suite_path, cfg.defaults.source_model)
 
     run_slug = derive_suite_slug(suite_name=suite_name, suite_path=suite_path)
 

@@ -54,7 +54,9 @@ def test_parse_instant_normalises_to_utc(text: str, expected: datetime) -> None:
     assert parse_instant(text) == expected
 
 
-@pytest.mark.parametrize("text", ["", "   ", "yesterday", "2026-13-01"])
+@pytest.mark.parametrize(
+    "text", ["", "   ", "yesterday", "2026-13-01", "0001-01-01T00:00:00+05:00"]
+)
 def test_parse_instant_is_none_for_anything_unparseable(text: str) -> None:
     assert parse_instant(text) is None
 

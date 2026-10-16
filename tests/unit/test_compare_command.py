@@ -268,13 +268,14 @@ LONG_VIEW_URL = (
 """A realistic hosted run URL: 102 characters, well past the 80-column fold."""
 
 
-def _captured_cases(tmp_path: Path, suite: str, n: int) -> Path:
+def _captured_cases(tmp_path: Path, suite: str, n: int, *, model: str = "") -> Path:
     for i in range(n):
         write_promoted_case(
             PromotedCase(
                 name=f"ex{i}",
                 suite=suite,
                 from_capture=f"cap_{i}",
+                source_model=model,
                 example=SuiteExample(id=f"ex{i}", inputs={"name": f"User{i}"}, tools=[]),
             ),
             base=tmp_path / ".evalshift",
@@ -474,11 +475,11 @@ class TestEndToEnd:
         ) in flat
         assert flat.count("checked nothing") == 1
 
-    def test_compare_warns_when_the_suite_is_over_its_cap(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
+    @staticmethod
+    def _over_cap_project(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, model: str = ""
     ) -> None:
+        """One wired captured suite ``greet``: 3 cases against ``captures.max_cases: 2``."""
         _scaffold(tmp_path)
         config_path = tmp_path / "evalshift.yaml"
         config_path.write_text(
@@ -489,9 +490,16 @@ class TestEndToEnd:
             + "            path: .evalshift/suites/greet/golden.jsonl\n",
             encoding="utf-8",
         )
-        _captured_cases(tmp_path, "greet", 3)
+        _captured_cases(tmp_path, "greet", 3, model=model)
         _patch_client(monkeypatch)
         monkeypatch.chdir(tmp_path)
+
+    def test_compare_warns_when_the_suite_is_over_its_cap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        self._over_cap_project(tmp_path, monkeypatch)
 
         result = runner.invoke(app, ["compare", "--suite-name", "greet", "--yes"])
 
@@ -499,6 +507,49 @@ class TestEndToEnd:
         flat = " ".join(result.output.split())
         assert "greet: 3 cases, over captures.max_cases 2; evalshift capture sync trims it" in flat
         assert flat.count("over captures.max_cases") == 1
+
+    def test_compare_warns_for_the_auto_selected_suite(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Bare ``compare`` -- the capture-first CI flow -- picks the one wired suite."""
+        self._over_cap_project(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["compare", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert "greet: 3 cases, over captures.max_cases 2; evalshift capture sync trims it" in flat
+        assert flat.count("over captures.max_cases") == 1
+
+    def test_freshness_measures_against_defaults_source_model_not_from(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """``--from`` picks what to run; staleness is defined by ``defaults.source_model``."""
+        self._over_cap_project(tmp_path, monkeypatch, model="gemini-2.5-flash")
+
+        result = runner.invoke(
+            app,
+            [
+                "compare",
+                "--suite-name",
+                "greet",
+                "--from",
+                "gemini-2.5-pro",
+                "--to",
+                "gemini-2.5-flash",
+                "--yes",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert flat.count("over captures.max_cases") == 1
+        assert "no case recorded on" not in flat
+        assert "recorded on another model" not in flat
 
     def test_all_pushes_before_gate_exit(
         self,

@@ -301,9 +301,10 @@ def _captures_store_check(cwd: Path) -> list[CheckResult]:
 def _suite_freshness_checks(cwd: Path) -> list[CheckResult]:
     """Bounded-suite rows (spec §7). Never ``fail``: freshness is advice.
 
-    ``captures limits`` warns when ``captures.store`` is set without ``max_age`` /
-    ``max_cases`` -- every sync then adds to the suite. With a limit set, each
-    ``source: captured`` suite gets one ``ok`` row, or one ``warn`` row per finding.
+    ``captures limits`` warns when ``captures.store`` is set without ``max_cases`` -- every
+    sync then adds to the suite; ``max_age`` alone bounds the fetch, not the suite (spec §5).
+    With either limit set, each ``source: captured`` suite also gets one ``ok`` row, or one
+    ``warn`` row per finding.
     """
     cfg_path = cwd / CONFIG_FILENAME
     if not cfg_path.exists():
@@ -313,19 +314,21 @@ def _suite_freshness_checks(cwd: Path) -> list[CheckResult]:
     except ConfigError:
         return []
     captures = cfg.captures
-    if captures.max_age is None and captures.max_cases is None:
-        if captures.store is None:
-            return []
-        return [
+    rows: list[CheckResult] = []
+    if captures.store is not None and captures.max_cases is None:
+        missing = "captures.max_cases" + (
+            " and captures.max_age" if captures.max_age is None else ""
+        )
+        rows.append(
             CheckResult(
                 name=CAPTURES_LIMITS_CHECK,
                 status="warn",
-                detail="suites grow with every capture sync; "
-                "set captures.max_cases and captures.max_age",
+                detail=f"suites grow with every capture sync; set {missing}",
             )
-        ]
+        )
+    if captures.max_age is None and captures.max_cases is None:
+        return rows
     now = datetime.now(UTC)
-    rows: list[CheckResult] = []
     for name, path in _named_suite_paths(cwd, cfg):
         entry = cfg.suites.get(name)
         if entry is None or entry.source != "captured":

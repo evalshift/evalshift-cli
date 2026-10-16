@@ -987,3 +987,36 @@ class TestSuiteFreshnessCheck:
         assert row.detail == (
             "suites grow with every capture sync; set captures.max_cases and captures.max_age"
         )
+
+    def test_a_bucket_with_max_age_only_still_grows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # max_age bounds what a sync fetches, not how many cases the suite keeps (spec §5).
+        from tests.unit.fake_remote_store import populated_store
+
+        self._project(
+            tmp_path,
+            captures="captures:\n  store: s3://acme-evals/p\n  max_age: 14d\n",
+            ages_days=[23],
+        )
+        monkeypatch.setattr(doctor_module, "open_store", lambda parsed: populated_store("cap_1"))
+        [limits] = self._rows(tmp_path, CAPTURES_LIMITS_CHECK)
+        assert limits.status == "warn"
+        assert limits.detail == "suites grow with every capture sync; set captures.max_cases"
+        [fresh] = self._rows(tmp_path)
+        assert fresh.status == "warn"
+        assert "newest case captured 23d ago (captures.max_age 14d)" in fresh.detail
+
+    def test_a_bucket_with_max_cases_needs_no_nudge(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.unit.fake_remote_store import populated_store
+
+        self._project(
+            tmp_path,
+            captures="captures:\n  store: s3://acme-evals/p\n  max_cases: 5\n",
+            ages_days=[1],
+        )
+        monkeypatch.setattr(doctor_module, "open_store", lambda parsed: populated_store("cap_1"))
+        assert self._rows(tmp_path, CAPTURES_LIMITS_CHECK) == []
+        assert [r.status for r in self._rows(tmp_path)] == ["ok"]
