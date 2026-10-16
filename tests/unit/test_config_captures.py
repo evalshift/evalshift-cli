@@ -118,6 +118,22 @@ def test_max_age_rejects_anything_but_a_positive_duration(value: object) -> None
         EvalShiftConfig(prompts=[_PROMPT], captures={"max_age": value})
 
 
+@pytest.mark.parametrize("value", ["999999d", "36501d", "876025h"])
+def test_max_age_rejects_more_than_a_hundred_years(value: str) -> None:
+    # "No age limit" is written by leaving max_age out; a huge value would overflow the
+    # cutoff sync, doctor and compare compute from it.
+    with pytest.raises(ValidationError, match="max_age") as info:
+        EvalShiftConfig(prompts=[_PROMPT], captures={"max_age": value})
+    message = str(info.value)
+    assert "at most 36500d" in message
+    assert "omit captures.max_age for no age limit" in message
+
+
+def test_max_age_accepts_a_hundred_years() -> None:
+    cfg = EvalShiftConfig(prompts=[_PROMPT], captures={"max_age": "36500d"})
+    assert cfg.captures.max_age == timedelta(days=36500)
+
+
 @pytest.mark.parametrize("value", [0, -5])
 def test_max_cases_must_be_positive(value: int) -> None:
     with pytest.raises(ValidationError, match="max_cases"):

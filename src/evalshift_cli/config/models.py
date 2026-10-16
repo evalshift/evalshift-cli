@@ -31,7 +31,7 @@ from pydantic import (
 
 from evalshift_cli.captures.store_uri import STORE_URI_FORMS, parse_store_uri
 from evalshift_cli.suite.tags import RESERVED_SLICE_NAME
-from evalshift_cli.utils.duration import DURATION_FORMS, parse_duration
+from evalshift_cli.utils.duration import DURATION_FORMS, format_duration, parse_duration
 
 # Default judge model used across the config when none is specified.
 # Centralised here so a single edit propagates everywhere. Gemini's
@@ -825,6 +825,11 @@ class Retention(_StrictModel):
     run_ttl_days: int | None = Field(default=None, ge=1)
 
 
+#: The largest ``captures.max_age``: a cutoff further back than this would overflow ``datetime``.
+#: "No age limit" is written by leaving ``max_age`` out.
+MAX_AGE_LIMIT = timedelta(days=36500)
+
+
 def _duration_from_yaml(value: object) -> object:
     """``captures.max_age`` is written ``14d``; a bare number would silently mean seconds."""
     if value is None or isinstance(value, timedelta):
@@ -865,6 +870,11 @@ class CapturesConfig(_StrictModel):
     def _positive_max_age(cls, value: timedelta | None) -> timedelta | None:
         if value is not None and value <= timedelta(0):
             raise ValueError(f"must be greater than 0 (expected a duration like {DURATION_FORMS})")
+        if value is not None and value > MAX_AGE_LIMIT:
+            raise ValueError(
+                f"must be at most {format_duration(MAX_AGE_LIMIT)} (100 years); "
+                "omit captures.max_age for no age limit"
+            )
         return value
 
     @field_validator("store")
