@@ -198,6 +198,7 @@ class FetchSummary:
     skipped_old: int = 0
     skipped_large: int = 0
     skipped_malformed: int = 0
+    since_label: str = "--since"
 
     def describe(self) -> str:
         """``fetched N capture(s) and M toolset(s) from <uri> (skipped ...)``."""
@@ -210,7 +211,7 @@ class FetchSummary:
             for n, label in (
                 (self.skipped_existing, "already local"),
                 (self.skipped_promoted, "promoted"),
-                (self.skipped_old, "older than --since"),
+                (self.skipped_old, f"older than {self.since_label}"),
                 (self.skipped_large, "over the size cap"),
                 (self.skipped_malformed, "malformed"),
             )
@@ -254,6 +255,7 @@ def fetch_captures(
     skip_ids: Collection[str] = frozenset(),
     force_ids: Collection[str] = frozenset(),
     workers: int = 8,
+    since_label: str = "--since",
 ) -> FetchSummary:
     """Mirror missing toolsets and captures from ``store`` into ``<base>``.
 
@@ -264,13 +266,14 @@ def fetch_captures(
     :data:`MAX_OBJECT_BYTES`. Ids in ``force_ids`` are fetched even when promoted or older
     than ``since`` -- the captures ``capture sync --repair`` needs to rebuild promoted cases.
     They still respect the already-local, size-cap and malformed-key rules. Keys that do not
-    match the SDK's layout are counted as malformed and ignored.
+    match the SDK's layout are counted as malformed and ignored. ``since_label`` is how the
+    summary names the ``since`` cutoff.
 
     Raises:
         RemoteStoreError: when listing or any download fails. Files already written stay, so a
             re-run resumes; nothing half-written is left behind.
     """
-    summary = FetchSummary(store_uri=store.uri)
+    summary = FetchSummary(store_uri=store.uri, since_label=since_label)
     skip = set(skip_ids)
     force = set(force_ids)
     toolsets_dir = _absolute(toolsets_root(base))

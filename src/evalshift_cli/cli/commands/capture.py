@@ -18,7 +18,8 @@ import json
 import os
 import re
 from collections.abc import Callable, Iterable, Mapping
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -86,6 +87,7 @@ from evalshift_cli.suite.loader import SuiteError, load_jsonl
 from evalshift_cli.traces.diff import diff_traces
 from evalshift_cli.traces.models import ModelCallEvent, ToolCallEvent
 from evalshift_cli.utils.ci_pin import check_ci_pin
+from evalshift_cli.utils.duration import format_duration
 
 capture_app = typer.Typer(
     name="capture",
@@ -140,8 +142,13 @@ def _warn_ci_pin(console: Console, config_path: Path) -> None:
         console.print(f"[yellow]⚠[/yellow] {escape(finding.message)}")
 
 
+def _now() -> datetime:
+    """The one instant a sync measures capture age from (tests pin it)."""
+    return datetime.now(UTC)
+
+
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return _now().isoformat()
 
 
 def _warn_unreadable(console: Console) -> Callable[[CaptureError], None]:
@@ -442,6 +449,52 @@ def _warn_store_skipped(config_path: Path, reason: str, *, console: Console) -> 
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _SyncLimits:
+    """``captures.max_age`` / ``captures.max_cases`` and ``defaults.source_model``, for sync.
+
+    ``active`` is the opt-in switch (spec §1): with neither limit set, sync behaves exactly as
+    it did before the limits existed, whatever ``defaults.source_model`` says.
+    """
+
+    max_age: timedelta | None = None
+    max_cases: int | None = None
+    source_model: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.max_age is not None or self.max_cases is not None
+
+
+def _sync_limits(config_path: Path, *, console: Console, warn: bool) -> _SyncLimits:
+    """Read the limits from ``config_path``; none at all when it is missing or unreadable.
+
+    With ``warn``, an unreadable file that has a top-level ``captures`` key gets a line saying
+    the limits are dropped. ``capture sync`` passes it online too: the fetch step's own warning
+    names only ``captures.store``, so without this line sync would quietly run unbounded.
+    """
+    if not config_path.exists():
+        return _SyncLimits()
+    try:
+        cfg = load_config(config_path)
+    except ConfigError as exc:
+        reason = exc.summary
+    except (OSError, UnicodeDecodeError) as exc:
+        reason = type(exc).__name__  # its text can carry raw bytes of the file
+    else:
+        return _SyncLimits(
+            max_age=cfg.captures.max_age,
+            max_cases=cfg.captures.max_cases,
+            source_model=cfg.defaults.source_model,
+        )
+    if warn and _mentions_captures(config_path):
+        console.print(
+            f"[yellow]⚠[/yellow] could not read {escape(str(config_path))} ({escape(reason)}); "
+            "syncing without captures.max_age / captures.max_cases.",
+        )
+    return _SyncLimits()
+
+
 def _resolve_since(since: str | None) -> datetime | None:
     if since is None:
         return None
@@ -459,6 +512,7 @@ def _fetch_into_base(
     since: datetime | None,
     console: Console,
     force_ids: frozenset[str] = frozenset(),
+    since_label: str = "--since",
 ) -> FetchSummary:
     """Mirror ``store`` into ``base`` and print the one-line summary; exit 1 on failure.
 
@@ -468,7 +522,13 @@ def _fetch_into_base(
     skip_ids = _promoted_capture_ids_or_warn(base=base, console=console)
     try:
         summary = fetch_captures(
-            store, base=base, suite=suite, since=since, skip_ids=skip_ids, force_ids=force_ids
+            store,
+            base=base,
+            suite=suite,
+            since=since,
+            skip_ids=skip_ids,
+            force_ids=force_ids,
+            since_label=since_label,
         )
     except RemoteStoreError as exc:
         console.print(exc.format_rich())
@@ -488,12 +548,20 @@ def _maybe_fetch(
     base: Path | None,
     console: Console,
     force_ids: frozenset[str] = frozenset(),
+    window: tuple[datetime, str] | None = None,
 ) -> None:
-    """The automatic fetch step ``sync`` and ``list`` run before reading the local mirror."""
+    """The automatic fetch step ``sync`` and ``list`` run before reading the local mirror.
+
+    ``window`` is the cutoff ``captures.max_age`` implies, and how to name it; an explicit
+    ``--since`` wins.
+    """
     since_dt = _resolve_since(since)
+    since_label = "--since"
+    if since_dt is None and window is not None:
+        since_dt, since_label = window
     store = None if offline else _configured_store(config_path, console=console, strict=False)
     if store is None:
-        if since_dt is not None:
+        if since is not None:
             console.print(
                 "[red]✗[/red] --since needs captures.store in evalshift.yaml and no --offline: "
                 "there is nothing to fetch from.",
@@ -501,7 +569,13 @@ def _maybe_fetch(
             raise typer.Exit(code=1)
         return
     _fetch_into_base(
-        store, base=base, suite=suite, since=since_dt, console=console, force_ids=force_ids
+        store,
+        base=base,
+        suite=suite,
+        since=since_dt,
+        since_label=since_label,
+        console=console,
+        force_ids=force_ids,
     )
 
 
@@ -1165,6 +1239,13 @@ def capture_sync(
     """Promote every capture into a suite and wire the suites: block into evalshift.yaml."""
     console = Console()
     _check_rounds(rounds)
+    limits = _sync_limits(config_path, console=console, warn=True)
+    now = _now()
+    window = (
+        (now - limits.max_age, f"captures.max_age ({format_duration(limits.max_age)})")
+        if limits.max_age is not None
+        else None
+    )
     selection = _repair_selection(base=base, suite=suite, console=console)
     _maybe_fetch(
         config_path=config_path,
@@ -1174,6 +1255,7 @@ def capture_sync(
         base=base,
         console=console,
         force_ids=selection.refetch_ids if repair else frozenset(),
+        window=window,
     )
     if not repair:
         for line in stringified_warnings(selection):
