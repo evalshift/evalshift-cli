@@ -86,6 +86,13 @@ class PromotedCase(BaseModel):
     # reproduce it. Defaults keep pre-existing case files parsing.
     cost_usd: float = Field(default=0.0, ge=0.0)
     cost_source: Literal["recorded", "estimated"] | None = None
+    # When the source capture was recorded (its ``created_at``, verbatim) and the model its
+    # first ``model_call`` ran on -- the call a replay re-sends. With captures.max_age /
+    # captures.max_cases set, ``capture sync`` uses both to tell a stale case from a fresh
+    # one. Empty on case files written before they existed; sync backfills them while the
+    # capture is still local.
+    captured_at: str = ""
+    source_model: str = ""
     # Multi-turn provenance — optional so existing promoted-case JSON files
     # (written before conversation tracking) still parse.
     conversation_id: str | None = None

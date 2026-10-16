@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Mapping
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from types import ModuleType
@@ -19,15 +20,19 @@ from types import ModuleType
 import pytest
 from typer.testing import CliRunner
 
+from evalshift_cli.captures.models import PromotedCase
+from evalshift_cli.captures.promote import rebuild_golden_jsonl, write_promoted_case
 from evalshift_cli.captures.remote import ObjectInfo, RemoteStoreUnavailable
 from evalshift_cli.captures.toolset import fingerprint_tools
 from evalshift_cli.cli.commands import doctor as doctor_module
 from evalshift_cli.cli.commands.doctor import (
+    CAPTURES_LIMITS_CHECK,
     CONFIG_FILENAME,
     EVALUATOR_KEYS_CHECK,
     JUDGE_FAMILY_CHECK,
     PROVIDER_KEYS,
     SDK_DISTRIBUTION,
+    SUITE_FRESHNESS_CHECK,
     CheckResult,
     _sdk_check,
     _tool_consistency_checks,
@@ -38,6 +43,7 @@ from evalshift_cli.cli.main import app
 from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.evaluators.failures import BROKEN_HARNESS_CAUSES
 from evalshift_cli.evaluators.tool_selection import KIND_CONFORMANCE, KIND_DIVERGENCE
+from evalshift_cli.suite.models import SuiteExample
 
 runner = CliRunner()
 
@@ -917,3 +923,100 @@ class TestCapturesStoreCheck:
         result = runner.invoke(app, ["doctor"], env={"COLUMNS": "200"})
         assert result.exit_code == 0
         assert 'pip install "evalshift[gcs]"' in result.stdout
+
+
+class TestSuiteFreshnessCheck:
+    def _project(
+        self, tmp_path: Path, *, captures: str, ages_days: list[int], model: str = "claude-sonnet-5"
+    ) -> None:
+        (tmp_path / CONFIG_FILENAME).write_text(
+            "prompts:\n  - id: p\n    detection: manual\n    content: '{input}'\n"
+            "    variables: [input]\n"
+            "defaults:\n  source_model: claude-sonnet-5\n"
+            f"{captures}"
+            "suites:\n  alpha:\n    source: captured\n"
+            "    path: .evalshift/suites/alpha/golden.jsonl\n",
+            encoding="utf-8",
+        )
+        now = datetime.now(UTC)
+        for i, days in enumerate(ages_days):
+            write_promoted_case(
+                PromotedCase(
+                    name=f"cap_{i}",
+                    suite="alpha",
+                    from_capture=f"cap_{i}",
+                    captured_at=(now - timedelta(days=days)).isoformat(),
+                    source_model=model,
+                    example=SuiteExample(id=f"cap_{i}", inputs={"input": f"q{i}"}, tools=[]),
+                ),
+                base=tmp_path / ".evalshift",
+            )
+        rebuild_golden_jsonl(tmp_path / ".evalshift" / "suites" / "alpha")
+
+    def _rows(self, tmp_path: Path, name: str = SUITE_FRESHNESS_CHECK) -> list[CheckResult]:
+        return [r for r in run_checks(cwd=tmp_path, env=_empty_env()) if r.name == name]
+
+    def test_a_fresh_suite_is_ok(self, tmp_path: Path) -> None:
+        self._project(
+            tmp_path, captures="captures:\n  max_age: 14d\n  max_cases: 5\n", ages_days=[2, 12]
+        )
+        [row] = self._rows(tmp_path)
+        assert row.status == "ok"
+        assert row.detail == "alpha: 2 cases, captured 2d–12d ago"  # noqa: RUF001 — doctor copy
+
+    def test_a_stale_suite_warns(self, tmp_path: Path) -> None:
+        self._project(tmp_path, captures="captures:\n  max_age: 14d\n", ages_days=[23, 30])
+        [row] = self._rows(tmp_path)
+        assert row.status == "warn"
+        assert "newest case captured 23d ago (captures.max_age 14d)" in row.detail
+
+    def test_no_rows_without_limits(self, tmp_path: Path) -> None:
+        self._project(tmp_path, captures="", ages_days=[30])
+        assert self._rows(tmp_path) == []
+        assert self._rows(tmp_path, CAPTURES_LIMITS_CHECK) == []
+
+    def test_a_bucket_without_limits_gets_a_nudge(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.unit.fake_remote_store import populated_store
+
+        self._project(tmp_path, captures="captures:\n  store: s3://acme-evals/p\n", ages_days=[1])
+        monkeypatch.setattr(doctor_module, "open_store", lambda parsed: populated_store("cap_1"))
+        [row] = self._rows(tmp_path, CAPTURES_LIMITS_CHECK)
+        assert row.status == "warn"
+        assert row.detail == (
+            "suites grow with every capture sync; set captures.max_cases and captures.max_age"
+        )
+
+    def test_a_bucket_with_max_age_only_still_grows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # max_age bounds what a sync fetches, not how many cases the suite keeps (spec §5).
+        from tests.unit.fake_remote_store import populated_store
+
+        self._project(
+            tmp_path,
+            captures="captures:\n  store: s3://acme-evals/p\n  max_age: 14d\n",
+            ages_days=[23],
+        )
+        monkeypatch.setattr(doctor_module, "open_store", lambda parsed: populated_store("cap_1"))
+        [limits] = self._rows(tmp_path, CAPTURES_LIMITS_CHECK)
+        assert limits.status == "warn"
+        assert limits.detail == "suites grow with every capture sync; set captures.max_cases"
+        [fresh] = self._rows(tmp_path)
+        assert fresh.status == "warn"
+        assert "newest case captured 23d ago (captures.max_age 14d)" in fresh.detail
+
+    def test_a_bucket_with_max_cases_needs_no_nudge(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.unit.fake_remote_store import populated_store
+
+        self._project(
+            tmp_path,
+            captures="captures:\n  store: s3://acme-evals/p\n  max_cases: 5\n",
+            ages_days=[1],
+        )
+        monkeypatch.setattr(doctor_module, "open_store", lambda parsed: populated_store("cap_1"))
+        assert self._rows(tmp_path, CAPTURES_LIMITS_CHECK) == []
+        assert [r.status for r in self._rows(tmp_path)] == ["ok"]

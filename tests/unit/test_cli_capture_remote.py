@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ from typer.testing import CliRunner
 from evalshift_cli.captures.remote import RemoteStore, RemoteStoreUnavailable
 from evalshift_cli.captures.store_uri import StoreURI
 from evalshift_cli.cli.commands import capture as capture_module
-from evalshift_cli.cli.commands.init import render_minimal_config
+from evalshift_cli.cli.commands.init import CAPTURES_SCAFFOLD, render_minimal_config
 from evalshift_cli.cli.main import app
 from evalshift_cli.suite.loader import load_jsonl
 from tests.unit.fake_remote_store import FakeRemoteStore, populated_store
@@ -24,7 +25,7 @@ def _invoke(args: list[str], base: Path) -> Any:
 
 
 def _write_config(path: Path, *, store: str | None = "s3://acme-evals/support-agent") -> Path:
-    text = render_minimal_config(profile="model-upgrade")
+    text = render_minimal_config(profile="model-upgrade").replace(CAPTURES_SCAFFOLD + "\n", "")
     if store is not None:
         text += f"\ncaptures:\n  store: {store}\n"
     path.write_text(text, encoding="utf-8")
@@ -228,10 +229,10 @@ def test_invalid_init_config_with_captures_only_in_comments_stays_silent(
     tmp_path: Path, remote: FakeRemoteStore, command: str
 ) -> None:
     # `evalshift init` output mentions "captures" in comments; that is not a store request.
+    # Its top-level `captures:` block is stripped so only the comments remain.
     config = tmp_path / "evalshift.yaml"
-    config.write_text(
-        render_minimal_config(profile="model-upgrade") + "\ntypo_key: 1\n", encoding="utf-8"
-    )
+    text = render_minimal_config(profile="model-upgrade").replace(CAPTURES_SCAFFOLD + "\n", "")
+    config.write_text(text + "\ntypo_key: 1\n", encoding="utf-8")
     assert b"captures" in config.read_bytes()
     result = _invoke([command, "--config", str(config)], tmp_path)
     assert result.exit_code == 0, result.output
@@ -342,3 +343,82 @@ def test_missing_library_exits_1_naming_the_package(
     assert "Remote capture store" in result.stdout
     assert "pip install boto3" in result.stdout
     assert not (tmp_path / "suites").exists()
+
+
+# --- captures limits -----------------------------------------------------------------------
+
+_NOW = datetime(2026, 6, 20, tzinfo=UTC)
+
+
+def _with_max_age(config: Path) -> Path:
+    config.write_text(config.read_text(encoding="utf-8") + "  max_age: 14d\n", encoding="utf-8")
+    return config
+
+
+def test_sync_fetches_only_inside_max_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: FakeRemoteStore
+) -> None:
+    remote.modified["captures/alpha/cap_1.json"] = datetime(2026, 5, 1, tzinfo=UTC)
+    config = _with_max_age(_write_config(tmp_path / "evalshift.yaml"))
+    monkeypatch.setattr(capture_module, "_now", lambda: _NOW)
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    flat = " ".join(result.stdout.split())
+    assert "fetched 1 capture(s)" in flat
+    assert "1 older than captures.max_age (14d)" in flat
+    assert not (tmp_path / "captures" / "alpha" / "cap_1.json").exists()
+
+
+def test_an_explicit_since_overrides_max_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: FakeRemoteStore
+) -> None:
+    remote.modified["captures/alpha/cap_1.json"] = datetime(2026, 5, 1, tzinfo=UTC)
+    config = _with_max_age(_write_config(tmp_path / "evalshift.yaml"))
+    monkeypatch.setattr(capture_module, "_now", lambda: _NOW)
+
+    result = _invoke(["sync", "--since", "2026-04-01", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert "fetched 2 capture(s)" in result.stdout
+
+
+def test_max_age_without_a_store_is_not_a_fetch_error(tmp_path: Path) -> None:
+    config = _write_config(tmp_path / "evalshift.yaml", store=None)
+    config.write_text(
+        config.read_text(encoding="utf-8") + "\ncaptures:\n  max_age: 14d\n", encoding="utf-8"
+    )
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+    assert result.exit_code == 0, result.stdout
+
+
+def test_offline_sync_says_it_ignores_limits_it_cannot_read(tmp_path: Path) -> None:
+    config = tmp_path / "evalshift.yaml"
+    config.write_text("captures:\n  max_age: 2w\n", encoding="utf-8")
+    result = _invoke(["sync", "--offline", "--config", str(config)], tmp_path)
+    assert result.exit_code == 0, result.stdout
+    assert "syncing without captures.max_age / captures.max_cases" in " ".join(
+        result.stdout.split()
+    )
+
+
+def test_online_sync_says_it_ignores_limits_it_cannot_read(
+    tmp_path: Path, remote: FakeRemoteStore
+) -> None:
+    # An `evalshift init` config with a top-level `captures:` block, made invalid by a typo:
+    # the fetch step's warning names only captures.store, so the dropped limits get their own.
+    config = tmp_path / "evalshift.yaml"
+    config.write_text(
+        render_minimal_config(profile="model-upgrade") + "\ntypo_key: 1\n", encoding="utf-8"
+    )
+    assert capture_module._mentions_captures(config)
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.stdout.split())
+    assert (
+        f"could not read {config} (1 schema problem found); "
+        "syncing without captures.max_age / captures.max_cases."
+    ) in flat
+    assert "skipping captures.store" in flat
+    assert remote.gets == []

@@ -30,6 +30,7 @@ import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import ModuleType
@@ -41,6 +42,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from evalshift_cli import __version__
+from evalshift_cli.captures.freshness import suite_freshness
 from evalshift_cli.captures.remote import RemoteStoreError, open_store
 from evalshift_cli.captures.store_uri import parse_store_uri
 from evalshift_cli.captures.toolset import EMPTY_TOOLSET_FINGERPRINT, fingerprint_tools
@@ -67,6 +69,10 @@ CONFIG_FILENAME: Final = "evalshift.yaml"
 JUDGE_FAMILY_CHECK: Final = "judge family"
 # Row name for the judge / embedding key check (one row per keyless model).
 EVALUATOR_KEYS_CHECK: Final = "evaluator keys"
+# Row names for the bounded-suite checks: one ``suite freshness`` row per captured suite (or
+# per finding), and a ``captures limits`` nudge when a store is set without max_cases.
+SUITE_FRESHNESS_CHECK: Final = "suite freshness"
+CAPTURES_LIMITS_CHECK: Final = "captures limits"
 # The capture SDK: a declared dependency of this package, and the owner of the
 # import name ``evalshift`` (this package imports as ``evalshift_cli``).
 SDK_DISTRIBUTION: Final = "evalshift-sdk"
@@ -123,6 +129,7 @@ def run_checks(cwd: Path, env: Mapping[str, str]) -> list[CheckResult]:
     results.extend(_api_key_check(env, aliases) for aliases in PROVIDER_KEYS)
     results.append(_config_check(cwd))
     results.extend(_captures_store_check(cwd))
+    results.extend(_suite_freshness_checks(cwd))
     results.extend(_tool_consistency_checks(cwd))
     results.extend(_judge_family_checks(cwd))
     results.extend(_evaluator_key_checks(cwd, env))
@@ -289,6 +296,62 @@ def _captures_store_check(cwd: Path) -> list[CheckResult]:
             )
         ]
     return [CheckResult(name="captures.store", status="ok", detail=f"{uri} reachable")]
+
+
+def _suite_freshness_checks(cwd: Path) -> list[CheckResult]:
+    """Bounded-suite rows (spec §7). Never ``fail``: freshness is advice.
+
+    ``captures limits`` warns when ``captures.store`` is set without ``max_cases`` -- every
+    sync then adds to the suite; ``max_age`` alone bounds the fetch, not the suite (spec §5).
+    With either limit set, each ``source: captured`` suite also gets one ``ok`` row, or one
+    ``warn`` row per finding.
+    """
+    cfg_path = cwd / CONFIG_FILENAME
+    if not cfg_path.exists():
+        return []
+    try:
+        cfg = load_config(cfg_path)
+    except ConfigError:
+        return []
+    captures = cfg.captures
+    rows: list[CheckResult] = []
+    if captures.store is not None and captures.max_cases is None:
+        missing = "captures.max_cases" + (
+            " and captures.max_age" if captures.max_age is None else ""
+        )
+        rows.append(
+            CheckResult(
+                name=CAPTURES_LIMITS_CHECK,
+                status="warn",
+                detail=f"suites grow with every capture sync; set {missing}",
+            )
+        )
+    if captures.max_age is None and captures.max_cases is None:
+        return rows
+    now = datetime.now(UTC)
+    for name, path in _named_suite_paths(cwd, cfg):
+        entry = cfg.suites.get(name)
+        if entry is None or entry.source != "captured":
+            continue
+        fresh = suite_freshness(
+            name,
+            path.parent,
+            max_age=captures.max_age,
+            max_cases=captures.max_cases,
+            source_model=cfg.defaults.source_model,
+            now=now,
+        )
+        if fresh is None:
+            continue
+        if not fresh.findings:
+            rows.append(
+                CheckResult(name=SUITE_FRESHNESS_CHECK, status="ok", detail=fresh.describe(now))
+            )
+        rows.extend(
+            CheckResult(name=SUITE_FRESHNESS_CHECK, status="warn", detail=f.message)
+            for f in fresh.findings
+        )
+    return rows
 
 
 def _named_suite_paths(cwd: Path, cfg: EvalShiftConfig) -> list[tuple[str, Path]]:

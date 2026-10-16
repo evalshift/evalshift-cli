@@ -10,6 +10,7 @@ rewrites.
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -34,9 +35,15 @@ from evalshift_cli.cli.commands._suites import (
     SUITES_MARKER_END,
 )
 from evalshift_cli.cli.commands.doctor import CONFIG_FILENAME
-from evalshift_cli.cli.commands.init import _PROVIDER_MODELS, PROVIDERS, render_minimal_config
+from evalshift_cli.cli.commands.init import (
+    _PROVIDER_MODELS,
+    CAPTURES_SCAFFOLD,
+    PROVIDERS,
+    render_minimal_config,
+)
 from evalshift_cli.cli.main import app
 from evalshift_cli.config.loader import load_config
+from evalshift_cli.config.models import EvalShiftConfig
 from evalshift_cli.models.registry import PROVIDER_ENV_VARS, resolve_model
 
 runner = CliRunner()
@@ -622,3 +629,16 @@ class TestInitCiPin:
         assert result.exit_code == 0, result.stdout
         assert "CI installs evalshift 0.0.1" in result.stdout
         assert 'evalshift-version: "1.2.3"' in result.stdout
+
+
+def test_scaffold_bounds_capture_suites() -> None:
+    text = render_minimal_config(profile="model-upgrade")
+    assert CAPTURES_SCAFFOLD in text
+    cfg = EvalShiftConfig.model_validate(yaml.safe_load(text))
+    assert cfg.captures.max_age == timedelta(days=14)
+    assert cfg.captures.max_cases == 200
+    assert cfg.captures.store is None
+    # The managed suites region stays last: capture sync rewrites only the tail.
+    block = re.search(r"(?m)^captures:$", text)
+    assert block is not None
+    assert block.start() < text.index(SUITES_MARKER_BEGIN)

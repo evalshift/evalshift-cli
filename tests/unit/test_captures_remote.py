@@ -386,3 +386,14 @@ def test_force_ids_still_skip_captures_already_local(tmp_path: Path) -> None:
     summary = fetch_captures(store, base=tmp_path, force_ids={"cap_1"})
     assert summary.skipped_existing == 1
     assert store.gets == []
+
+
+def test_skipped_old_names_the_window_it_was_measured_against() -> None:
+    summary = FetchSummary(
+        store_uri="s3://b/p", skipped_old=3, since_label="captures.max_age (14d)"
+    )
+    assert "3 older than captures.max_age (14d)" in summary.describe()
+
+
+def test_skipped_old_defaults_to_the_since_flag() -> None:
+    assert "1 older than --since" in FetchSummary(store_uri="s3://b/p", skipped_old=1).describe()

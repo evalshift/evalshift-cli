@@ -20,12 +20,15 @@ import pytest
 from typer.testing import CliRunner
 
 from evalshift_cli.analysis.statistics import ComparisonResult
+from evalshift_cli.captures.models import PromotedCase
+from evalshift_cli.captures.promote import rebuild_golden_jsonl, write_promoted_case
 from evalshift_cli.cli.commands.analyze import AnalyzeResult
 from evalshift_cli.cli.commands.analyze import run_analyze as _real_run_analyze
 from evalshift_cli.cli.commands.compare import (
     _bar,
     _compose_verdict,
     _evaluator_family_summary,
+    _freshness_lines,
 )
 from evalshift_cli.cli.commands.doctor import CheckResult
 from evalshift_cli.cli.main import app
@@ -38,6 +41,7 @@ from evalshift_cli.config.models import (
     StructuralEvaluatorConfig,
 )
 from evalshift_cli.models.client import CompletionResult, ModelClient
+from evalshift_cli.suite.models import SuiteExample
 
 runner = CliRunner()
 
@@ -264,6 +268,47 @@ LONG_VIEW_URL = (
 """A realistic hosted run URL: 102 characters, well past the 80-column fold."""
 
 
+def _captured_cases(tmp_path: Path, suite: str, n: int, *, model: str = "") -> Path:
+    for i in range(n):
+        write_promoted_case(
+            PromotedCase(
+                name=f"ex{i}",
+                suite=suite,
+                from_capture=f"cap_{i}",
+                source_model=model,
+                example=SuiteExample(id=f"ex{i}", inputs={"name": f"User{i}"}, tools=[]),
+            ),
+            base=tmp_path / ".evalshift",
+        )
+    return rebuild_golden_jsonl(tmp_path / ".evalshift" / "suites" / suite)
+
+
+class TestFreshnessLines:
+    def _cfg(self, captures: dict[str, object]) -> EvalShiftConfig:
+        return EvalShiftConfig(
+            prompts=[
+                {"id": "p", "detection": "manual", "content": "{name}", "variables": ["name"]}
+            ],
+            captures=captures,
+            suites={
+                "greet": {"source": "captured", "path": ".evalshift/suites/greet/golden.jsonl"}
+            },
+        )
+
+    def test_an_over_cap_suite_gets_a_line(self, tmp_path: Path) -> None:
+        golden = _captured_cases(tmp_path, "greet", 3)
+        [line] = _freshness_lines(self._cfg({"max_cases": 2}), "greet", golden, "gemini-2.5-flash")
+        assert "greet: 3 cases, over captures.max_cases 2" in line
+
+    def test_no_lines_without_limits(self, tmp_path: Path) -> None:
+        golden = _captured_cases(tmp_path, "greet", 3)
+        assert _freshness_lines(self._cfg({}), "greet", golden, "gemini-2.5-flash") == []
+
+    def test_no_lines_for_a_suite_given_by_path(self, tmp_path: Path) -> None:
+        golden = _captured_cases(tmp_path, "greet", 3)
+        assert _freshness_lines(self._cfg({"max_cases": 2}), None, golden, "gemini-2.5-flash") == []
+
+
 class TestEndToEnd:
     def test_all_runs_full_pipeline(
         self,
@@ -429,6 +474,82 @@ class TestEndToEnd:
             "It did not gate this run."
         ) in flat
         assert flat.count("checked nothing") == 1
+
+    @staticmethod
+    def _over_cap_project(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, model: str = ""
+    ) -> None:
+        """One wired captured suite ``greet``: 3 cases against ``captures.max_cases: 2``."""
+        _scaffold(tmp_path)
+        config_path = tmp_path / "evalshift.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").rstrip()
+            + "\n"
+            + "        captures:\n          max_cases: 2\n"
+            + "        suites:\n          greet:\n            source: captured\n"
+            + "            path: .evalshift/suites/greet/golden.jsonl\n",
+            encoding="utf-8",
+        )
+        _captured_cases(tmp_path, "greet", 3, model=model)
+        _patch_client(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+    def test_compare_warns_when_the_suite_is_over_its_cap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        self._over_cap_project(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["compare", "--suite-name", "greet", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert "greet: 3 cases, over captures.max_cases 2; evalshift capture sync trims it" in flat
+        assert flat.count("over captures.max_cases") == 1
+
+    def test_compare_warns_for_the_auto_selected_suite(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Bare ``compare`` -- the capture-first CI flow -- picks the one wired suite."""
+        self._over_cap_project(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["compare", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert "greet: 3 cases, over captures.max_cases 2; evalshift capture sync trims it" in flat
+        assert flat.count("over captures.max_cases") == 1
+
+    def test_freshness_measures_against_defaults_source_model_not_from(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """``--from`` picks what to run; staleness is defined by ``defaults.source_model``."""
+        self._over_cap_project(tmp_path, monkeypatch, model="gemini-2.5-flash")
+
+        result = runner.invoke(
+            app,
+            [
+                "compare",
+                "--suite-name",
+                "greet",
+                "--from",
+                "gemini-2.5-pro",
+                "--to",
+                "gemini-2.5-flash",
+                "--yes",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert flat.count("over captures.max_cases") == 1
+        assert "no case recorded on" not in flat
+        assert "recorded on another model" not in flat
 
     def test_all_pushes_before_gate_exit(
         self,

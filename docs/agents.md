@@ -560,12 +560,20 @@ source was right. Nothing is wrong with the number, so the run says so instead o
 changing it: when every scored row is `captured`, `migration_decision.json`
 carries a recommendation naming the count and the caveat.
 
-Set `provenance: reviewed` on a golden row once a human has checked its
-arguments:
+Set `provenance: reviewed` once a human has checked a row's arguments. In a
+hand-written suite, set it on the golden row:
 
 ```jsonl
 {"id": "ex_refund_01", "inputs": {"query": "..."}, "toolset_ref": "sha256:1a2b...", "expected_tools": [{"tool_name": "issue_refund", "arguments": {"order_id": "A-1", "amount_usd": 40.0}, "provenance": "reviewed"}]}
 ```
+
+In a captured suite, set it in the promoted case file instead,
+`.evalshift/suites/<suite>/<case>.json`, on the calls under
+`example.expected_tools` (and under `example.expected_tool_rounds`, when the
+case has it), and commit that file. `capture sync` regenerates `golden.jsonl`
+from the case files on every run, so a mark made in `golden.jsonl` is gone after
+the next sync. With `captures.max_cases` set, sync never retires a reviewed case
+(see [Bounded suites](configuration.md#bounded-suites)).
 
 Scoring is identical either way. The disclosure goes silent as soon as one row
 is `reviewed`: a suite someone has started checking is no longer uniformly

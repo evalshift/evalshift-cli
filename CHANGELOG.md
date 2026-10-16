@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bounded capture suites.** Two optional settings under `captures:`,
+  `max_age: 14d` and `max_cases: 200`, together keep each captured suite a
+  capped, route-balanced sample of recent production on
+  `defaults.source_model`. Setting either one turns the feature on; without
+  them `capture sync` keeps and promotes exactly what it did before.
+- **Filter.** With either limit set, `capture sync` promotes only captures
+  recorded on `defaults.source_model`, and with `max_age` set, only captures
+  recorded within it. Model ids match on bare names: lower-cased, provider
+  prefix and trailing snapshot date dropped, no alias lookup. `max_age` alone
+  caps nothing. `capture promote` ignores the limits.
+- **Plan.** With `max_cases` set, sync never grows a suite past the cap and
+  swaps stale cases (too old, or recorded on another model) for fresh
+  captures as they arrive. A stale case leaves at once when a fresh capture of
+  the same question is added in its place; if its fresh copy is not added,
+  the stale case leaves only to make room, like any other stale case. So a
+  suite never shrinks because its cases went stale (an over-cap suite is still
+  trimmed to `max_cases`). A conversation enters whole or not at all. Cases a
+  human marked `provenance: reviewed` are never retired; in a captured suite
+  the mark goes in the case file (`.evalshift/suites/<suite>/<case>.json`),
+  not in `golden.jsonl`, which sync regenerates. Sync knows a case by its
+  file, so a renamed or copied case file is retired (or kept) on its own.
+  The same captures give the same suite on any machine, and syncing again
+  with nothing new changes no file.
+  `max_cases` also trims suites sync did not build: suites promoted by hand
+  with `capture promote`, and suites whose entry is `managed: false` (that
+  flag freezes the YAML entry, not the case files). A suite whose case files
+  cannot be read is left untouched, with a warning, and the other suites
+  still sync. A suite planned only because its directory holds case files
+  is wired into `suites:` only if it already has an entry there.
+- **Guardrail.** If none of a suite's cases and captures was recorded on
+  `defaults.source_model`, sync warns (`none of N case(s) and capture(s) were
+  recorded on <model> …; not filtering by model — check
+  defaults.source_model`) and does not filter that suite by model rather than
+  empty it.
+- **Fetch.** `max_age` also bounds which captures `capture sync`'s automatic
+  fetch downloads from `captures.store` (toolset sidecars are always
+  fetched); `--since` still overrides it, and `capture list` and
+  `capture fetch` are unchanged.
+- **Output.** Sync prints one line per suite: `alpha: 200 cases — kept 150,
+  retired 50 (32 older than 14d, 18 on another model), added 50 of 2940
+  eligible; not eligible: …`.
+- `doctor` gains `suite freshness` rows for each `source: captured` suite when
+  either limit is set: `ok` (`alpha: 200 cases, captured 2d–12d ago`), or one
+  `warn` per finding — the newest case is older than `max_age`, cases were
+  recorded on another model than `defaults.source_model` (or none on it), the
+  suite is over `max_cases`, or case files could not be read. A
+  `captures limits` warning fires when `captures.store` is set and
+  `captures.max_cases` is not (`suites grow with every capture sync; set
+  captures.max_cases and captures.max_age`). `compare` prints the same
+  findings above the verdict for the suite it runs, named with `--suite-name`
+  or auto-selected (not for `--suite <path>`), so a team that only runs CI
+  sees its suite went stale.
+- Promoted case files record `captured_at` and `source_model`, with or without
+  the limits. `capture sync` backfills them on existing cases whose capture is
+  still local (`backfilled capture time and model on N case(s)`).
+
+### Changed
+
+- `evalshift init` scaffolds `captures: {max_age: 14d, max_cases: 200}` (with a
+  commented `store:`). Existing configs are untouched. Without the two keys,
+  `capture sync` keeps and promotes exactly what it did before.
+- `capture sync` now reads `evalshift.yaml` under `--offline` too, for the
+  limits. When the file cannot be read and has a top-level `captures:` key,
+  sync says so (`could not read <path> (<reason>); syncing without
+  captures.max_age / captures.max_cases.`), online and offline.
+- The first `capture sync` on this CLI writes `captured_at` and
+  `source_model` into case files, even without the limits, and older CLIs
+  reject case files carrying them (and the new `captures` keys). Everyone
+  who runs `capture` commands, teammates and CI alike, upgrades together:
+  bump the CLI (and a pinned CI action's `evalshift-version`) everywhere
+  before the first sync. `captures.max_age` accepts at most `36500d`; omit
+  it for no age limit. CI's `compare` reads only `golden.jsonl`, whose
+  format is unchanged. A run left in progress by an
+  older CLI cannot be `--resume`d across the upgrade (config-hash mismatch);
+  start a fresh one.
+
 ## [1.5.0] - 2026-10-15
 
 ### Added

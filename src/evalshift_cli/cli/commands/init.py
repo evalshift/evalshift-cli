@@ -172,6 +172,20 @@ evaluators:
   # See docs/agents.md.
 """
 
+#: The scaffold's ``captures:`` block, between the migration policy and the suites region.
+#: Public so a test that needs today's unbounded sync can strip it from the scaffold.
+CAPTURES_SCAFFOLD: Final = """\
+# How captures become suites. Each suite stays a capped sample of production
+# from the last max_age, recorded on defaults.source_model: `capture sync`
+# swaps stale cases for fresh captures as they arrive. Does the SDK ship
+# captures to a bucket (EVALSHIFT_CAPTURE_STORE on the agent)? Uncomment
+# store: and name the same bucket.
+captures:
+  max_age: 14d
+  max_cases: 200
+  # store: s3://<bucket>/<prefix>
+"""
+
 
 def scaffold_embedding_model(provider: str, env: Mapping[str, str]) -> str:
     """Pick the embedding model ``init`` writes for ``provider``.
@@ -241,7 +255,17 @@ def render_minimal_config(
     # diff stays confined to the tail and everything a person hand-edits above
     # it keeps stable line numbers.
     suites = render_suites_region("suites: {}")
-    return header + body.rstrip() + "\n\n" + policy.rstrip() + "\n\n" + suites + "\n"
+    return (
+        header
+        + body.rstrip()
+        + "\n\n"
+        + policy.rstrip()
+        + "\n\n"
+        + CAPTURES_SCAFFOLD
+        + "\n"
+        + suites
+        + "\n"
+    )
 
 
 def init(

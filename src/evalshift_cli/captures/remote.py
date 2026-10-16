@@ -40,6 +40,7 @@ from rich.text import Text
 
 from evalshift_cli.captures.reader import captures_root, toolsets_root
 from evalshift_cli.captures.store_uri import StoreURI, package_for_module
+from evalshift_cli.utils.duration import parse_duration
 
 #: Largest object a fetch will download. Captures are kilobytes; this is a safety stop.
 MAX_OBJECT_BYTES = 32 * 1024 * 1024
@@ -47,7 +48,6 @@ MAX_OBJECT_BYTES = 32 * 1024 * 1024
 # Always used with ``fullmatch``: ``$`` also matches before a trailing newline.
 _CAPTURE_NAME = re.compile(r"[A-Za-z0-9_-]+\.json")
 _TOOLSET_NAME = re.compile(r"[0-9a-f]{64}\.json")
-_DURATION = re.compile(r"(\d+)([mhd])")
 
 #: How to fix credentials, per store scheme, for a list or download failure.
 _CREDENTIALS_HINT: dict[str, str] = {
@@ -198,6 +198,7 @@ class FetchSummary:
     skipped_old: int = 0
     skipped_large: int = 0
     skipped_malformed: int = 0
+    since_label: str = "--since"
 
     def describe(self) -> str:
         """``fetched N capture(s) and M toolset(s) from <uri> (skipped ...)``."""
@@ -210,7 +211,7 @@ class FetchSummary:
             for n, label in (
                 (self.skipped_existing, "already local"),
                 (self.skipped_promoted, "promoted"),
-                (self.skipped_old, "older than --since"),
+                (self.skipped_old, f"older than {self.since_label}"),
                 (self.skipped_large, "over the size cap"),
                 (self.skipped_malformed, "malformed"),
             )
@@ -230,12 +231,13 @@ def parse_since(text: str, *, now: datetime | None = None) -> datetime:
     """
     reference = now if now is not None else datetime.now(UTC)
     cleaned = text.strip()
-    match = _DURATION.fullmatch(cleaned)
     try:
-        if match:
-            amount, unit = int(match.group(1)), match.group(2)
-            delta = {"m": timedelta(minutes=1), "h": timedelta(hours=1), "d": timedelta(days=1)}
-            return reference - delta[unit] * amount
+        delta: timedelta | None = parse_duration(cleaned)
+    except ValueError:
+        delta = None
+    try:
+        if delta is not None:
+            return reference - delta
         parsed = datetime.fromisoformat(cleaned)
     except (ValueError, OverflowError) as exc:  # OverflowError: a duration reaching before year 1
         raise ValueError(
@@ -253,6 +255,7 @@ def fetch_captures(
     skip_ids: Collection[str] = frozenset(),
     force_ids: Collection[str] = frozenset(),
     workers: int = 8,
+    since_label: str = "--since",
 ) -> FetchSummary:
     """Mirror missing toolsets and captures from ``store`` into ``<base>``.
 
@@ -263,13 +266,14 @@ def fetch_captures(
     :data:`MAX_OBJECT_BYTES`. Ids in ``force_ids`` are fetched even when promoted or older
     than ``since`` -- the captures ``capture sync --repair`` needs to rebuild promoted cases.
     They still respect the already-local, size-cap and malformed-key rules. Keys that do not
-    match the SDK's layout are counted as malformed and ignored.
+    match the SDK's layout are counted as malformed and ignored. ``since_label`` is how the
+    summary names the ``since`` cutoff.
 
     Raises:
         RemoteStoreError: when listing or any download fails. Files already written stay, so a
             re-run resumes; nothing half-written is left behind.
     """
-    summary = FetchSummary(store_uri=store.uri)
+    summary = FetchSummary(store_uri=store.uri, since_label=since_label)
     skip = set(skip_ids)
     force = set(force_ids)
     toolsets_dir = _absolute(toolsets_root(base))
