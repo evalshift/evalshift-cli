@@ -1086,8 +1086,8 @@ captures:
 | Field       | Type                              | Default | Description |
 | ----------- | --------------------------------- | ------- | ----------- |
 | `store`     | string (URI)                      | (none)  | Object store the SDK writes to. `capture sync` and `capture list` fetch new captures and toolset sidecars from it into the local directory first; `capture fetch` does only that step. |
-| `max_age`   | duration (`30m`, `24h`, `14d`; > 0, ≤ `36500d`) | (none)  | Captures recorded longer ago than this never enter a suite through `capture sync` (`capture promote` ignores the limits), and promoted cases that old are stale: with `max_cases` also set, `capture sync` replaces them as fresh captures arrive. Also the window `capture sync` fetches from `store`. Omit for no age limit. |
-| `max_cases` | int (≥ 1)                         | (none)  | The most cases `capture sync` keeps in each captured suite. Omit and suites grow with every sync. |
+| `max_age`   | duration (`30m`, `24h`, `14d`; > 0, ≤ `36500d`) | (none)  | Captures recorded longer ago than this never enter a suite through `capture sync` (`capture promote` ignores the limits), and promoted cases that old are stale: with `max_cases` also set, `capture sync` replaces them as fresh captures arrive. Also the window `capture sync` and `capture list` fetch from `store`. Omit for no age limit. |
+| `max_cases` | int (≥ 1)                         | (none)  | The most cases `capture sync` keeps in each captured suite. Also caps what `capture sync` and `capture list` download from `store`: each suite's newest `3 × max_cases` captures per run. Omit and suites grow with every sync. |
 
 Setting either `max_age` or `max_cases` turns [bounded suites](#bounded-suites) on. Both work
 without `store`: they govern how captures become suites, whether the captures came from disk or
@@ -1198,8 +1198,10 @@ empty a suite nor freeze it.
 1. **A conversation is the unit.** The new turns of one conversation enter together when they
    fit; a conversation larger than the free slots is skipped and the next one tried. Once no whole
    conversation fits, the slots left take the leading turns of the next conversation in the order
-   below, so one long conversation cannot leave a suite nearly empty; its later turns stay
-   eligible for a later sync. A capture without a `conversation_id` is its own unit.
+   below, so one long conversation cannot leave a suite nearly empty. Its later turns can enter
+   on a later sync while the earlier turns' captures are still local; after `capture clean` or
+   on a fresh checkout, a later turn that does not record its own messages list is missing
+   earlier turns (below). A capture without a `conversation_id` is its own unit.
 2. **Fill free slots, route-balanced.** The free slots are `max_cases` minus the reviewed and fresh
    cases already in the suite. A route is the set of tool names a case expects in round 1 (no
    tools is a route too). Each pick goes to the least-represented route that still has a
@@ -1280,9 +1282,11 @@ the limits too, using the time the bucket last wrote each object:
 
 - **`max_age`** skips captures last written more than `max_age` ago.
 - **`max_cases`** downloads only each suite's newest `3 × max_cases` captures inside that window
-  (ties by key), so a bucket that collects thousands of captures a day costs a sync at most
-  `3 × max_cases` downloads per suite: enough spare for the plan to balance tool routes. Captures
-  already local or promoted count toward it, so syncing again with nothing new downloads nothing.
+  (ties by key): at most `3 × max_cases` downloads per suite per sync, however many captures the
+  bucket holds, and enough spare for the plan to balance tool routes. Captures already local or
+  promoted count toward it, so syncing again with nothing new downloads nothing. It bounds each
+  sync, not the local mirror: frequent syncs each take the newest captures since the last one,
+  and `capture clean` prunes the mirror.
 
 The summary names both:
 `fetched 40 capture(s) and 0 toolset(s) from s3://… (skipped 4 promoted, 11 older than
@@ -1294,13 +1298,18 @@ the committed case files tell the fetch which captures are already promoted.
 
 The budget takes the newest captures, not a sample of the window: at high volume a fresh
 checkout's suite comes from the most recent stretch of traffic. `EVALSHIFT_SAMPLE_RATE` on the
-agent bounds the volume at the source.
+agent bounds the volume at the source, but it draws once per agent run, that is per turn, so a
+sampled conversation keeps some turns and loses others: with a sample rate, record the full
+messages list on every turn.
 
-The window and the budget can cut a conversation's earlier turns off, and on a fresh checkout
-its turns already promoted are not fetched. A later turn that does not record its own messages
-list would then rebuild a truncated history from the turns it has, so it is not eligible
-(`not eligible: 3 missing earlier turns`). Pass the full messages list to `capture.model_call`
-so each turn carries its own history.
+A conversation turn that does not record its own messages list rebuilds its history from the
+turns before it, so it is not eligible unless all of them are on disk
+(`not eligible: 3 missing earlier turns`). They are not when the window or the budget cut them
+off, when they were promoted on another machine (a fresh checkout never fetches promoted
+captures) or removed by `capture clean`, when the SDK's sample rate dropped them, or when the
+app numbers `turn_index` from 1 instead of 0. Sync then warns with those causes
+(`alpha: 3 turn(s) not promoted: earlier turns of their conversation are not on disk (…)`).
+Pass the full messages list to `capture.model_call` so each turn carries its own history.
 
 If `evalshift.yaml` cannot be read or does not validate, sync runs without the limits. When the
 file has a top-level `captures:` key, it says so, online or `--offline`:

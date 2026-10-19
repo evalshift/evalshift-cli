@@ -417,6 +417,23 @@ def test_sync_downloads_at_most_three_times_max_cases_newest_first(
     assert local == {f"cap_{i}" for i in range(6)}
 
 
+def test_since_replaces_the_age_cutoff_but_not_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: FakeRemoteStore
+) -> None:
+    _populate(remote, 8)
+    remote.modified["captures/alpha/cap_7.json"] = datetime(2026, 5, 1, tzinfo=UTC)
+    config = _with_max_cases(_with_max_age(_write_config(tmp_path / "evalshift.yaml")), 2)
+    monkeypatch.setattr(capture_module, "_now", lambda: _NOW)
+
+    result = _invoke(["sync", "--since", "2026-04-01", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    flat = " ".join(result.stdout.split())
+    assert "fetched 6 capture(s)" in flat
+    assert "older than" not in flat
+    assert "2 beyond each suite's newest 6" in flat
+
+
 def test_sync_without_max_cases_downloads_every_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: FakeRemoteStore
 ) -> None:

@@ -307,7 +307,50 @@ def test_a_turn_whose_earlier_turns_are_not_local_is_not_eligible(
     result = _sync(tmp_path)
 
     assert _cases(tmp_path) == {"solo"}
-    assert "not eligible: 2 missing earlier turns" in _flat(result)
+    flat = _flat(result)
+    assert "not eligible: 2 missing earlier turns" in flat
+    assert "alpha: 2 turn(s) not promoted: earlier turns of their conversation" in flat
+    assert "a turn_index that does not start at 0" in flat
+
+
+def test_max_age_alone_reports_turns_missing_earlier_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _put(tmp_path, "conv_t1", conversation_id="c1", turn_index=1)
+    _config(tmp_path / "evalshift.yaml", max_cases=None)
+    _at(monkeypatch, 12)
+
+    result = _sync(tmp_path)
+
+    assert _cases(tmp_path) == set()
+    assert "alpha: not eligible: 1 missing earlier turns" in _flat(result)
+
+
+def test_a_turn_without_an_index_is_never_missing_earlier_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _put(tmp_path, "conv_a", conversation_id="c1")
+    _put(tmp_path, "conv_b", conversation_id="c1")
+    _config(tmp_path / "evalshift.yaml", max_cases=5)
+    _at(monkeypatch, 12)
+
+    _sync(tmp_path)
+
+    assert _cases(tmp_path) == {"conv_a", "conv_b"}
+
+
+def test_an_earlier_turn_that_is_local_but_not_eligible_still_counts_as_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _put(tmp_path, "conv_t0", conversation_id="c1", turn_index=0, model_id="gpt-4o")
+    _put(tmp_path, "conv_t1", conversation_id="c1", turn_index=1)
+    _config(tmp_path / "evalshift.yaml", max_cases=5)
+    _at(monkeypatch, 12)
+
+    result = _sync(tmp_path)
+
+    assert _cases(tmp_path) == {"conv_t1"}
+    assert "not eligible: 1 on another model" in _flat(result)
 
 
 def test_a_turn_that_recorded_its_own_history_needs_no_earlier_turns(

@@ -1752,6 +1752,16 @@ def capture_sync(
         if repaired_here:
             repaired += len(repaired_here)
             _warn_repaired_duplicates(suite_name, repaired_here, base=base, console=console)
+        if ineligible["history"]:
+            console.print(
+                f"[yellow]⚠[/yellow] {escape(suite_name)}: {ineligible['history']} turn(s) not "
+                "promoted: earlier turns of their conversation are not on disk (outside "
+                "captures.max_age or the fetch budget, promoted on another machine or removed by "
+                "capture clean, sampled out by EVALSHIFT_SAMPLE_RATE, or a turn_index that does "
+                "not start at 0). Pass the full messages list to capture.model_call so each turn "
+                "carries its own history.",
+                soft_wrap=True,
+            )
         suite_line: str | None = None
         if limits.max_cases is not None:
             # Planned by file stem, which is unique in the directory, so a retirement deletes
@@ -1774,13 +1784,13 @@ def capture_sync(
             for case in pending:
                 if case.name not in chosen:
                     continue
-                for warning in pending_warnings[case.name]:
-                    console.print(f"[yellow]⚠[/yellow] {case.name}: {warning}")
                 try:
                     write_promoted_case(case, base=base, force=force)
                 except FileExistsError:
                     skipped_existing += 1
                     continue
+                for warning in pending_warnings[case.name]:
+                    console.print(f"[yellow]⚠[/yellow] {case.name}: {warning}")
                 written.append(case)
                 promoted += 1
                 if case.example.generation_config:

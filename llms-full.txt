@@ -376,8 +376,8 @@ evalshift capture fetch [--suite S] [--since 30m|24h|7d|ISO] [-c CONFIG]
   naming pip install boto3 | google-cloud-storage | azure-storage-blob azure-identity (az://
   needs both; one command installs them). No captures.store, or no evalshift.yaml -> exit 1;
   an invalid evalshift.yaml -> its load error, exit 1; an unreadable or non-UTF-8 one -> a one-line
-  "could not read <path>" error, exit 1. Has no --offline flag. captures.max_age does NOT
-  bound it; only sync's automatic fetch applies the max_age window.
+  "could not read <path>" error, exit 1. Has no --offline flag. captures.max_age and the
+  max_cases budget do NOT bound it; only the automatic fetch of sync and list applies them.
 evalshift capture promote CAPTURE_ID [--as CASE_ID] [--suite S] [--input-var NAME=input]
     [--tag T]... [--strict-args] [--names-only] [--tool-count] [--rounds first(default)|all]
     [--allow-errored] [-f/--force]
@@ -479,11 +479,15 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
     fewest cases so far that still has a group that fits (ties by route name); within a route,
     sha256(group key) order. Once NO whole group fits and slots remain, the least-represented
     route left gives its next group's LEADING turns (a prefix, never a middle slice) to fill the
-    slots; the rest of that conversation stays eligible for a later sync.
+    slots; the rest of that conversation can enter on a later sync while its earlier turns'
+    captures are local (after capture clean / on a fresh checkout, a rest turn without its own
+    messages list is "missing earlier turns").
     Eligibility under the limits also needs earlier turns: a conversation turn whose capture
     recorded no messages list of its own (history rebuilt from sibling turns) is NOT eligible
     unless every lower turn_index (0-based) of its conversation is local -- reported as
-    "not eligible: N missing earlier turns". Retire: a stale case whose content key an added turn replays is
+    "not eligible: N missing earlier turns" plus a per-suite warning naming the causes (cut by
+    max_age/budget, promoted elsewhere or capture clean, SDK sample rate -- it draws PER RUN, i.e.
+    per turn -- or a turn_index numbered from 1). Retire: a stale case whose content key an added turn replays is
     retired OUTRIGHT, even under the cap (no duplicate content; also under --keep-duplicates); if
     its fresh copy is not added, the stale case leaves only to make room, like any other stale
     case. Other stale cases only while over max_cases: model-stale first (oldest first, unknown
@@ -513,8 +517,10 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
     always fetched. Summary: "(skipped 4 promoted, 11 older than captures.max_age (14d), 2400
     beyond each suite's newest 600)". --since replaces the max_age cutoff, NOT the budget;
     capture fetch applies neither; sync --repair fetches the captures its rebuilds need beyond
-    both. The budget is the newest captures, not a sample of the window; EVALSHIFT_SAMPLE_RATE on
-    the agent bounds volume at the source. Committed case files supply the promoted-id skip list.
+    both. At most 3 x max_cases downloads per suite PER SYNC (not a bound on the local mirror).
+    The budget is the newest captures, not a sample of the window; EVALSHIFT_SAMPLE_RATE on the
+    agent bounds volume at the source but samples per turn, so sampled conversations need the
+    full messages list on every turn. Committed case files supply the promoted-id skip list.
     The window/budget can cut a conversation's earlier turns, and on a fresh checkout its
     promoted turns are never fetched: a turn without its own messages list is then "missing
     earlier turns" (ineligible) -- pass the full messages list to capture.model_call.

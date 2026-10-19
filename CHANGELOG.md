@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prefix and trailing snapshot date dropped, no alias lookup. A conversation
   turn that recorded no messages list of its own is promoted only when every
   earlier turn of its conversation is local, since its history is rebuilt
-  from them (`not eligible: N missing earlier turns`). `max_age` alone caps
+  from them (`not eligible: N missing earlier turns`, with a warning naming
+  the likely causes: the fetch window or budget, `capture clean`, the SDK's
+  per-turn sample rate, or a `turn_index` numbered from 1). `max_age` alone caps
   nothing. `capture promote` ignores the limits.
 - **Plan.** With `max_cases` set, sync never grows a suite past the cap and
   swaps stale cases (too old, or recorded on another model) for fresh
@@ -53,9 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_age` skips older captures, and `max_cases` takes only each suite's
   newest `3 × max_cases` captures inside that window (`skipped 2400 beyond
   each suite's newest 600`). Captures already local or promoted count toward
-  that budget, so a re-sync with nothing new downloads nothing, and a bucket
-  collecting thousands of captures a day no longer means thousands of
-  downloads. Toolset sidecars are always fetched; `--since` replaces the age
+  that budget, so each sync downloads at most that many per suite, however
+  many captures the bucket holds, and a re-sync with nothing new downloads
+  nothing. Toolset sidecars are always fetched; `--since` replaces the age
   cutoff, not the budget; `capture fetch` is unchanged.
 - **Output.** Sync prints one line per suite: `alpha: 200 cases — kept 150,
   retired 50 (32 older than 14d, 18 on another model), added 50 of 2940

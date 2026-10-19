@@ -173,7 +173,8 @@ route, content keys. `SuitePlan`: groups to add, `(case name, reason)` to retire
   a capture without one is its own group. A group is added whole or not at all; one larger than
   the remaining slots is skipped and the next tried. *(Amended:)* once no whole group fits and
   slots remain, the least-represented route left gives its next group's leading turns to fill
-  them; the rest of that conversation stays eligible.
+  them; the rest of that conversation can enter later while its earlier turns' captures are
+  local.
 - **Route** of a case or group = the sorted set of tool names in its round-1 `expected_tools`
   across its turns, `∅` when none.
 - **Order is deterministic, no RNG:** within a route, groups are taken in `sha256(group key)` order.
