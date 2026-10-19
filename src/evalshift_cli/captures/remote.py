@@ -26,7 +26,7 @@ import importlib.util
 import os
 import re
 import tempfile
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
@@ -198,7 +198,9 @@ class FetchSummary:
     skipped_old: int = 0
     skipped_large: int = 0
     skipped_malformed: int = 0
+    skipped_budget: int = 0
     since_label: str = "--since"
+    per_suite_limit: int | None = None
 
     def describe(self) -> str:
         """``fetched N capture(s) and M toolset(s) from <uri> (skipped ...)``."""
@@ -212,6 +214,7 @@ class FetchSummary:
                 (self.skipped_existing, "already local"),
                 (self.skipped_promoted, "promoted"),
                 (self.skipped_old, f"older than {self.since_label}"),
+                (self.skipped_budget, f"beyond each suite's newest {self.per_suite_limit}"),
                 (self.skipped_large, "over the size cap"),
                 (self.skipped_malformed, "malformed"),
             )
@@ -256,6 +259,7 @@ def fetch_captures(
     force_ids: Collection[str] = frozenset(),
     workers: int = 8,
     since_label: str = "--since",
+    per_suite_limit: int | None = None,
 ) -> FetchSummary:
     """Mirror missing toolsets and captures from ``store`` into ``<base>``.
 
@@ -269,11 +273,18 @@ def fetch_captures(
     match the SDK's layout are counted as malformed and ignored. ``since_label`` is how the
     summary names the ``since`` cutoff.
 
+    ``per_suite_limit`` caps the download, not just the age: only each suite's newest that-many
+    captures inside ``since`` are fetched -- newest by ``last_modified`` (unknown counts as
+    oldest), ties by key. Captures already local or promoted count toward it, so a re-run with
+    nothing new in the store fetches nothing. Forced ids are fetched beyond it.
+
     Raises:
         RemoteStoreError: when listing or any download fails. Files already written stay, so a
             re-run resumes; nothing half-written is left behind.
     """
-    summary = FetchSummary(store_uri=store.uri, since_label=since_label)
+    summary = FetchSummary(
+        store_uri=store.uri, since_label=since_label, per_suite_limit=per_suite_limit
+    )
     skip = set(skip_ids)
     force = set(force_ids)
     toolsets_dir = _absolute(toolsets_root(base))
@@ -300,6 +311,7 @@ def fetch_captures(
 
     capture_jobs: list[tuple[str, Path]] = []
     prefix = f"captures/{suite}/" if suite else "captures/"
+    listed: list[tuple[ObjectInfo, str, Path]] = []
     for info in _list(store, prefix):
         if info.key.endswith("/"):
             continue  # a folder marker, as above
@@ -317,10 +329,18 @@ def fetch_captures(
         if not _absolute(dest.parent).is_relative_to(captures_dir):
             summary.skipped_malformed += 1
             continue
+        listed.append((info, suite_seg, dest))
+
+    in_budget = (
+        _newest_per_suite(listed, since=since, limit=per_suite_limit)
+        if per_suite_limit is not None
+        else None
+    )
+    for info, _, dest in listed:
         if dest.exists():
             summary.skipped_existing += 1
             continue
-        capture_id = name[: -len(".json")]
+        capture_id = dest.name[: -len(".json")]
         forced = capture_id in force
         if not forced and capture_id in skip:
             summary.skipped_promoted += 1
@@ -333,6 +353,9 @@ def fetch_captures(
         ):
             summary.skipped_old += 1
             continue
+        if in_budget is not None and not forced and info.key not in in_budget:
+            summary.skipped_budget += 1
+            continue
         if info.size is not None and info.size > MAX_OBJECT_BYTES:
             summary.skipped_large += 1
             continue
@@ -343,6 +366,30 @@ def fetch_captures(
     summary.captures, large = _download_all(store, capture_jobs, workers)
     summary.skipped_large += large
     return summary
+
+
+def _newest_per_suite(
+    listed: Sequence[tuple[ObjectInfo, str, Path]], *, since: datetime | None, limit: int
+) -> frozenset[str]:
+    """The keys of each suite's newest ``limit`` captures inside ``since``.
+
+    Newest by ``last_modified``; an unknown one counts as oldest, and ties go by key, so every
+    machine listing the same store picks the same captures.
+    """
+
+    def newest_first(info: ObjectInfo) -> tuple[bool, float, str]:
+        modified = info.last_modified
+        return (modified is None, -modified.timestamp() if modified else 0.0, info.key)
+
+    by_suite: dict[str, list[ObjectInfo]] = {}
+    for info, suite_seg, _ in listed:
+        modified = info.last_modified
+        if since is not None and modified is not None and modified < since:
+            continue
+        by_suite.setdefault(suite_seg, []).append(info)
+    return frozenset(
+        info.key for infos in by_suite.values() for info in sorted(infos, key=newest_first)[:limit]
+    )
 
 
 def _absolute(path: Path) -> Path:

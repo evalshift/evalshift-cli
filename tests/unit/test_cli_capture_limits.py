@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,7 @@ def _put(
     suite: str = "alpha",
     created_at: str = WEEK_1,
     model_id: str = "claude-sonnet-5-20260301",
-    text: str | None = None,
+    text: Any = None,
     conversation_id: str | None = None,
     turn_index: int | None = None,
 ) -> None:
@@ -273,7 +274,7 @@ def test_suite_flag_leaves_other_suites_alone(
     assert len(_cases(tmp_path, "beta")) == 5
 
 
-def test_a_conversation_enters_whole_or_not_at_all(
+def test_a_conversation_too_long_for_the_slots_left_enters_as_its_leading_turns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for turn in range(3):
@@ -281,10 +282,85 @@ def test_a_conversation_enters_whole_or_not_at_all(
     _put(tmp_path, "solo")
     _config(tmp_path / "evalshift.yaml", max_cases=2)
     _at(monkeypatch, 12)
+    _sync(tmp_path)
+    suite_dir = tmp_path / "suites" / "alpha"
+    before = {p.name: p.read_bytes() for p in suite_dir.iterdir()}
+
+    result = _sync(tmp_path)
+
+    assert _cases(tmp_path) == {"solo", "conv_t0"}
+    assert {p.name: p.read_bytes() for p in suite_dir.iterdir()} == before
+    assert "alpha: 2 cases — kept 2, retired 0, added 0 of 2 eligible" in _flat(result)
+
+
+def test_a_turn_whose_earlier_turns_are_not_local_is_not_eligible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Turns 0-1 were promoted elsewhere, or fell outside the fetch budget: turns 2-3 recorded
+    # a bare string, so their history could only be rebuilt from turns that are not here.
+    for turn in (2, 3):
+        _put(tmp_path, f"conv_t{turn}", conversation_id="c1", turn_index=turn)
+    _put(tmp_path, "solo")
+    _config(tmp_path / "evalshift.yaml", max_cases=5)
+    _at(monkeypatch, 12)
+
+    result = _sync(tmp_path)
+
+    assert _cases(tmp_path) == {"solo"}
+    assert "not eligible: 2 missing earlier turns" in _flat(result)
+
+
+def test_a_turn_that_recorded_its_own_history_needs_no_earlier_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    messages = [
+        {"role": "user", "content": "convert 10 EUR"},
+        {"role": "assistant", "content": "10 EUR is 10.87 USD"},
+        {"role": "user", "content": "and to GBP?"},
+    ]
+    _put(tmp_path, "conv_t1", conversation_id="c1", turn_index=1, text=messages)
+    _config(tmp_path / "evalshift.yaml", max_cases=5)
+    _at(monkeypatch, 12)
 
     _sync(tmp_path)
 
-    assert _cases(tmp_path) == {"solo"}
+    assert _cases(tmp_path) == {"conv_t1"}
+
+
+def test_without_limits_a_turn_missing_earlier_turns_still_promotes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _put(tmp_path, "conv_t2", conversation_id="c1", turn_index=2)
+    _config(tmp_path / "evalshift.yaml", max_age=None, max_cases=None)
+    _at(monkeypatch, 12)
+
+    _sync(tmp_path)
+
+    assert _cases(tmp_path) == {"conv_t2"}
+
+
+def test_build_warnings_name_only_the_captures_that_became_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = capture_module.build_conversation_examples
+
+    def warn_every_capture(*args: Any, **kwargs: Any) -> Any:
+        return [
+            (record, replace(built, warnings=[*built.warnings, "WARNED"]))
+            for record, built in real(*args, **kwargs)
+        ]
+
+    monkeypatch.setattr(capture_module, "build_conversation_examples", warn_every_capture)
+    for i in range(5):
+        _put(tmp_path, f"cap_{i}")
+    _config(tmp_path / "evalshift.yaml", max_cases=2)
+    _at(monkeypatch, 12)
+
+    result = _sync(tmp_path)
+
+    warned = set(re.findall(r"(cap_\d): WARNED", result.stdout))
+    assert warned == _cases(tmp_path)
+    assert len(warned) == 2
 
 
 def test_the_same_question_captured_fresh_replaces_its_stale_case(

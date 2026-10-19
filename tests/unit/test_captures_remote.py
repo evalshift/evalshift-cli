@@ -397,3 +397,87 @@ def test_skipped_old_names_the_window_it_was_measured_against() -> None:
 
 def test_skipped_old_defaults_to_the_since_flag() -> None:
     assert "1 older than --since" in FetchSummary(store_uri="s3://b/p", skipped_old=1).describe()
+
+
+# --- per-suite budget (captures.max_cases) ---------------------------------------------------
+
+_T = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+
+
+def _aged(store: FakeRemoteStore, *hours: tuple[str, float], suite: str = "alpha") -> None:
+    """Stamp each capture's last_modified that many hours before ``_T``."""
+    for cid, h in hours:
+        store.modified[f"captures/{suite}/{cid}.json"] = _T - timedelta(hours=h)
+
+
+def test_per_suite_limit_downloads_each_suites_newest_captures(tmp_path: Path) -> None:
+    store = populated_store("cap_new", "cap_mid", "cap_old")
+    _aged(store, ("cap_new", 1), ("cap_mid", 2), ("cap_old", 3))
+    store.objects["captures/beta/cap_b.json"] = capture_payload("cap_b", "beta")
+
+    summary = fetch_captures(store, base=tmp_path, per_suite_limit=2)
+
+    assert _local_captures(tmp_path) == {
+        "alpha/cap_new.json",
+        "alpha/cap_mid.json",
+        "beta/cap_b.json",
+    }
+    assert summary.skipped_budget == 1
+
+
+def test_per_suite_limit_counts_local_and_promoted_captures_so_a_rerun_fetches_nothing(
+    tmp_path: Path,
+) -> None:
+    store = populated_store("cap_new", "cap_mid", "cap_old")
+    _aged(store, ("cap_new", 1), ("cap_mid", 2), ("cap_old", 3))
+    fetch_captures(store, base=tmp_path, skip_ids={"cap_new"}, per_suite_limit=2)
+    assert _local_captures(tmp_path) == {"alpha/cap_mid.json"}
+    store.gets.clear()
+
+    summary = fetch_captures(store, base=tmp_path, skip_ids={"cap_new"}, per_suite_limit=2)
+
+    assert store.gets == []
+    assert summary.skipped_budget == 1
+
+
+def test_captures_outside_the_window_take_no_budget(tmp_path: Path) -> None:
+    store = populated_store("cap_new", "cap_mid", "cap_old")
+    _aged(store, ("cap_new", 1), ("cap_mid", 2), ("cap_old", 48))
+
+    summary = fetch_captures(store, base=tmp_path, since=_T - timedelta(days=1), per_suite_limit=2)
+
+    assert summary.captures == 2
+    assert summary.skipped_old == 1
+    assert summary.skipped_budget == 0
+
+
+def test_forced_ids_are_fetched_beyond_the_budget(tmp_path: Path) -> None:
+    store = populated_store("cap_new", "cap_old")
+    _aged(store, ("cap_new", 1), ("cap_old", 2))
+
+    fetch_captures(store, base=tmp_path, per_suite_limit=1, force_ids={"cap_old"})
+
+    assert _local_captures(tmp_path) == {"alpha/cap_new.json", "alpha/cap_old.json"}
+
+
+def test_an_unknown_last_modified_counts_as_oldest_for_the_budget(tmp_path: Path) -> None:
+    store = populated_store("cap_known", "cap_unknown")
+    _aged(store, ("cap_known", 100))
+    store.modified["captures/alpha/cap_unknown.json"] = None
+
+    fetch_captures(store, base=tmp_path, per_suite_limit=1)
+
+    assert _local_captures(tmp_path) == {"alpha/cap_known.json"}
+
+
+def test_equal_last_modified_breaks_ties_by_key(tmp_path: Path) -> None:
+    store = populated_store("cap_b", "cap_a", "cap_c")
+
+    fetch_captures(store, base=tmp_path, per_suite_limit=2)
+
+    assert _local_captures(tmp_path) == {"alpha/cap_a.json", "alpha/cap_b.json"}
+
+
+def test_skipped_budget_names_the_limit() -> None:
+    summary = FetchSummary(store_uri="s3://b/p", skipped_budget=4, per_suite_limit=600)
+    assert "4 beyond each suite's newest 600" in summary.describe()

@@ -32,14 +32,14 @@ def _kept(
 
 
 def _group(
-    key: str, *, route: str = "a", size: int = 1, content: set[str] | None = None
+    key: str, *, route: str = "a", size: int = 1, content: list[str] | None = None
 ) -> CandidateGroup:
     ids = tuple(f"{key}-t{i}" for i in range(size)) if size > 1 else (key,)
     return CandidateGroup(
         key=key,
         capture_ids=ids,
         route=route,
-        content_keys=frozenset(content or {f"k-{i}" for i in ids}),
+        content_keys=tuple(content or [f"k-{i}" for i in ids]),
     )
 
 
@@ -65,10 +65,33 @@ def test_the_least_represented_route_fills_first() -> None:
     assert [g.route for g in plan.add] == ["b", "b", "a"]
 
 
-def test_a_group_is_added_whole_or_not_at_all() -> None:
-    plan = plan_suite([], [_group("conv", size=3), _group("solo", route="b")], max_cases=2)
-    assert _added(plan) == ["solo"]
-    assert plan.added_cases == 1
+def test_a_group_that_fits_is_added_whole() -> None:
+    plan = plan_suite([], [_group("conv", size=3), _group("solo", route="b")], max_cases=4)
+    assert [g.capture_ids for g in plan.add] == [("conv-t0", "conv-t1", "conv-t2"), ("solo",)]
+
+
+def test_slots_no_whole_group_fits_take_a_conversations_leading_turns() -> None:
+    # A lone capture and a 10-turn conversation under max_cases 10: the lone capture leaves
+    # 9 slots, too few for the conversation, so its first 9 turns fill them.
+    plan = plan_suite([], [_group("conv", size=10, route="b"), _group("solo")], max_cases=10)
+    assert [g.capture_ids for g in plan.add] == [
+        ("solo",),
+        tuple(f"conv-t{i}" for i in range(9)),
+    ]
+    assert plan.added_cases == 10
+
+
+def test_a_prefix_is_taken_only_once_no_whole_group_fits() -> None:
+    groups = [_group("conv", size=3), _group("s1", route="b"), _group("s2", route="b")]
+    plan = plan_suite([], groups, max_cases=2)
+    assert sorted(_added(plan)) == ["s1", "s2"]
+
+
+def test_a_prefix_keeps_its_turns_order_and_content_keys() -> None:
+    prefix = _group("conv", size=3).prefix(2)
+    assert prefix.key == "conv"
+    assert prefix.capture_ids == ("conv-t0", "conv-t1")
+    assert prefix.content_keys == ("k-conv-t0", "k-conv-t1")
 
 
 def test_stale_cases_stay_when_nothing_replaces_them() -> None:
@@ -95,7 +118,7 @@ def test_another_model_leaves_before_old_age() -> None:
 
 def test_a_stale_twin_is_replaced_even_under_the_cap() -> None:
     kept = [_kept("twin", stale="age", key="k-q")]
-    plan = plan_suite(kept, [_group("new", content={"k-q"})], max_cases=10)
+    plan = plan_suite(kept, [_group("new", content=["k-q"])], max_cases=10)
     assert _added(plan) == ["new"]
     assert plan.retire == (("twin", "age"),)
 

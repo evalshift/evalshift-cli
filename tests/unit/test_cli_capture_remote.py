@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,7 @@ from evalshift_cli.cli.commands import capture as capture_module
 from evalshift_cli.cli.commands.init import CAPTURES_SCAFFOLD, render_minimal_config
 from evalshift_cli.cli.main import app
 from evalshift_cli.suite.loader import load_jsonl
-from tests.unit.fake_remote_store import FakeRemoteStore, populated_store
+from tests.unit.fake_remote_store import FakeRemoteStore, capture_payload, populated_store
 
 runner = CliRunner()
 
@@ -382,6 +382,69 @@ def test_an_explicit_since_overrides_max_age(
 
     assert result.exit_code == 0, result.stdout
     assert "fetched 2 capture(s)" in result.stdout
+
+
+def _with_max_cases(config: Path, max_cases: int) -> Path:
+    config.write_text(
+        config.read_text(encoding="utf-8") + f"  max_cases: {max_cases}\n", encoding="utf-8"
+    )
+    return config
+
+
+def _populate(remote: FakeRemoteStore, count: int) -> None:
+    """``count`` captures in suite alpha, cap_0 the newest, one hour apart."""
+    remote.objects = {k: v for k, v in remote.objects.items() if not k.startswith("captures/")}
+    for i in range(count):
+        key = f"captures/alpha/cap_{i}.json"
+        remote.objects[key] = capture_payload(f"cap_{i}", model_input=f"question {i}?")
+        remote.modified[key] = _NOW - timedelta(hours=i + 1)
+
+
+def test_sync_downloads_at_most_three_times_max_cases_newest_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: FakeRemoteStore
+) -> None:
+    _populate(remote, 8)
+    config = _with_max_cases(_write_config(tmp_path / "evalshift.yaml"), 2)
+    monkeypatch.setattr(capture_module, "_now", lambda: _NOW)
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    flat = " ".join(result.stdout.split())
+    assert "fetched 6 capture(s)" in flat
+    assert "2 beyond each suite's newest 6" in flat
+    local = {p.stem for p in (tmp_path / "captures" / "alpha").glob("*.json")}
+    assert local == {f"cap_{i}" for i in range(6)}
+
+
+def test_sync_without_max_cases_downloads_every_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: FakeRemoteStore
+) -> None:
+    _populate(remote, 8)
+    config = _write_config(tmp_path / "evalshift.yaml")
+    monkeypatch.setattr(capture_module, "_now", lambda: _NOW)
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert "fetched 8 capture(s)" in result.stdout
+
+
+def test_list_fetches_what_sync_would(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: FakeRemoteStore
+) -> None:
+    _populate(remote, 8)
+    remote.modified["captures/alpha/cap_7.json"] = datetime(2026, 5, 1, tzinfo=UTC)
+    config = _with_max_cases(_with_max_age(_write_config(tmp_path / "evalshift.yaml")), 2)
+    monkeypatch.setattr(capture_module, "_now", lambda: _NOW)
+
+    result = _invoke(["list", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    flat = " ".join(result.stdout.split())
+    assert "fetched 6 capture(s)" in flat
+    assert "1 older than captures.max_age (14d)" in flat
+    assert "1 beyond each suite's newest 6" in flat
 
 
 def test_max_age_without_a_store_is_not_a_fetch_error(tmp_path: Path) -> None:
