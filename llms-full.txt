@@ -355,7 +355,7 @@ Captures (read from .evalshift/captures/ under CWD, or $EVALSHIFT_DIR; with capt
 in evalshift.yaml, list/sync first mirror the bucket into it):
 evalshift capture list [SUITE] [--json] [-c CONFIG] [--offline]
   With captures.store set, runs fetch first (limited to SUITE when given) unless --offline.
-  captures.max_age does NOT bound list's fetch (only sync's).
+  The fetch applies the same captures.max_age window and max_cases budget as sync's.
   With --json, stdout is pure JSON: the fetch summary and every warning go to stderr.
 evalshift capture fetch [--suite S] [--since 30m|24h|7d|ISO] [-c CONFIG]
   Mirrors captures.store into <base>: lists toolsets/ then captures/, downloads only objects
@@ -477,7 +477,13 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
     tried). slots = max_cases - reviewed - fresh; repeatedly add the
     next group of the route (sorted round-1 expected tool names; none is its own route) with the
     fewest cases so far that still has a group that fits (ties by route name); within a route,
-    sha256(group key) order. Retire: a stale case whose content key an added turn replays is
+    sha256(group key) order. Once NO whole group fits and slots remain, the least-represented
+    route left gives its next group's LEADING turns (a prefix, never a middle slice) to fill the
+    slots; the rest of that conversation stays eligible for a later sync.
+    Eligibility under the limits also needs earlier turns: a conversation turn whose capture
+    recorded no messages list of its own (history rebuilt from sibling turns) is NOT eligible
+    unless every lower turn_index (0-based) of its conversation is local -- reported as
+    "not eligible: N missing earlier turns". Retire: a stale case whose content key an added turn replays is
     retired OUTRIGHT, even under the cap (no duplicate content; also under --keep-duplicates); if
     its fresh copy is not added, the stale case leaves only to make room, like any other stale
     case. Other stale cases only while over max_cases: model-stale first (oldest first, unknown
@@ -498,16 +504,20 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
       added 50 of 2940 eligible; not eligible: 812 older than 14d, 40 on another model"
     (retired reasons also "N over max_cases"; kept = cases that stay; eligible = candidates after
     dedup). max_age alone: "  planner: not eligible: 812 older than 14d", only when non-empty.
-    Fetch window: with max_age set, sync's AUTOMATIC fetch skips CAPTURES whose last_modified is
-    before now - max_age; toolset sidecars missing locally are always fetched ("(skipped 4
-    promoted, 11 older than captures.max_age (14d))"); --since overrides it; capture list /
-    capture fetch do not apply it. No sampling at fetch time (a listing has key/time/size only;
-    history rebuild needs sibling turns) -- volume inside the window is EVALSHIFT_SAMPLE_RATE's
-    job. Committed case files supply the promoted-id skip list, so a fresh checkout downloads only
-    new captures inside the window. On a fresh checkout or after capture clean, a conversation
-    straddling the window loses its earlier turns to it; a turn that does not record its own
-    messages list then rebuilds a TRUNCATED history -- pass the full messages list to
-    capture.model_call.
+    With max_cases set, a capture's build warnings print only if it becomes a case.
+    Fetch window + budget (the AUTOMATIC fetch of capture sync AND capture list): with max_age
+    set, CAPTURES whose last_modified is before now - max_age are skipped; with max_cases set,
+    only each suite's NEWEST 3 x max_cases captures inside that window are downloaded (by
+    last_modified, unknown = oldest, ties by key; captures already local or promoted COUNT toward
+    it, so a re-run with nothing new downloads nothing). Toolset sidecars missing locally are
+    always fetched. Summary: "(skipped 4 promoted, 11 older than captures.max_age (14d), 2400
+    beyond each suite's newest 600)". --since replaces the max_age cutoff, NOT the budget;
+    capture fetch applies neither; sync --repair fetches the captures its rebuilds need beyond
+    both. The budget is the newest captures, not a sample of the window; EVALSHIFT_SAMPLE_RATE on
+    the agent bounds volume at the source. Committed case files supply the promoted-id skip list.
+    The window/budget can cut a conversation's earlier turns, and on a fresh checkout its
+    promoted turns are never fetched: a turn without its own messages list is then "missing
+    earlier turns" (ineligible) -- pass the full messages list to capture.model_call.
     Route balancing is coverage-weighted, not traffic-weighted: rate budgets are measured over a
     balanced sample. The CLI never writes to or deletes from the bucket; expire the captures/
     prefix (not toolsets/, which committed suites reference) with a lifecycle rule after a period
@@ -1600,7 +1610,8 @@ content leaves the machine.
   not seed it (its fresh re-capture replaces it); every case that stays does.
 - Bounded capture sync (captures.max_age / captures.max_cases set): a suite never shrinks
   because it went stale (stale cases leave only to make room or to be replaced by their fresh
-  twin); reviewed cases are never retired; a conversation is added whole or not at all; the
+  twin); reviewed cases are never retired; a conversation is added whole when it fits, else
+  only as its leading turns once no whole one fits; the
   plan is deterministic, and syncing again with nothing new changes no file; a
   defaults.source_model no capture ran on filters nothing (guardrail warning).
 - Slices: every distinct example tag is a slice under its own name, plus "all"; each evaluator is
