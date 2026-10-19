@@ -17,15 +17,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Filter.** With either limit set, `capture sync` promotes only captures
   recorded on `defaults.source_model`, and with `max_age` set, only captures
   recorded within it. Model ids match on bare names: lower-cased, provider
-  prefix and trailing snapshot date dropped, no alias lookup. `max_age` alone
-  caps nothing. `capture promote` ignores the limits.
+  prefix and trailing snapshot date dropped, no alias lookup. A conversation
+  turn that recorded no messages list of its own is promoted only when every
+  earlier turn of its conversation is local, since its history is rebuilt
+  from them (`not eligible: N missing earlier turns`, with a warning naming
+  the likely causes: the fetch window or budget, `capture clean`, the SDK's
+  per-turn sample rate, or a `turn_index` numbered from 1). `max_age` alone caps
+  nothing. `capture promote` ignores the limits.
 - **Plan.** With `max_cases` set, sync never grows a suite past the cap and
   swaps stale cases (too old, or recorded on another model) for fresh
   captures as they arrive. A stale case leaves at once when a fresh capture of
   the same question is added in its place; if its fresh copy is not added,
   the stale case leaves only to make room, like any other stale case. So a
   suite never shrinks because its cases went stale (an over-cap suite is still
-  trimmed to `max_cases`). A conversation enters whole or not at all. Cases a
+  trimmed to `max_cases`). A conversation enters whole when it fits; once no
+  whole conversation fits, the slots left take the next one's leading turns,
+  so one long conversation cannot leave a suite nearly empty. Cases a
   human marked `provenance: reviewed` are never retired; in a captured suite
   the mark goes in the case file (`.evalshift/suites/<suite>/<case>.json`),
   not in `golden.jsonl`, which sync regenerates. Sync knows a case by its
@@ -43,13 +50,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded on <model> …; not filtering by model — check
   defaults.source_model`) and does not filter that suite by model rather than
   empty it.
-- **Fetch.** `max_age` also bounds which captures `capture sync`'s automatic
-  fetch downloads from `captures.store` (toolset sidecars are always
-  fetched); `--since` still overrides it, and `capture list` and
-  `capture fetch` are unchanged.
+- **Fetch.** The limits also bound what the automatic fetch of
+  `capture sync` and `capture list` downloads from `captures.store`:
+  `max_age` skips older captures, and `max_cases` takes only each suite's
+  newest `3 × max_cases` captures inside that window (`skipped 2400 beyond
+  each suite's newest 600`). Captures already local or promoted count toward
+  that budget, so each sync downloads at most that many per suite, however
+  many captures the bucket holds, and a re-sync with nothing new downloads
+  nothing. Toolset sidecars are always fetched; `--since` replaces the age
+  cutoff, not the budget; `capture fetch` is unchanged.
 - **Output.** Sync prints one line per suite: `alpha: 200 cases — kept 150,
   retired 50 (32 older than 14d, 18 on another model), added 50 of 2940
-  eligible; not eligible: …`.
+  eligible; not eligible: …`. With `max_cases` set, a capture's build
+  warnings print only when it becomes a case.
 - `doctor` gains `suite freshness` rows for each `source: captured` suite when
   either limit is set: `ok` (`alpha: 200 cases, captured 2d–12d ago`), or one
   `warn` per finding — the newest case is older than `max_age`, cases were

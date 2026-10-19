@@ -48,18 +48,27 @@ class CandidateGroup:
         key: Stable identity used for the deterministic order.
         capture_ids: Its turns' case names (the capture ids), in turn order.
         route: The union route of its turns.
-        content_keys: Each turn's ``example_content_key``.
+        content_keys: Each turn's ``example_content_key``, in turn order.
     """
 
     key: str
     capture_ids: tuple[str, ...]
     route: str
-    content_keys: frozenset[str]
+    content_keys: tuple[str, ...]
 
     @property
     def size(self) -> int:
         """How many cases the group adds."""
         return len(self.capture_ids)
+
+    def prefix(self, turns: int) -> CandidateGroup:
+        """The group's first ``turns`` turns: a conversation cut short, its history intact."""
+        return CandidateGroup(
+            key=self.key,
+            capture_ids=self.capture_ids[:turns],
+            route=self.route,
+            content_keys=self.content_keys[:turns],
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,7 +111,9 @@ def plan_suite(
     1. Reviewed cases are pinned; every other case is fresh or stale.
     2. Free slots (``max_cases`` minus pinned and fresh) are filled one group at a time from
        the route least represented so far (ties by route name), each route's groups in
-       ``sha256(key)`` order. A group is added whole, or skipped when it does not fit.
+       ``sha256(key)`` order. A group is added whole, or skipped when it does not fit. Once no
+       whole group fits, the slots left take the leading turns of the next group in that
+       order, so a long conversation cannot leave a suite nearly empty.
     3. A stale case whose content an added turn replays is retired outright, so no duplicate
        content survives. Other stale cases leave only while the suite is over ``max_cases``:
        recorded-on-another-model first, then oldest.
@@ -132,6 +143,11 @@ def plan_suite(
         added.append(group)
         counts[route] += group.size
         slots -= group.size
+    waiting = [r for r, queue in queues.items() if queue]
+    if slots > 0 and waiting:
+        route = min(waiting, key=lambda r: (counts[r], r))
+        added.append(queues[route].pop(0).prefix(slots))
+        counts[route] += slots
 
     retire: list[tuple[str, RetireReason]] = []
     replayed = frozenset(key for group in added for key in group.content_keys)

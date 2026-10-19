@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 
 import typer
 from rich.console import Console
@@ -367,7 +367,7 @@ def _candidate_groups(pending: Sequence[PromotedCase]) -> list[CandidateGroup]:
             key=key,
             capture_ids=tuple(c.name for c in cases),
             route=examples_route(c.example for c in cases),
-            content_keys=frozenset(example_content_key(c.example) for c in cases),
+            content_keys=tuple(example_content_key(c.example) for c in cases),
         )
         for key, cases in turns.items()
     ]
@@ -378,9 +378,12 @@ def _reason_counts(counts: Counter[str], *, max_age: timedelta | None) -> str:
     labels = {
         "age": f"older than {format_duration(max_age)}" if max_age is not None else "too old",
         "model": "on another model",
+        "history": "missing earlier turns",
         "over_cap": "over max_cases",
     }
-    return ", ".join(f"{counts[k]} {labels[k]}" for k in ("age", "model", "over_cap") if counts[k])
+    return ", ".join(
+        f"{counts[k]} {labels[k]}" for k in ("age", "model", "history", "over_cap") if counts[k]
+    )
 
 
 def _plan_line(
@@ -480,6 +483,20 @@ def _records_own_history(envelope: CaptureEnvelope) -> bool:
     return recovered is not None and recovered.history is not None
 
 
+def _misses_earlier_turns(envelope: CaptureEnvelope, turns: Mapping[str, set[int]]) -> bool:
+    """Whether the turn's history would be rebuilt from earlier turns that are not all local.
+
+    ``turns`` maps each conversation to the turn indices (0-based) on disk. A turn that recorded
+    its own messages list needs none of them; a turn without an index can't be checked.
+    """
+    if envelope.conversation_id is None or envelope.turn_index is None:
+        return False
+    if _records_own_history(envelope):
+        return False
+    present = turns.get(envelope.conversation_id, set())
+    return any(i not in present for i in range(envelope.turn_index))
+
+
 def _warn_unrepairable(
     selection: RepairSelection, records: list[CaptureRecord], *, console: Console
 ) -> None:
@@ -561,6 +578,11 @@ def _warn_store_skipped(config_path: Path, reason: str, *, console: Console) -> 
     )
 
 
+FETCH_BUDGET_PER_CASE: Final = 3
+"""With ``captures.max_cases`` set, sync's fetch takes each suite's newest ``3 x max_cases``
+captures: spare enough for the planner to balance tool routes, and never the whole bucket."""
+
+
 @dataclass(frozen=True, slots=True)
 class _SyncLimits:
     """``captures.max_age`` / ``captures.max_cases`` and ``defaults.source_model``, for sync.
@@ -576,6 +598,17 @@ class _SyncLimits:
     @property
     def active(self) -> bool:
         return self.max_age is not None or self.max_cases is not None
+
+    @property
+    def fetch_budget(self) -> int | None:
+        """How many of each suite's newest captures the fetch takes; ``None``: all of them."""
+        return FETCH_BUDGET_PER_CASE * self.max_cases if self.max_cases is not None else None
+
+    def fetch_window(self, now: datetime) -> tuple[datetime, str] | None:
+        """The cutoff ``max_age`` puts on the fetch, and how its summary names it."""
+        if self.max_age is None:
+            return None
+        return now - self.max_age, f"captures.max_age ({format_duration(self.max_age)})"
 
 
 def _sync_limits(config_path: Path, *, console: Console, warn: bool) -> _SyncLimits:
@@ -625,11 +658,13 @@ def _fetch_into_base(
     console: Console,
     force_ids: frozenset[str] = frozenset(),
     since_label: str = "--since",
+    per_suite_limit: int | None = None,
 ) -> FetchSummary:
     """Mirror ``store`` into ``base`` and print the one-line summary; exit 1 on failure.
 
     ``force_ids`` are fetched even when promoted or older than ``since`` -- the captures
-    ``capture sync --repair`` needs to rebuild promoted cases.
+    ``capture sync --repair`` needs to rebuild promoted cases. ``per_suite_limit`` caps each
+    suite at its newest that-many captures (``fetch_captures``).
     """
     skip_ids = _promoted_capture_ids_or_warn(base=base, console=console)
     try:
@@ -641,6 +676,7 @@ def _fetch_into_base(
             skip_ids=skip_ids,
             force_ids=force_ids,
             since_label=since_label,
+            per_suite_limit=per_suite_limit,
         )
     except RemoteStoreError as exc:
         console.print(exc.format_rich())
@@ -661,11 +697,12 @@ def _maybe_fetch(
     console: Console,
     force_ids: frozenset[str] = frozenset(),
     window: tuple[datetime, str] | None = None,
+    per_suite_limit: int | None = None,
 ) -> None:
     """The automatic fetch step ``sync`` and ``list`` run before reading the local mirror.
 
     ``window`` is the cutoff ``captures.max_age`` implies, and how to name it; an explicit
-    ``--since`` wins.
+    ``--since`` wins. ``per_suite_limit`` is the budget ``captures.max_cases`` implies.
     """
     since_dt = _resolve_since(since)
     since_label = "--since"
@@ -688,6 +725,7 @@ def _maybe_fetch(
         since_label=since_label,
         console=console,
         force_ids=force_ids,
+        per_suite_limit=per_suite_limit,
     )
 
 
@@ -705,9 +743,15 @@ def capture_list(
     offline: _OfflineOption = False,
     base: _BaseOption = None,
 ) -> None:
-    """List captures recorded by the SDK."""
+    """List captures recorded by the SDK.
+
+    Fetches from captures.store first, as capture sync does: only captures within
+    captures.max_age and, with captures.max_cases set, each suite's newest 3x
+    max_cases.
+    """
     # With --json, stdout carries only the JSON: the fetch line and every warning go to stderr.
     console = Console(stderr=as_json)
+    limits = _sync_limits(config_path, console=console, warn=False)
     _maybe_fetch(
         config_path=config_path,
         offline=offline,
@@ -715,6 +759,8 @@ def capture_list(
         suite=suite,
         base=base,
         console=console,
+        window=limits.fetch_window(_now()),
+        per_suite_limit=limits.fetch_budget,
     )
     records = iter_captures(suite=suite, base=base, on_error=_warn_unreadable(console))
     promoted = _promoted_capture_ids_or_warn(base=base, console=console)
@@ -1354,17 +1400,14 @@ def capture_sync(
     each suite keeps at most that many cases, swapping stale ones (older than
     captures.max_age, or recorded on another model than defaults.source_model)
     for fresh captures; reviewed cases are never retired. captures.max_age
-    keeps older captures out of a suite.
+    keeps older captures out of a suite. The fetch from captures.store takes
+    only captures within captures.max_age and, with captures.max_cases set,
+    each suite's newest 3x max_cases.
     """
     console = Console()
     _check_rounds(rounds)
     limits = _sync_limits(config_path, console=console, warn=True)
     now = _now()
-    window = (
-        (now - limits.max_age, f"captures.max_age ({format_duration(limits.max_age)})")
-        if limits.max_age is not None
-        else None
-    )
     selection = _repair_selection(base=base, suite=suite, console=console)
     _maybe_fetch(
         config_path=config_path,
@@ -1374,7 +1417,8 @@ def capture_sync(
         base=base,
         console=console,
         force_ids=selection.refetch_ids if repair else frozenset(),
-        window=window,
+        window=limits.fetch_window(now),
+        per_suite_limit=limits.fetch_budget,
     )
     if not repair:
         for line in stringified_warnings(selection):
@@ -1511,8 +1555,13 @@ def capture_sync(
         replaceable_from = {c.from_capture for path, c in kept if path in replaceable}
         ineligible: Counter[str] = Counter()
         pending: list[PromotedCase] = []
+        pending_warnings: dict[str, list[str]] = {}
         built_pairs = build_conversation_examples(suite_records, opts, base=base)
         local_ids = {r.envelope.capture_id for r in suite_records}
+        local_turns: dict[str, set[int]] = {}
+        for r in suite_records:
+            if r.envelope.conversation_id is not None and r.envelope.turn_index is not None:
+                local_turns.setdefault(r.envelope.conversation_id, set()).add(r.envelope.turn_index)
         # Re-exercising an agent on the same data records duplicate captures.
         # Promoting both would duplicate the example, double n, and inflate
         # every downstream p-value/effect size. Dedup keys on the *built
@@ -1643,6 +1692,11 @@ def capture_sync(
                 if reason is not None:
                     ineligible[reason] += 1
                     continue
+                # Earlier turns outside the fetch window or budget, or promoted elsewhere and so
+                # never fetched: the history rebuilt without them would be wrong.
+                if _misses_earlier_turns(envelope, local_turns):
+                    ineligible["history"] += 1
+                    continue
             if limits.max_cases is not None and envelope.capture_id in kept_from and not force:
                 skipped_existing += 1
                 continue
@@ -1658,8 +1712,6 @@ def capture_sync(
                 # A replaceable stale case refreshed under --force still leaves its content
                 # to a fresh twin, whichever capture id sorts first.
                 seen_examples.setdefault(content_key, envelope.capture_id)
-            for warning in built.warnings:
-                console.print(f"[yellow]⚠[/yellow] {envelope.capture_id}: {warning}")
             captured_at, source_model = capture_provenance(envelope)
             case = PromotedCase(
                 name=envelope.capture_id,
@@ -1684,8 +1736,12 @@ def capture_sync(
                 if target in kept_paths or (target.exists() and not force):
                     skipped_existing += 1
                     continue
+                # Its warnings print once it is written: a capture the plan leaves out is quiet.
                 pending.append(case)
+                pending_warnings[case.name] = built.warnings
                 continue
+            for warning in built.warnings:
+                console.print(f"[yellow]⚠[/yellow] {envelope.capture_id}: {warning}")
             try:
                 write_promoted_case(case, base=base, force=force)
                 promoted += 1
@@ -1696,6 +1752,16 @@ def capture_sync(
         if repaired_here:
             repaired += len(repaired_here)
             _warn_repaired_duplicates(suite_name, repaired_here, base=base, console=console)
+        if ineligible["history"]:
+            console.print(
+                f"[yellow]⚠[/yellow] {escape(suite_name)}: {ineligible['history']} turn(s) not "
+                "promoted: earlier turns of their conversation are not on disk (outside "
+                "captures.max_age or the fetch budget, promoted on another machine or removed by "
+                "capture clean, sampled out by EVALSHIFT_SAMPLE_RATE, or a turn_index that does "
+                "not start at 0). Pass the full messages list to capture.model_call so each turn "
+                "carries its own history.",
+                soft_wrap=True,
+            )
         suite_line: str | None = None
         if limits.max_cases is not None:
             # Planned by file stem, which is unique in the directory, so a retirement deletes
@@ -1723,6 +1789,8 @@ def capture_sync(
                 except FileExistsError:
                     skipped_existing += 1
                     continue
+                for warning in pending_warnings[case.name]:
+                    console.print(f"[yellow]⚠[/yellow] {case.name}: {warning}")
                 written.append(case)
                 promoted += 1
                 if case.example.generation_config:

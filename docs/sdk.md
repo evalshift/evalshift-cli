@@ -141,7 +141,7 @@ route-balanced sample of recent captures on `defaults.source_model`, and replace
 fresh captures arrive (see [Bounded suites](configuration.md#bounded-suites)).
 
 ```bash
-evalshift capture list                  # what was recorded (--json for machine output)
+evalshift capture list                  # what was recorded, fetched within the limits (--json)
 evalshift capture fetch                 # mirror new captures from captures.store
 evalshift capture sync                  # promote captures → suites + wire evalshift.yaml
 evalshift capture promote cap_ab12 --as refund_case_1

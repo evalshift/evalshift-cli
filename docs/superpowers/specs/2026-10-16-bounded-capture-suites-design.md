@@ -8,6 +8,12 @@
 > (§3, §6, §7, §8) were written before implementation and are not the CLI's exact text. The
 > source and the user docs (`docs/configuration.md#bounded-suites`, `DOCS.md`, `llms-full.txt`)
 > are authoritative.
+>
+> **Amended 2026-10-19, after the first real-bucket sync** (52 captures, `max_cases: 10`): a lone
+> capture took 1 slot and a 10-turn conversation no longer fit the 9 left, so the suite held 1
+> case. §4 gains the download cap it listed as a follow-up, `capture list` now fetches what sync
+> does, and §5 fills slots no whole group fits with a group's leading turns. Under the limits, a
+> turn whose rebuilt history would miss earlier turns is not eligible (§3).
 
 ## Problem
 
@@ -121,7 +127,9 @@ A wrong or unrecognised `source_model` can therefore never empty or freeze a sui
 holds mid-rollout: until at least one new-model capture exists, nothing is filtered.
 
 **Eligible candidate** = a local capture that is not promoted, survives today's filters (events,
-blocked, errored, dedup — §6), and is neither too old nor on another model.
+blocked, errored, dedup — §6), and is neither too old nor on another model. *(Amended:)* nor
+missing earlier turns — a conversation turn without its own messages list needs every lower
+`turn_index` of its conversation on disk, or its rebuilt history would be wrong.
 
 ### 4. Fetch is bounded by time, not count
 
@@ -135,6 +143,14 @@ unknown until download — and a turn without its own messages list rebuilds its
 sibling captures on disk (`promote.py:1369-1399`), so a key-level sample would silently truncate
 histories. Volume inside the window is governed by `EVALSHIFT_SAMPLE_RATE` in the agent. A hard
 download cap is a follow-up.
+
+*(Amended: the cap.)* With `max_cases` set, the fetch takes each suite's newest
+`3 × max_cases` captures inside the cutoff, by `last_modified` (unknown = oldest, ties by key).
+Captures already local or promoted count toward it, so a re-run with nothing new downloads
+nothing. Forced (`--repair`) ids bypass it; `--since` replaces the cutoff, not the cap. Newest-first
+keeps a conversation's turns together except at the cap's edge, where the turns cut off make the
+later ones "missing earlier turns" (§3). `capture list`'s fetch applies the same cutoff and cap;
+`capture fetch` neither.
 
 ### 5. The per-suite plan (only when `max_cases` is set)
 
@@ -155,7 +171,10 @@ route, content keys. `SuitePlan`: groups to add, `(case name, reason)` to retire
 
 - **Unit = conversation group.** All candidate turns sharing a `conversation_id` within the suite;
   a capture without one is its own group. A group is added whole or not at all; one larger than
-  the remaining slots is skipped and the next tried.
+  the remaining slots is skipped and the next tried. *(Amended:)* once no whole group fits and
+  slots remain, the least-represented route left gives its next group's leading turns to fill
+  them; the rest of that conversation can enter later while its earlier turns' captures are
+  local.
 - **Route** of a case or group = the sorted set of tool names in its round-1 `expected_tools`
   across its turns, `∅` when none.
 - **Order is deterministic, no RNG:** within a route, groups are taken in `sha256(group key)` order.

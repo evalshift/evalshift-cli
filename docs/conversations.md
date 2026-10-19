@@ -92,8 +92,16 @@ one turn in the conversation recorded a full messages list. Prefer the
 messages-list convention above when you can.
 
 With `captures.max_cases` set, a conversation's new turns enter a suite
-together or not at all: one larger than the suite's free slots is skipped,
-never split (see [Bounded suites](configuration.md#bounded-suites)).
+together when they fit; one larger than the suite's free slots is skipped
+for the next one. Once no whole conversation fits, the slots left take the
+leading turns of the next conversation; its remaining turns can enter on a
+later sync. Under the limits, a turn that recorded no messages list of its
+own is promoted only when every earlier turn of its conversation is local
+(its history is rebuilt from them), so after `capture clean` or on a fresh
+checkout, where promoted turns are not local, only turns carrying their own
+messages list can still enter. `turn_index` is 0-based: numbering from 1
+makes every rebuilt turn miss its "turn 0" (see
+[Bounded suites](configuration.md#bounded-suites)).
 
 ```bash
 evalshift capture sync                              # promote captures,
