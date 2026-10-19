@@ -23,6 +23,7 @@ def capture_payload(
     created_at: str = "2026-06-16T12:00:00+00:00",
     conversation_id: str | None = None,
     turn_index: int | None = None,
+    model_id: str = "m",
 ) -> bytes:
     """A minimal capture the CLI reader accepts: one model call, one final output."""
     envelope = {
@@ -45,7 +46,7 @@ def capture_payload(
                     "sequence_index": 0,
                     "timestamp": created_at,
                     "metadata": {},
-                    "model_id": "m",
+                    "model_id": model_id,
                     "input": model_input,
                     "output": "out",
                     "toolset_ref": TOOLSET_REF,

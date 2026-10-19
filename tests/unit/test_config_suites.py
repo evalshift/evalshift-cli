@@ -14,7 +14,12 @@ from pydantic import ValidationError
 
 from evalshift_cli.captures.promote import PromoteOptions, build_example_from_capture
 from evalshift_cli.captures.reader import iter_captures, toolset_path
-from evalshift_cli.cli.commands._suites import resolve_suite_path
+from evalshift_cli.cli.commands._suites import (
+    SUITES_MARKER_BEGIN,
+    SUITES_MARKER_END,
+    resolve_suite_path,
+)
+from evalshift_cli.cli.commands.init import CAPTURES_SCAFFOLD, render_minimal_config
 from evalshift_cli.config.loader import load_config
 from evalshift_cli.config.models import (
     EvalShiftConfig,
@@ -234,6 +239,28 @@ class TestCheckedInCaptureFirstExample:
             config_path=_CAPTURE_FIRST / "evalshift.yaml",
         )
         assert resolved.is_file(), f"{resolved} is not committed"
+
+    def test_config_is_a_fresh_init_without_its_captures_block(self) -> None:
+        """Outside the managed region, the config is what the README's ``init`` writes.
+
+        ``init --provider gemini --no-wire-agents`` (profile ``model-upgrade``), minus the
+        ``captures:`` block the README has the reader delete: the demo captures are older
+        than ``max_age`` and recorded on a placeholder model, so a bounded sync would
+        promote none of them.
+        """
+
+        def outside_region(text: str) -> str:
+            head, _, rest = text.partition(SUITES_MARKER_BEGIN)
+            _, _, tail = rest.partition(SUITES_MARKER_END)
+            return head + tail
+
+        committed = (_CAPTURE_FIRST / "evalshift.yaml").read_text(encoding="utf-8")
+        assert SUITES_MARKER_BEGIN in committed
+        assert SUITES_MARKER_END in committed
+        fresh = render_minimal_config(profile="model-upgrade", provider="gemini", env={})
+        expected = fresh.replace(CAPTURES_SCAFFOLD + "\n", "")
+        assert expected != fresh
+        assert outside_region(committed) == outside_region(expected)
 
     def test_derived_evaluators_are_wired_for_the_suite(self) -> None:
         """The captures call tools, so sync must have derived both tool families."""

@@ -423,6 +423,39 @@ class AmbiguousSuiteError(ValueError):
         )
 
 
+def selected_suite_name(
+    *,
+    suite_path: Path | None,
+    suite_name: str | None,
+    cfg: EvalShiftConfig,
+) -> str | None:
+    """The ``suites:`` key :func:`resolve_suite_path` resolves to, or ``None``.
+
+    An explicit ``--suite`` path names no suite. ``--suite-name`` is returned as given (not
+    checked; :func:`resolve_suite_path` raises for an unknown one). With neither flag, the
+    single wired suite is auto-selected -- the bare ``evalshift compare`` that follows
+    ``capture sync``. Several wired suites, or none, select nothing.
+
+    Args:
+        suite_path: Explicit ``--suite`` path, or ``None``.
+        suite_name: ``--suite-name`` key into ``cfg.suites``, or ``None``.
+        cfg: The loaded configuration (provides the ``suites`` mapping).
+
+    Returns:
+        The selected suite's name, or ``None`` when the run is not on a named suite.
+    """
+    if suite_path is not None:
+        return None
+    if suite_name is not None:
+        return suite_name
+    # Neither --suite nor --suite-name: prefer the wired suites over the
+    # bare-file default so the capture-first flow needs no extra flag.
+    if len(cfg.suites) == 1:
+        (only,) = cfg.suites
+        return only
+    return None
+
+
 def resolve_suite_path(
     *,
     suite_path: Path | None,
@@ -456,19 +489,15 @@ def resolve_suite_path(
     config_dir = config_path.resolve().parent
     if suite_path is not None:
         return suite_path
-    if suite_name is not None:
-        entry = cfg.suites.get(suite_name)
+    name = selected_suite_name(suite_path=None, suite_name=suite_name, cfg=cfg)
+    if name is not None:
+        entry = cfg.suites.get(name)
         if entry is None:
             raise UnknownSuiteNameError(
-                name=suite_name,
+                name=name,
                 known=sorted(cfg.suites),
                 invocation=format_invocation(),
             )
-        return config_dir / entry.path
-    # Neither --suite nor --suite-name: prefer the wired suites over the
-    # bare-file default so the capture-first flow needs no extra flag.
-    if len(cfg.suites) == 1:
-        (entry,) = cfg.suites.values()
         return config_dir / entry.path
     if len(cfg.suites) > 1:
         raise AmbiguousSuiteError(
@@ -532,5 +561,6 @@ __all__ = [
     "render_suites_yaml",
     "resolve_suite_override",
     "resolve_suite_path",
+    "selected_suite_name",
     "suite_entry_payload",
 ]

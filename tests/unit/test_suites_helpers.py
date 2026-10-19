@@ -21,6 +21,7 @@ from evalshift_cli.cli.commands._suites import (
     render_suites_region,
     render_suites_yaml,
     resolve_suite_path,
+    selected_suite_name,
     suite_entry_payload,
 )
 from evalshift_cli.config.models import EvalShiftConfig
@@ -82,6 +83,31 @@ class TestResolveSuitePath:
         cfg = _config()
         got = self._resolve(cfg)
         assert got == Path(SUITE_FILENAME)
+
+
+class TestSelectedSuiteName:
+    """The ``suites:`` key :func:`resolve_suite_path` resolves to, if any."""
+
+    def _name(self, cfg: EvalShiftConfig, **kw: Any) -> str | None:
+        return selected_suite_name(
+            suite_path=kw.get("suite_path"), suite_name=kw.get("suite_name"), cfg=cfg
+        )
+
+    def test_explicit_suite_path_names_no_suite(self) -> None:
+        cfg = _config(suites={"only": {"path": "a.jsonl"}})
+        assert self._name(cfg, suite_path=Path("a.jsonl"), suite_name="only") is None
+
+    def test_suite_name_is_returned_as_given(self) -> None:
+        cfg = _config(suites={"a": {"path": "a.jsonl"}, "b": {"path": "b.jsonl"}})
+        assert self._name(cfg, suite_name="b") == "b"
+
+    def test_single_wired_suite_is_auto_selected(self) -> None:
+        cfg = _config(suites={"only": {"path": "a.jsonl"}})
+        assert self._name(cfg) == "only"
+
+    def test_several_or_no_wired_suites_select_nothing(self) -> None:
+        assert self._name(_config()) is None
+        assert self._name(_config(suites={"a": {"path": "a"}, "b": {"path": "b"}})) is None
 
 
 class TestDeriveSuiteSlug:

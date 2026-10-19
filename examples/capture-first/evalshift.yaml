@@ -75,6 +75,7 @@ migration_policy:
   min_equivalence_rate: 0.75
   max_tool_argument_drift: 0.20
   max_tool_divergence: 0.20
+  max_invariant_violations: 0
   max_cost_increase: 0.30
   max_latency_increase: 0.30
 

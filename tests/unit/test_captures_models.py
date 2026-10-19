@@ -112,3 +112,11 @@ class TestPromotedCase:
     def test_promotion_source_rejects_an_unknown_yardstick(self) -> None:
         with pytest.raises(ValidationError, match="promotion_source"):
             PromotedCase.model_validate(self._case_payload(promotion_source="guessed"))
+
+
+def test_a_case_written_before_capture_provenance_still_parses() -> None:
+    case = PromotedCase.model_validate(
+        {"name": "c", "suite": "s", "from_capture": "cap_1", "example": {"id": "c", "tools": []}}
+    )
+    assert case.captured_at == ""
+    assert case.source_model == ""

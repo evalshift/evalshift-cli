@@ -75,8 +75,9 @@ passthrough `replay` prompt, an advisory LLM-judge evaluator and an
 advisory semantic evaluator (Anthropic and DeepSeek have no embeddings
 endpoint, so their scaffolds borrow OpenAI's or Gemini's, whichever key you
 already have; without it, `compare` skips `semantic` and names the key to
-export), an empty managed `suites:` block for `capture sync` to fill, and the migration
-policy. `init` refuses to clobber an existing `evalshift.yaml`; pass
+export), the migration policy, `captures:` limits (`max_age: 14d` and
+`max_cases: 200`, with `store:` commented out), and an empty managed
+`suites:` block for `capture sync` to fill. `init` refuses to clobber an existing `evalshift.yaml`; pass
 `--force` to overwrite, or `--directory my-eval/` to scaffold into a
 different folder.
 
@@ -145,9 +146,12 @@ instrument the agent, write `golden.jsonl` by hand instead — see
 evalshift capture sync
 ```
 
-`capture sync` promotes every recorded capture into
-`.evalshift/suites/<suite>/golden.jsonl` and injects the matching
-`suites:` block into `evalshift.yaml`. See
+`capture sync` promotes a capped sample of recent captures — at most
+`captures.max_cases` per suite, recorded within `captures.max_age` on
+`defaults.source_model` — into `.evalshift/suites/<suite>/golden.jsonl`
+and injects the matching `suites:` block into `evalshift.yaml`. Later syncs
+replace stale cases as fresh captures arrive; see
+[Bounded suites](configuration.md#bounded-suites). See
 [Configuration](configuration.md) for the full capture lifecycle. If a
 workflow under `.github/workflows/` pins an older or newer CLI than the one
 you just synced with, or none at all, it ends with an advisory warning and the
