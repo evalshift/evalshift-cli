@@ -98,6 +98,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   older CLI cannot be `--resume`d across the upgrade (config-hash mismatch);
   start a fresh one.
 
+### Fixed
+
+- The PyPI project page's links work. 35 of the README's 51 links were
+  relative, so on pypi.org they resolved under `pypi.org/project/evalshift/`
+  and 404ed; they now point at the files on GitHub. The project's Homepage
+  and Documentation links now go to <https://www.evalshift.dev> and
+  <https://www.evalshift.dev/docs/cli> instead of the GitHub repo.
+
 ## [1.5.0] - 2026-10-15
 
 ### Added

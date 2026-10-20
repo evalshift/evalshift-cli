@@ -3,7 +3,7 @@
 Open-source LLM migration and regression testing for AI agents.
 
 [![CI](https://github.com/evalshift/evalshift-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/evalshift/evalshift-cli/actions/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/evalshift/evalshift-cli/blob/main/LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![PyPI](https://img.shields.io/pypi/v/evalshift.svg)](https://pypi.org/project/evalshift/)
 
@@ -42,10 +42,10 @@ Four pieces, released and documented independently:
 
 | Piece | What it does for you | Reference |
 | --- | --- | --- |
-| **SDK** — PyPI `evalshift-sdk` | Records what your agent actually did in production — model calls, tool calls, final output — as capture files on disk. Those captures become your golden suite. | [docs/sdk.md](docs/sdk.md) |
-| **CLI** — this repo, PyPI `evalshift` | Replays the suite on two models, scores, analyses, reports, bundles, pushes. | [DOCS.md](DOCS.md) |
-| **GitHub Action** — `evalshift/evalshift-action@v0` | Runs the pipeline on pull requests, pushes the run, posts one PR comment, sets the `evalshift/regression` status. | [docs/github-action.md](docs/github-action.md) |
-| **Hosted server** — `api.evalshift.dev`, web app at `evalshift.dev` | Optional. Stores pushed run bundles, diffs them across branches, drives PR comments and gating. | [docs/hosted.md](docs/hosted.md) |
+| **SDK** — PyPI `evalshift-sdk` | Records what your agent actually did in production — model calls, tool calls, final output — as capture files on disk. Those captures become your golden suite. | [docs/sdk.md](https://github.com/evalshift/evalshift-cli/blob/main/docs/sdk.md) |
+| **CLI** — this repo, PyPI `evalshift` | Replays the suite on two models, scores, analyses, reports, bundles, pushes. | [DOCS.md](https://github.com/evalshift/evalshift-cli/blob/main/DOCS.md) |
+| **GitHub Action** — `evalshift/evalshift-action@v0` | Runs the pipeline on pull requests, pushes the run, posts one PR comment, sets the `evalshift/regression` status. | [docs/github-action.md](https://github.com/evalshift/evalshift-cli/blob/main/docs/github-action.md) |
+| **Hosted server** — `api.evalshift.dev`, web app at `evalshift.dev` | Optional. Stores pushed run bundles, diffs them across branches, drives PR comments and gating. | [docs/hosted.md](https://github.com/evalshift/evalshift-cli/blob/main/docs/hosted.md) |
 
 The SDK and the CLI never call each other — the interface is the capture layout
 under `.evalshift/captures/`, on disk or mirrored from a bucket you own
@@ -60,7 +60,7 @@ Point your coding agent at the dense, single-file reference for the piece it is
 working on:
 
 - EvalShift CLI: <https://www.evalshift.dev/cli-llms-full.txt>
-  (source of truth: [llms-full.txt](llms-full.txt) in this repo)
+  (source of truth: [llms-full.txt](https://github.com/evalshift/evalshift-cli/blob/main/llms-full.txt) in this repo)
 - EvalShift SDK: <https://www.evalshift.dev/sdk-llms-full.txt>
 - EvalShift GitHub Action (CI): <https://www.evalshift.dev/ci-llms-full.txt>
 
@@ -75,7 +75,7 @@ The `evalshift.yaml` schema is versioned: `version: 1` changes only when a
 field is renamed or given new semantics. A removed field does not bump it: a
 config that still sets one fails to load with an error naming the key, so no
 config is ever silently misread across releases. See
-[Config version policy](docs/configuration.md#config-version-policy).
+[Config version policy](https://github.com/evalshift/evalshift-cli/blob/main/docs/configuration.md#config-version-policy).
 
 ## Install
 
@@ -152,13 +152,13 @@ evalshift capture sync                     # captures → golden suites + wired 
 evalshift compare --suite-name support_agent --to <candidate-model>
 ```
 
-See [docs/sdk.md](docs/sdk.md) for the full capture contract, and
-[`examples/capture-first/`](examples/capture-first/) for those three commands
+See [docs/sdk.md](https://github.com/evalshift/evalshift-cli/blob/main/docs/sdk.md) for the full capture contract, and
+[`examples/capture-first/`](https://github.com/evalshift/evalshift-cli/tree/main/examples/capture-first/) for those three commands
 checked in end to end — the instrumented agent, the captures it wrote, the
 promoted suite, and the `suites:` block `capture sync` filled in (its demo
 captures are old, so its config drops the `captures:` limits `init` writes). Can't
 instrument the agent? A hand-written `golden.jsonl` works just as well — see
-[Getting started](docs/getting-started.md).
+[Getting started](https://github.com/evalshift/evalshift-cli/blob/main/docs/getting-started.md).
 
 ### Driving the pipeline
 
@@ -220,7 +220,7 @@ Credential precedence is explicit CLI flags, then `EVALSHIFT_HOST` /
 Nothing, until you run `push` (or `compare --push`) — and the CLI itself has no
 telemetry, analytics, or crash reporting. A push uploads one file,
 `run_bundle.json.gz`, whose full field-by-field contract is documented in
-[docs/hosted.md — Privacy model](docs/hosted.md#privacy-model--exactly-what-uploads).
+[docs/hosted.md — Privacy model](https://github.com/evalshift/evalshift-cli/blob/main/docs/hosted.md#privacy-model--exactly-what-uploads).
 The short version:
 
 * **Uploads**: the run manifest (model ids, suite name, git SHA/branch/PR
@@ -258,7 +258,7 @@ evalshift init --ci
 Then add repository secrets for `EVALSHIFT_TOKEN` and the provider keys your
 models use; until they exist the workflow no-ops green with a notice.
 
-See [`docs/github-action.md`](docs/github-action.md) for the workflow's
+See [`docs/github-action.md`](https://github.com/evalshift/evalshift-cli/blob/main/docs/github-action.md) for the workflow's
 shape, `fail-on` modes, and baseline behavior.
 
 ## Agent migrations
@@ -281,8 +281,8 @@ Each golden-suite example carries its own toolset — recorded automatically
 by `capture promote` / `capture sync` from your production captures, or
 inlined by hand for a hand-authored suite.
 
-See [`docs/agents.md`](docs/agents.md) for the full walkthrough and
-the [`examples/agent/`](examples/agent/) directory for a runnable
+See [`docs/agents.md`](https://github.com/evalshift/evalshift-cli/blob/main/docs/agents.md) for the full walkthrough and
+the [`examples/agent/`](https://github.com/evalshift/evalshift-cli/tree/main/examples/agent/) directory for a runnable
 customer-support example.
 
 ## What the report looks like
@@ -290,7 +290,7 @@ customer-support example.
 Every run writes a single-file HTML report to
 `.evalshift/runs/<run-id>/report.html` — see [Use it on your
 agent](#use-it-on-your-agent) above, or the runnable walkthrough in
-[`examples/agent/`](examples/agent/). The report (single file, no external
+[`examples/agent/`](https://github.com/evalshift/evalshift-cli/tree/main/examples/agent/). The report (single file, no external
 assets, works offline) has:
 
 * **Migration verdict** — the policy decision up top: which budgets failed, the
@@ -330,24 +330,24 @@ wires these links into your project automatically: it writes
 `GEMINI.md`, `.cursorrules`, `.github/copilot-instructions.md`) at it, creating
 `AGENTS.md` if none of those files exist. Disable with `--no-wire-agents`. In
 *this* repo the same three links live in
-[AGENTS.md](AGENTS.md).
+[AGENTS.md](https://github.com/evalshift/evalshift-cli/blob/main/AGENTS.md).
 
 ## Documentation
 
-* [DOCS.md](DOCS.md) — consolidated single-file reference for everything below
-* [Getting started](docs/getting-started.md) — install + first run walkthrough
-* [Configuration reference](docs/configuration.md) — every `evalshift.yaml` field
-* [Evaluators](docs/evaluators.md) — when to use which family
-* [Agent migrations](docs/agents.md) — tool-call evaluation, per-example toolsets
-* [Multi-turn conversations](docs/conversations.md) — teacher-forced replay
-* [Agent traces](docs/traces.md) — bring-your-own agent timelines
-* [Capture SDK](docs/sdk.md) — instrument your agent, promote captures to suites
-* [Methodology](docs/methodology.md) — the statistical machinery
-* [Hosted EvalShift](docs/hosted.md) — login, bundle, push, and the privacy
+* [DOCS.md](https://github.com/evalshift/evalshift-cli/blob/main/DOCS.md) — consolidated single-file reference for everything below
+* [Getting started](https://github.com/evalshift/evalshift-cli/blob/main/docs/getting-started.md) — install + first run walkthrough
+* [Configuration reference](https://github.com/evalshift/evalshift-cli/blob/main/docs/configuration.md) — every `evalshift.yaml` field
+* [Evaluators](https://github.com/evalshift/evalshift-cli/blob/main/docs/evaluators.md) — when to use which family
+* [Agent migrations](https://github.com/evalshift/evalshift-cli/blob/main/docs/agents.md) — tool-call evaluation, per-example toolsets
+* [Multi-turn conversations](https://github.com/evalshift/evalshift-cli/blob/main/docs/conversations.md) — teacher-forced replay
+* [Agent traces](https://github.com/evalshift/evalshift-cli/blob/main/docs/traces.md) — bring-your-own agent timelines
+* [Capture SDK](https://github.com/evalshift/evalshift-cli/blob/main/docs/sdk.md) — instrument your agent, promote captures to suites
+* [Methodology](https://github.com/evalshift/evalshift-cli/blob/main/docs/methodology.md) — the statistical machinery
+* [Hosted EvalShift](https://github.com/evalshift/evalshift-cli/blob/main/docs/hosted.md) — login, bundle, push, and the privacy
   model: exactly what data uploads and what never leaves your machine
-* [GitHub Action](docs/github-action.md) — PR comments + hosted regression gate
-* [FAQ](docs/faq.md) — common questions
-* [llms-full.txt](llms-full.txt) — dense single-file reference for AI coding
+* [GitHub Action](https://github.com/evalshift/evalshift-cli/blob/main/docs/github-action.md) — PR comments + hosted regression gate
+* [FAQ](https://github.com/evalshift/evalshift-cli/blob/main/docs/faq.md) — common questions
+* [llms-full.txt](https://github.com/evalshift/evalshift-cli/blob/main/llms-full.txt) — dense single-file reference for AI coding
   tools, hosted at <https://www.evalshift.dev/cli-llms-full.txt>
 
 Further reading on the EvalShift blog:
@@ -357,14 +357,14 @@ Further reading on the EvalShift blog:
 * [How many eval cases do you need?](https://www.evalshift.dev/blog/how-many-eval-cases-do-you-need)
 * [When to trust an LLM judge](https://www.evalshift.dev/blog/when-to-trust-an-llm-judge)
 
-Runnable projects under [`examples/`](examples/):
+Runnable projects under [`examples/`](https://github.com/evalshift/evalshift-cli/tree/main/examples/):
 
 | Example | Shows |
 | --- | --- |
-| [`capture-first/`](examples/capture-first/) | The recommended flow: an SDK-instrumented agent, its captures, and the golden suite + managed `suites:` block `evalshift capture sync` produced from them. |
-| [`simple/`](examples/simple/) | The smallest hand-authored project — one `python_string` prompt, one length evaluator. |
-| [`agent/`](examples/agent/) | A hand-authored agent suite: six tools, per-example `toolset_ref`, `tool_selection` scoring, slices. |
-| [`agent-traces/`](examples/agent-traces/) | Bring-your-own agent timelines scored with the `agent_trace` evaluator, for agents the SDK cannot instrument. |
+| [`capture-first/`](https://github.com/evalshift/evalshift-cli/tree/main/examples/capture-first/) | The recommended flow: an SDK-instrumented agent, its captures, and the golden suite + managed `suites:` block `evalshift capture sync` produced from them. |
+| [`simple/`](https://github.com/evalshift/evalshift-cli/tree/main/examples/simple/) | The smallest hand-authored project — one `python_string` prompt, one length evaluator. |
+| [`agent/`](https://github.com/evalshift/evalshift-cli/tree/main/examples/agent/) | A hand-authored agent suite: six tools, per-example `toolset_ref`, `tool_selection` scoring, slices. |
+| [`agent-traces/`](https://github.com/evalshift/evalshift-cli/tree/main/examples/agent-traces/) | Bring-your-own agent timelines scored with the `agent_trace` evaluator, for agents the SDK cannot instrument. |
 
 ## Non-goals
 
@@ -376,7 +376,7 @@ Runnable projects under [`examples/`](examples/):
 
 ## License
 
-[Apache-2.0](LICENSE). Free for any use, commercial included — no share-back
+[Apache-2.0](https://github.com/evalshift/evalshift-cli/blob/main/LICENSE). Free for any use, commercial included — no share-back
 requirement, and an explicit patent grant. The capture SDK
 ([`evalshift-sdk`](https://github.com/evalshift/evalshift-sdk)), the piece
 you import into your own application, is MIT.

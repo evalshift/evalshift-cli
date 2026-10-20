@@ -80,8 +80,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/evalshift/evalshift-cli"
-Documentation = "https://github.com/evalshift/evalshift-cli#readme"
+Homepage = "https://www.evalshift.dev"
+Documentation = "https://www.evalshift.dev/docs/cli"
 Repository = "https://github.com/evalshift/evalshift-cli"
 Issues = "https://github.com/evalshift/evalshift-cli/issues"
 Changelog = "https://github.com/evalshift/evalshift-cli/blob/main/CHANGELOG.md"
