@@ -77,10 +77,19 @@ def capture_suite_dirname(suite: str) -> str:
 
 
 def _capture_files(suite_dir: Path) -> list[Path]:
-    """A suite directory's capture files: its flat ones, then each conversation folder's."""
+    """A suite directory's capture files: its flat ones, then each conversation folder's.
+
+    A directory that cannot be listed gives just what ``glob`` found (nothing, when it is
+    unreadable), so one bad suite never aborts a command for the others -- as before
+    conversation folders.
+    """
     files = sorted(suite_dir.glob("*.json"))
-    for child in sorted(suite_dir.iterdir()):
-        if child.is_dir() and is_conversation_dir(child.name):
+    try:
+        children = sorted(suite_dir.iterdir())
+    except OSError:
+        return files
+    for child in children:
+        if is_conversation_dir(child.name) and child.is_dir():
             files.extend(sorted(child.glob("*.json")))
     return files
 

@@ -521,7 +521,7 @@ def test_fetch_mirrors_a_conversation_folder(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "folder",
-    ["nested", "conv_D0F631CA1DDBA8DB", "conv_d0f631ca", f"{CONV}/deeper"],
+    ["nested", "conv_D0F631CA1DDBA8DB", "conv_d0f631ca", f"{CONV}0", f"{CONV}/deeper"],
 )
 def test_fetch_counts_folders_the_sdk_never_writes_as_malformed(
     tmp_path: Path, folder: str

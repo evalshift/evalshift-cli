@@ -1059,6 +1059,33 @@ def test_iter_captures_ignores_folders_the_sdk_never_writes(tmp_path: Path, fold
     assert iter_captures(base=tmp_path) == []
 
 
+def test_iter_captures_ignores_a_conversation_folder_two_levels_deep(tmp_path: Path) -> None:
+    _write_nested(
+        tmp_path, _capture_dict(capture_id="cap_x", suite="alpha"), folder=f"{CONV}/{CONV}"
+    )
+    assert iter_captures(base=tmp_path) == []
+
+
+def test_iter_captures_skips_a_suite_directory_it_cannot_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As 1.5.x did: an unreadable suite directory is passed over, not fatal for every suite.
+    _write_capture(tmp_path, _capture_dict(capture_id="cap_a", suite="alpha"))
+    _write_capture(tmp_path, _capture_dict(capture_id="cap_b", suite="beta"))
+    unreadable = tmp_path / "captures" / "alpha"
+    real_iterdir = Path.iterdir
+
+    def iterdir(self: Path) -> Any:
+        if self == unreadable:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+
+    assert [r.envelope.capture_id for r in iter_captures(base=tmp_path)] == ["cap_a", "cap_b"]
+    assert [r.envelope.capture_id for r in iter_captures(suite="beta", base=tmp_path)] == ["cap_b"]
+
+
 def test_find_capture_finds_a_turn_in_a_conversation_folder(tmp_path: Path) -> None:
     path = _write_nested(tmp_path, _capture_dict(capture_id="cap_turn", suite="alpha"))
     assert find_capture("cap_turn", base=tmp_path).path == path
