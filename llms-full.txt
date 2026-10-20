@@ -490,8 +490,8 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
     route left gives its next group's LEADING turns (a prefix, never a middle slice) to fill the
     slots; the rest of that conversation can enter on a later sync: the fetch brings a
     conversation folder's promoted turns along and capture clean keeps them while any turn is
-    unpromoted (a fully promoted conversation is cleaned, so a turn added after that without its
-    own messages list is "missing earlier turns").
+    unpromoted (a fully promoted conversation is cleaned; without captures.store, or for flat
+    turns, a turn added after that without its own messages list is "missing earlier turns").
     Eligibility under the limits also needs earlier turns: a conversation turn whose capture
     recorded no messages list of its own (history rebuilt from sibling turns) is NOT eligible
     unless every lower turn_index (0-based) of its conversation is local -- reported as

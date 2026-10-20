@@ -103,8 +103,8 @@ later sync. Under the limits, a turn that recorded no messages list of its
 own is promoted only when every earlier turn of its conversation is local
 (its history is rebuilt from them); the fetch brings a conversation folder's
 promoted turns along and `capture clean` keeps them while any turn is
-unpromoted, so this mostly catches turns written flat, cleaned, or evicted
-by the SDK. `turn_index` is 0-based: numbering from 1
+unpromoted, so this mostly catches turns written flat, cleaned with no
+`captures.store` to fetch them back, or evicted by the SDK. `turn_index` is 0-based: numbering from 1
 makes every rebuilt turn miss its "turn 0" (see
 [Bounded suites](configuration.md#bounded-suites)).
 

@@ -1203,8 +1203,8 @@ empty a suite nor freeze it.
    below, so one long conversation cannot leave a suite nearly empty. Its later turns can enter
    on a later sync: the fetch brings a conversation folder's promoted turns along, and
    `capture clean` keeps them while any turn is unpromoted (a fully promoted conversation is
-   cleaned, so a turn added after that is missing earlier turns unless it carries its own
-   messages list). A capture without a `conversation_id` is its own unit.
+   cleaned; without `captures.store`, or for turns written flat, a turn added after that is
+   missing earlier turns unless it carries its own messages list). A capture without a `conversation_id` is its own unit.
 2. **Fill free slots, route-balanced.** The free slots are `max_cases` minus the reviewed and fresh
    cases already in the suite. A route is the set of tool names a case expects in round 1 (no
    tools is a route too). Each pick goes to the least-represented route that still has a
