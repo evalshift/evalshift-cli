@@ -287,8 +287,8 @@ def fetch_captures(
     Toolsets are fetched first so a capture never lands locally before a sidecar that exists
     remotely. A capture is skipped when its file already exists, when its id is in
     ``skip_ids`` (the promoted ids -- so a capture ``capture clean`` removed is not pulled
-    back, unless its conversation folder has a new turn), when ``since`` is set and the object
-    is older, or when it is over
+    back, unless its conversation folder holds a turn inside ``since`` that is not promoted),
+    when ``since`` is set and the object is older, or when it is over
     :data:`MAX_OBJECT_BYTES`. Ids in ``force_ids`` are fetched even when promoted or older
     than ``since`` -- the captures ``capture sync --repair`` needs to rebuild promoted cases.
     They still respect the already-local, size-cap and malformed-key rules. Keys that do not
@@ -297,8 +297,10 @@ def fetch_captures(
 
     ``per_suite_limit`` caps each suite's download a conversation at a time: whole
     conversations (a flat capture is one of its own) are taken newest first while they fit,
-    then the budget left takes the leading in-window turns of the first one that does not --
-    captures already local or promoted count toward it, and forced ids are fetched beyond it.
+    then the budget left takes the earliest counted captures (promoted ones of any age
+    included) of the first skipped conversation whose leading turns still include one not
+    promoted -- captures already local or promoted count toward it, and forced ids are fetched
+    beyond it.
     With or without it, a new turn brings its conversation's promoted turns along, whatever
     their age, so the turn's history can be rebuilt on a fresh checkout.
 
@@ -435,9 +437,12 @@ def _budgeted_keys(
     inside ``since`` are ranked newest first by their newest one (an unknown ``last_modified``
     counts as oldest), ties by unit name, and taken whole while they fit; one too big for what
     is left is skipped for the next. Once no whole unit fits, the budget left takes the
-    earliest-written counted captures of the first one skipped -- leading turns, never an old
-    unpromoted one. Captures already local or promoted count, so a re-run with nothing new
-    fetches nothing.
+    earliest-written counted captures of the first skipped unit, in rank order, whose that many
+    earliest include one not promoted -- leading turns, never an old unpromoted one. A unit
+    whose leading captures are all promoted is passed over, since they would rebuild no new
+    turn, and if no unit qualifies the budget left goes unused. Captures already local or
+    promoted count, and the choice reads only the listing and ``promoted``, so a re-run with
+    nothing new fetches nothing.
     """
 
     def stamp(item: _ListedCapture) -> float:
@@ -454,16 +459,20 @@ def _budgeted_keys(
     for ranked in by_suite.values():
         ranked.sort(key=lambda pair: (-max(stamp(i) for i in pair[1]), pair[0]))
         left = limit
-        skipped: Sequence[_ListedCapture] | None = None
+        skipped: list[Sequence[_ListedCapture]] = []
         for _, items in ranked:
             if len(items) <= left:
                 taken.update(i.info.key for i in items)
                 left -= len(items)
-            elif skipped is None:
-                skipped = items
-        if left > 0 and skipped is not None:
-            earliest = sorted(skipped, key=lambda i: (stamp(i), i.info.key))
-            taken.update(i.info.key for i in earliest[:left])
+            else:
+                skipped.append(items)
+        if left == 0:
+            continue
+        for items in skipped:
+            leading = sorted(items, key=lambda i: (stamp(i), i.info.key))[:left]
+            if any(i.capture_id not in promoted for i in leading):
+                taken.update(i.info.key for i in leading)
+                break
     return frozenset(taken)
 
 

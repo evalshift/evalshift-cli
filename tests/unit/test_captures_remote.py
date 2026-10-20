@@ -654,6 +654,39 @@ def test_a_conversation_larger_than_the_budget_gives_its_earliest_turns(tmp_path
     assert summary.skipped_budget == 2
 
 
+def test_the_leftover_passes_over_a_conversation_whose_leading_turns_are_promoted(
+    tmp_path: Path,
+) -> None:
+    # Neither conversation fits a budget of 2. a ranks first, but its two leading turns are
+    # promoted, so spending the leftover there fetches nothing new; b's leading turns get it.
+    conv_a, conv_b = "conv_" + "a" * 16, "conv_" + "b" * 16
+    store = populated_store()
+    _turns(store, ("cap_a0", 10), ("cap_a1", 9), ("cap_a2", 1), folder=conv_a)
+    _turns(store, ("cap_b0", 8), ("cap_b1", 7), ("cap_b2", 5), folder=conv_b)
+
+    summary = fetch_captures(store, base=tmp_path, skip_ids={"cap_a0", "cap_a1"}, per_suite_limit=2)
+
+    assert _local_captures(tmp_path) == {
+        f"alpha/{conv_b}/cap_b0.json",
+        f"alpha/{conv_b}/cap_b1.json",
+    }
+    assert summary.skipped_budget == 4
+
+
+def test_the_leftover_goes_unused_when_it_would_fetch_promoted_turns_only(
+    tmp_path: Path,
+) -> None:
+    # After `capture clean`, the promoted turns are gone locally; the new turn's history does
+    # not fit, so the leftover must not re-download the same promoted turns on every sync.
+    store = populated_store()
+    _turns(store, ("cap_t0", 3), ("cap_t1", 2), ("cap_t2", 1))
+
+    summary = fetch_captures(store, base=tmp_path, skip_ids={"cap_t0", "cap_t1"}, per_suite_limit=2)
+
+    assert [key for key in store.gets if key.startswith("captures/")] == []
+    assert summary.skipped_budget == 3
+
+
 def test_a_conversation_budget_fetches_nothing_on_a_rerun(tmp_path: Path) -> None:
     store = populated_store()
     _turns(store, ("cap_t0", 4), ("cap_t1", 3), ("cap_t2", 2))
