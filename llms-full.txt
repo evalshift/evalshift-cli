@@ -33,7 +33,9 @@ Companion package: evalshift-sdk (separate PyPI package, in-process capture SDK)
 production agent runs as JSON captures under .evalshift/captures/<suite>/cap_<hex>.json (from
 evalshift-sdk 0.7.0 a capture.agent_session conversation's turns under
 .evalshift/captures/<suite>/conv_<16 hex>/; EVALSHIFT_CAPTURE_LAYOUT=flat keeps the flat layout,
-and @capture.agent captures stay flat; 0.7.0 needs CLI 1.6.0+); or,
+and @capture.agent captures stay flat; 0.7.0 needs CLI 1.6.0+: with a CLI < 1.6 in the same
+environment the SDK writes flat and warns (EVALSHIFT_CAPTURE_LAYOUT=conversation overrides); one
+in a different environment, e.g. CI pinned to 1.5, can't be detected, so upgrade the CLI first); or,
 with EVALSHIFT_CAPTURE_STORE (EVALSHIFT_SINK on SDK 0.5.0), under the same layout in the
 user's bucket;
 this CLI promotes them into golden suites (`evalshift capture sync`). That file layout is the
