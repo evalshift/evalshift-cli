@@ -481,3 +481,11 @@ def test_equal_last_modified_breaks_ties_by_key(tmp_path: Path) -> None:
 def test_skipped_budget_names_the_limit() -> None:
     summary = FetchSummary(store_uri="s3://b/p", skipped_budget=4, per_suite_limit=600)
     assert "4 beyond each suite's newest 600" in summary.describe()
+
+
+def test_a_suite_filter_lists_the_directory_the_sdk_wrote(tmp_path: Path) -> None:
+    store = populated_store("cap_1", suite="team_support")
+
+    summary = fetch_captures(store, base=tmp_path, suite="team/support")
+
+    assert summary.captures == 1

@@ -38,7 +38,7 @@ from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
 
-from evalshift_cli.captures.reader import captures_root, toolsets_root
+from evalshift_cli.captures.reader import capture_suite_dirname, captures_root, toolsets_root
 from evalshift_cli.captures.store_uri import StoreURI, package_for_module
 from evalshift_cli.utils.duration import parse_duration
 
@@ -310,7 +310,7 @@ def fetch_captures(
         toolset_jobs.append((info.key, dest))
 
     capture_jobs: list[tuple[str, Path]] = []
-    prefix = f"captures/{suite}/" if suite else "captures/"
+    prefix = f"captures/{capture_suite_dirname(suite)}/" if suite else "captures/"
     listed: list[tuple[ObjectInfo, str, Path]] = []
     for info in _list(store, prefix):
         if info.key.endswith("/"):
