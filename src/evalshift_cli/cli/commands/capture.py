@@ -18,7 +18,8 @@ import json
 import os
 import re
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -54,6 +55,7 @@ from evalshift_cli.captures.reader import (
     capture_toolset_refs,
     envelope_toolset_ref,
     find_capture,
+    is_conversation_dir,
     iter_captures,
     load_toolset,
     promoted_capture_ids,
@@ -1061,6 +1063,42 @@ def capture_promote(
     )
 
 
+def _cleanable(
+    records: Sequence[CaptureRecord], promoted: Collection[str]
+) -> tuple[list[CaptureRecord], int]:
+    """The promoted captures ``capture clean`` deletes, and how many promoted ones it keeps.
+
+    A conversation is cleaned whole, whichever folder its turns sit in: while any of its local
+    turns is unpromoted, its promoted turns stay, because a later turn without its own messages
+    list rebuilds its history from them. A capture outside any conversation goes on its own.
+    """
+    units: dict[tuple[str, ...], list[CaptureRecord]] = {}
+    for record in records:
+        envelope = record.envelope
+        key = (
+            ("conversation", envelope.suite, envelope.conversation_id)
+            if envelope.conversation_id is not None
+            else ("capture", str(record.path))
+        )
+        units.setdefault(key, []).append(record)
+    doomed: list[CaptureRecord] = []
+    kept = 0
+    for unit in units.values():
+        done = [r for r in unit if r.envelope.capture_id in promoted]
+        if len(done) == len(unit):
+            doomed.extend(unit)
+        else:
+            kept += len(done)
+    return sorted(doomed, key=lambda r: r.path), kept
+
+
+def _remove_empty_conversation_dirs(paths: Iterable[Path]) -> None:
+    """Remove the conversation folders ``paths`` emptied; a folder still holding files stays."""
+    for folder in sorted({p.parent for p in paths if is_conversation_dir(p.parent.name)}):
+        with suppress(OSError):
+            folder.rmdir()
+
+
 @capture_app.command(name="clean")
 def capture_clean(
     suite: Annotated[
@@ -1083,7 +1121,8 @@ def capture_clean(
 ) -> None:
     """Delete capture files, then sweep orphaned toolset sidecars.
 
-    Never touches promoted suites. Capture deletion is scoped by ``suite``/
+    Never touches promoted suites. A conversation's promoted turns stay while any of its turns
+    is unpromoted; folders it empties are removed. Capture deletion is scoped by ``suite``/
     ``--promoted``/``--all`` as usual; the sweep that follows is not -- a
     toolset sidecar is shared across every suite that used it, so refcounting
     it is global regardless of what this invocation's capture-deletion scope
@@ -1105,14 +1144,20 @@ def capture_clean(
     console = Console()
     records = iter_captures(suite=suite, base=base, on_error=_warn_unreadable(console))
 
+    held = 0
     if not all_captures:
         promoted = _promoted_capture_ids_or_warn(base=base, console=console)
-        records = [r for r in records if r.envelope.capture_id in promoted]
+        records, held = _cleanable(records, promoted)
+        if held:
+            console.print(
+                f"[dim]kept {held} promoted capture(s): their conversation still has unpromoted "
+                "turns, whose history is rebuilt from them.[/dim]"
+            )
 
-    if not records:
+    if not records and not held:
         scope = "captures" if all_captures else "promoted captures"
         console.print(f"[dim]nothing to clean — no {scope} found.[/dim]")
-    else:
+    elif records:
         if not yes:
             scope = "all captures" if all_captures else "promoted captures"
             typer.confirm(
@@ -1122,12 +1167,16 @@ def capture_clean(
             )
 
         removed = 0
+        gone: list[Path] = []
         for r in records:
             try:
                 r.path.unlink()
-                removed += 1
             except OSError as exc:
                 console.print(f"[yellow]⚠[/yellow] could not remove {r.path}: {exc}")
+                continue
+            removed += 1
+            gone.append(r.path)
+        _remove_empty_conversation_dirs(gone)
         console.print(f"[green]✓[/green] removed {removed} capture file(s).")
 
     _sweep_orphan_toolsets(base=base, console=console, yes=yes)
