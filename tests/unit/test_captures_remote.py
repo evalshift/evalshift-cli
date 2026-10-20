@@ -552,6 +552,28 @@ def test_a_new_turn_brings_its_promoted_turns_along_whatever_their_age(tmp_path:
     assert summary.skipped_old == 0
 
 
+def test_the_budget_counts_a_conversations_promoted_turns_so_they_come_along(
+    tmp_path: Path,
+) -> None:
+    # As above, under a budget: the promoted turn outside the window counts toward it too, so
+    # the conversation fits whole and the new turn's history is not dropped as beyond budget.
+    store = populated_store()
+    _turns(store, ("cap_t0", 72), ("cap_t1", 2), ("cap_t2", 1))
+
+    summary = fetch_captures(
+        store,
+        base=tmp_path,
+        skip_ids={"cap_t0", "cap_t1"},
+        since=_T - timedelta(days=1),
+        per_suite_limit=3,
+    )
+
+    assert _local_captures(tmp_path) == {
+        f"alpha/{CONV}/{cid}.json" for cid in ("cap_t0", "cap_t1", "cap_t2")
+    }
+    assert summary.skipped_budget == 0
+
+
 def test_an_old_unpromoted_turn_stays_behind(tmp_path: Path) -> None:
     store = populated_store()
     _turns(store, ("cap_t0", 72), ("cap_t1", 1))
