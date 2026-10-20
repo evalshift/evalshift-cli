@@ -2,7 +2,9 @@
 
 EvalShift can evaluate multi-turn agent conversations, not just single-shot
 prompts. A conversation is captured as one file per turn by the
-`evalshift-sdk`; `evalshift capture sync` links the turns back together into
+`evalshift-sdk` — evalshift-sdk 0.7.0 and later groups them in the
+conversation's `conv_<16 hex>/` folder. `evalshift capture sync` links the
+turns back together into
 golden suite examples that carry a **teacher-forced** conversation prefix,
 and `run` replays each turn against a candidate model with that prefix sent
 verbatim.
@@ -11,7 +13,9 @@ verbatim.
 
 Schema `1.1.0` of the capture envelope (the `evalshift-sdk` package, a
 separate install from this CLI) added three optional fields so a multi-turn
-conversation — one capture file per turn — can be linked back together:
+conversation — one capture file per turn; evalshift-sdk 0.7.0 and later
+groups them in the conversation's `conv_<16 hex>/` folder — can be linked
+back together:
 
 | Field               | Type          | Meaning |
 | ------------------- | ------------- | ------- |
@@ -97,9 +101,10 @@ for the next one. Once no whole conversation fits, the slots left take the
 leading turns of the next conversation; its remaining turns can enter on a
 later sync. Under the limits, a turn that recorded no messages list of its
 own is promoted only when every earlier turn of its conversation is local
-(its history is rebuilt from them), so after `capture clean` or on a fresh
-checkout, where promoted turns are not local, only turns carrying their own
-messages list can still enter. `turn_index` is 0-based: numbering from 1
+(its history is rebuilt from them); the fetch brings a conversation folder's
+promoted turns along and `capture clean` keeps them while any turn is
+unpromoted, so this mostly catches turns written flat, cleaned, or evicted
+by the SDK. `turn_index` is 0-based: numbering from 1
 makes every rebuilt turn miss its "turn 0" (see
 [Bounded suites](configuration.md#bounded-suites)).
 

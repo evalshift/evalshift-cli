@@ -1087,7 +1087,7 @@ captures:
 | ----------- | --------------------------------- | ------- | ----------- |
 | `store`     | string (URI)                      | (none)  | Object store the SDK writes to. `capture sync` and `capture list` fetch new captures and toolset sidecars from it into the local directory first; `capture fetch` does only that step. |
 | `max_age`   | duration (`30m`, `24h`, `14d`; > 0, ≤ `36500d`) | (none)  | Captures recorded longer ago than this never enter a suite through `capture sync` (`capture promote` ignores the limits), and promoted cases that old are stale: with `max_cases` also set, `capture sync` replaces them as fresh captures arrive. Also the window `capture sync` and `capture list` fetch from `store`. Omit for no age limit. |
-| `max_cases` | int (≥ 1)                         | (none)  | The most cases `capture sync` keeps in each captured suite. Also caps what `capture sync` and `capture list` download from `store`: each suite's newest `3 × max_cases` captures per run. Omit and suites grow with every sync. |
+| `max_cases` | int (≥ 1)                         | (none)  | The most cases `capture sync` keeps in each captured suite. Also caps what `capture sync` and `capture list` download from `store`: at most `3 × max_cases` captures per suite per run, a conversation at a time. Omit and suites grow with every sync. |
 
 Setting either `max_age` or `max_cases` turns [bounded suites](#bounded-suites) on. Both work
 without `store`: they govern how captures become suites, whether the captures came from disk or
@@ -1113,17 +1113,19 @@ Accepted URI forms — the same grammar the SDK uses:
 `<prefix>` is optional. Credentials never go in the URI: a value containing `@` or `?` fails
 to load, naming the accepted forms. A rejected value is never echoed back (it may be a pasted
 key or connection string); the error names at most its scheme. Under the prefix the layout is exactly the local one —
-`captures/<suite>/cap_<hex>.json` and `toolsets/<hex>.json` — so the bucket is a mirror of
-`.evalshift/`, not a different format.
+`captures/<suite>/cap_<hex>.json`, `captures/<suite>/conv_<16 hex>/cap_<hex>.json` for a
+conversation's turns (evalshift-sdk 0.7.0 and later), and `toolsets/<hex>.json` — so the bucket
+is a mirror of `.evalshift/`, not a different format.
 
 What the fetch does: it lists the bucket, downloads only objects missing locally (captures
 are immutable and toolsets content-addressed, so "exists" means "current"), skips captures
-already promoted into a suite (so `capture clean` never causes a re-download;
+already promoted into a suite (so `capture clean` never causes a re-download, unless a
+conversation folder gains a new turn, which brings its promoted turns back;
 `capture sync --repair` alone re-fetches the promoted captures its rebuilds need, past `--since`
 too), and writes each file atomically. `--since 24h` (or `7d`, `30m`, an ISO date) limits a fetch to recently
 written captures; `--offline` skips it and works with what is already local. With `max_age` set,
 the fetch that `capture sync` and `capture list` run skips captures older than it, and with
-`max_cases` set it takes only each suite's newest `3 × max_cases` (see
+`max_cases` set it takes at most `3 × max_cases` per suite, a conversation at a time (see
 [Fetch window](#fetch-window)).
 
 Retention in the bucket is yours to set with a lifecycle rule; the SDK's `max_captures` does not
@@ -1199,9 +1201,10 @@ empty a suite nor freeze it.
    fit; a conversation larger than the free slots is skipped and the next one tried. Once no whole
    conversation fits, the slots left take the leading turns of the next conversation in the order
    below, so one long conversation cannot leave a suite nearly empty. Its later turns can enter
-   on a later sync while the earlier turns' captures are still local; after `capture clean` or
-   on a fresh checkout, a later turn that does not record its own messages list is missing
-   earlier turns (below). A capture without a `conversation_id` is its own unit.
+   on a later sync: the fetch brings a conversation folder's promoted turns along, and
+   `capture clean` keeps them while any turn is unpromoted (a fully promoted conversation is
+   cleaned, so a turn added after that is missing earlier turns unless it carries its own
+   messages list). A capture without a `conversation_id` is its own unit.
 2. **Fill free slots, route-balanced.** The free slots are `max_cases` minus the reviewed and fresh
    cases already in the suite. A route is the set of tool names a case expects in round 1 (no
    tools is a route too). Each pick goes to the least-represented route that still has a
@@ -1281,12 +1284,20 @@ With `store` configured, the automatic fetch that `capture sync` and `capture li
 the limits too, using the time the bucket last wrote each object:
 
 - **`max_age`** skips captures last written more than `max_age` ago.
-- **`max_cases`** downloads only each suite's newest `3 × max_cases` captures inside that window
-  (ties by key): at most `3 × max_cases` downloads per suite per sync, however many captures the
-  bucket holds, and enough spare for the plan to balance tool routes. Captures already local or
+- **`max_cases`** downloads at most `3 × max_cases` captures per suite per sync inside that
+  window, a conversation at a time: conversation folders and lone captures newest first by their
+  newest capture (ties by name), each taken whole while it fits; once none fits, what is left
+  takes the earliest turns of the next one. That holds however many captures the bucket holds,
+  and leaves enough spare for the plan to balance tool routes. Captures already local or
   promoted count toward it, so syncing again with nothing new downloads nothing. It bounds each
   sync, not the local mirror: frequent syncs each take the newest captures since the last one,
-  and `capture clean` prunes the mirror.
+  and `capture clean` prunes the mirror. The earliest turns the leftover budget takes can be
+  turns already promoted, so a long conversation's newest turns may wait for a later sync.
+
+A conversation folder with a new turn inside the window also brings its promoted turns, whatever
+their age, so a fresh checkout rebuilds the new turn's history; its unpromoted turns outside the
+window stay behind. Turns written flat (an evalshift-sdk older than 0.7.0, or
+`EVALSHIFT_CAPTURE_LAYOUT=flat`) are fetched one at a time, as before.
 
 The summary names both:
 `fetched 40 capture(s) and 0 toolset(s) from s3://… (skipped 4 promoted, 11 older than
@@ -1296,19 +1307,23 @@ are always fetched, whatever their age. `--since` replaces the `max_age` cutoff,
 `capture sync --repair` fetches the captures its rebuilds need beyond both. On a fresh checkout,
 the committed case files tell the fetch which captures are already promoted.
 
-The budget takes the newest captures, not a sample of the window: at high volume a fresh
+The budget takes the newest conversations, not a sample of the window: at high volume a fresh
 checkout's suite comes from the most recent stretch of traffic. `EVALSHIFT_SAMPLE_RATE` on the
-agent bounds the volume at the source, but it draws once per agent run, that is per turn, so a
-sampled conversation keeps some turns and loses others: with a sample rate, record the full
-messages list on every turn.
+agent bounds the volume at the source. From evalshift-sdk 0.7.0 it keeps or drops a
+conversation run through `capture.agent_session` whole; older SDKs, and the `@capture.agent`
+decorator, draw once per agent run, that is per turn, so a sampled conversation keeps some
+turns and loses others: there, record the full messages list on every turn.
 
 A conversation turn that does not record its own messages list rebuilds its history from the
 turns before it, so it is not eligible unless all of them are on disk
 (`not eligible: 3 missing earlier turns`). They are not when the window or the budget cut them
-off, when they were promoted on another machine (a fresh checkout never fetches promoted
-captures) or removed by `capture clean`, when the SDK's sample rate dropped them, or when the
-app numbers `turn_index` from 1 instead of 0. Sync then warns with those causes
-(`alpha: 3 turn(s) not promoted: earlier turns of their conversation are not on disk (…)`).
+off, when `capture clean` removed them, when they were written flat (an evalshift-sdk older than
+0.7.0, or `EVALSHIFT_CAPTURE_LAYOUT=flat`) and promoted on another machine (a fresh checkout
+never fetches promoted flat captures) or dropped by a per-turn sample rate, when the SDK's
+`max_captures` / `capture_ttl` evicted them, or when the app numbers `turn_index` from 1 instead
+of 0. Sync then warns with those causes
+(`alpha: 3 turn(s) not promoted: earlier turns of their conversation are not on disk (outside
+captures.max_age or the fetch budget, removed by capture clean, …)`).
 Pass the full messages list to `capture.model_call` so each turn carries its own history.
 
 If `evalshift.yaml` cannot be read or does not validate, sync runs without the limits. When the
@@ -1348,8 +1363,9 @@ would give a 1%-traffic route about two cases.
 ## Capture lifecycle
 
 The companion `evalshift-sdk` package records real agent runs to
-`.evalshift/captures/<suite>/<capture_id>.json` (set `EVALSHIFT_DIR` to relocate
-the base). The CLI consumes them via the `capture` commands:
+`.evalshift/captures/<suite>/<capture_id>.json` (a conversation's turns in
+`.evalshift/captures/<suite>/conv_<16 hex>/`, from evalshift-sdk 0.7.0; set `EVALSHIFT_DIR`
+to relocate the base). The CLI consumes them via the `capture` commands:
 
 ```shell
 evalshift capture list                          # see what the SDK recorded
@@ -1364,7 +1380,11 @@ and print one summary line (`fetched 12 capture(s) and 1 toolset(s) from s3://�
 `--offline` to skip it. `promote`, `diff` and `clean` operate on the local mirror only.
 
 `capture clean [<suite>]` deletes promoted captures by default (`--promoted`);
-`--all` deletes every capture, promoted or not. It never touches promoted
+`--all` deletes every capture, promoted or not. The default keeps a conversation's
+promoted captures while any of its turns is unpromoted, since a later turn rebuilds its
+history from them, and says how many it kept (`kept 3 promoted capture(s): their
+conversation still has unpromoted turns, whose history is rebuilt from them.`). It removes
+the conversation folders it empties. It never touches promoted
 suites, then offers to sweep toolset sidecars no surviving capture or suite
 references. Each deletion asks first; `--yes`/`-y` skips both prompts.
 

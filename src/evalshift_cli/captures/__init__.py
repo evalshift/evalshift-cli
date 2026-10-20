@@ -2,14 +2,17 @@
 
 The capture SDK installs *inside a user's agent process* and records what the
 agent does, writing one JSON file per invocation to
-``<base>/captures/<suite>/<capture_id>.json``. This package is the CLI side of
-that contract: it reads those files (:mod:`evalshift_cli.captures.reader`) and
-*promotes* a capture into a golden suite case (:mod:`evalshift_cli.captures.promote`)
+``<base>/captures/<suite>/<capture_id>.json``, or, for a conversation's turns,
+``<base>/captures/<suite>/conv_<16 hex>/<capture_id>.json`` (evalshift-sdk 0.7.0 and later;
+older SDKs and ``EVALSHIFT_CAPTURE_LAYOUT=flat`` write every capture flat). This package is
+the CLI side of that contract: it reads those files (:mod:`evalshift_cli.captures.reader`)
+and *promotes* a capture into a golden suite case (:mod:`evalshift_cli.captures.promote`)
 that ``evalshift run`` can evaluate.
 
 The SDK and CLI never call each other — the only contract is the capture envelope and its
-layout (``captures/<suite>/<capture_id>.json`` + ``toolsets/<hex>.json``), on local disk or
-mirrored from an object store by :mod:`evalshift_cli.captures.remote`.
+layout (``captures/<suite>/<capture_id>.json``,
+``captures/<suite>/conv_<16 hex>/<capture_id>.json`` + ``toolsets/<hex>.json``), on local
+disk or mirrored from an object store by :mod:`evalshift_cli.captures.remote`.
 """
 
 from __future__ import annotations

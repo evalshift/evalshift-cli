@@ -7,7 +7,8 @@ Lifecycle for captures recorded by the separate ``evalshift-sdk``:
 * ``capture clean``   — prune capture files (never touches promoted suites).
 * ``capture diff``    — compare two captures' tool-call traces.
 
-Captures live under ``<base>/captures/<suite>/`` and promoted cases under
+Captures live under ``<base>/captures/<suite>/`` (a conversation's turns in its
+``conv_<16 hex>/`` folder there, from evalshift-sdk 0.7.0) and promoted cases under
 ``<base>/suites/<suite>/``, where ``base`` follows the SDK convention
 (``$EVALSHIFT_DIR`` else ``.evalshift``). ``--base`` overrides for tests/advanced use.
 """
@@ -581,8 +582,9 @@ def _warn_store_skipped(config_path: Path, reason: str, *, console: Console) -> 
 
 
 FETCH_BUDGET_PER_CASE: Final = 3
-"""With ``captures.max_cases`` set, sync's fetch takes each suite's newest ``3 x max_cases``
-captures: spare enough for the planner to balance tool routes, and never the whole bucket."""
+"""With ``captures.max_cases`` set, sync's fetch takes at most ``3 x max_cases`` captures per
+suite, a conversation at a time: spare enough for the planner to balance tool routes, and never
+the whole bucket."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -603,7 +605,7 @@ class _SyncLimits:
 
     @property
     def fetch_budget(self) -> int | None:
-        """How many of each suite's newest captures the fetch takes; ``None``: all of them."""
+        """How many captures per suite the fetch takes; ``None``: all of them."""
         return FETCH_BUDGET_PER_CASE * self.max_cases if self.max_cases is not None else None
 
     def fetch_window(self, now: datetime) -> tuple[datetime, str] | None:
@@ -666,7 +668,8 @@ def _fetch_into_base(
 
     ``force_ids`` are fetched even when promoted or older than ``since`` -- the captures
     ``capture sync --repair`` needs to rebuild promoted cases. ``per_suite_limit`` caps each
-    suite at its newest that-many captures (``fetch_captures``).
+    suite at that many captures, taken a conversation at a time, newest first; the budget left
+    takes the next conversation's earliest turns (``fetch_captures``).
     """
     skip_ids = _promoted_capture_ids_or_warn(base=base, console=console)
     try:
@@ -748,8 +751,8 @@ def capture_list(
     """List captures recorded by the SDK.
 
     Fetches from captures.store first, as capture sync does: only captures within
-    captures.max_age and, with captures.max_cases set, each suite's newest 3x
-    max_cases.
+    captures.max_age and, with captures.max_cases set, at most 3x max_cases per
+    suite, a conversation at a time, newest first.
     """
     # With --json, stdout carries only the JSON: the fetch line and every warning go to stderr.
     console = Console(stderr=as_json)
@@ -1451,7 +1454,7 @@ def capture_sync(
     for fresh captures; reviewed cases are never retired. captures.max_age
     keeps older captures out of a suite. The fetch from captures.store takes
     only captures within captures.max_age and, with captures.max_cases set,
-    each suite's newest 3x max_cases.
+    at most 3x max_cases per suite, a conversation at a time, newest first.
     """
     console = Console()
     _check_rounds(rounds)
@@ -1805,10 +1808,11 @@ def capture_sync(
             console.print(
                 f"[yellow]⚠[/yellow] {escape(suite_name)}: {ineligible['history']} turn(s) not "
                 "promoted: earlier turns of their conversation are not on disk (outside "
-                "captures.max_age or the fetch budget, promoted on another machine or removed by "
-                "capture clean, sampled out by EVALSHIFT_SAMPLE_RATE, or a turn_index that does "
-                "not start at 0). Pass the full messages list to capture.model_call so each turn "
-                "carries its own history.",
+                "captures.max_age or the fetch budget, removed by capture clean, written flat -- "
+                "evalshift-sdk older than 0.7.0 or EVALSHIFT_CAPTURE_LAYOUT=flat -- and promoted on "
+                "another machine or sampled out, evicted by the SDK's max_captures / capture_ttl, "
+                "or a turn_index that does not start at 0). Pass the full messages list to "
+                "capture.model_call so each turn carries its own history.",
                 soft_wrap=True,
             )
         suite_line: str | None = None

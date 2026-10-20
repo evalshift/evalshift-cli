@@ -21,8 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn that recorded no messages list of its own is promoted only when every
   earlier turn of its conversation is local, since its history is rebuilt
   from them (`not eligible: N missing earlier turns`, with a warning naming
-  the likely causes: the fetch window or budget, `capture clean`, the SDK's
-  per-turn sample rate, or a `turn_index` numbered from 1). `max_age` alone caps
+  the likely causes: the fetch window or budget, `capture clean`, turns
+  written flat and promoted on another machine, the SDK's per-turn sample
+  rate or its `max_captures` / `capture_ttl` eviction, or a `turn_index`
+  numbered from 1). `max_age` alone caps
   nothing. `capture promote` ignores the limits.
 - **Plan.** With `max_cases` set, sync never grows a suite past the cap and
   swaps stale cases (too old, or recorded on another model) for fresh
@@ -52,8 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty it.
 - **Fetch.** The limits also bound what the automatic fetch of
   `capture sync` and `capture list` downloads from `captures.store`:
-  `max_age` skips older captures, and `max_cases` takes only each suite's
-  newest `3 × max_cases` captures inside that window (`skipped 2400 beyond
+  `max_age` skips older captures, and `max_cases` takes at most
+  `3 × max_cases` captures per suite inside that window, newest first
+  (`skipped 2400 beyond
   each suite's newest 600`). Captures already local or promoted count toward
   that budget, so each sync downloads at most that many per suite, however
   many captures the bucket holds, and a re-sync with nothing new downloads
@@ -77,6 +80,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Promoted case files record `captured_at` and `source_model`, with or without
   the limits. `capture sync` backfills them on existing cases whose capture is
   still local (`backfilled capture time and model on N case(s)`).
+- **Conversation folders.** evalshift-sdk 0.7.0 files a conversation's turns
+  in one folder, `captures/<suite>/conv_<16 hex>/`, on disk and in a bucket.
+  The CLI reads it beside the flat layout, which older SDKs and standalone
+  captures keep using, so existing buckets need no migration.
+  `capture sync`'s and `capture list`'s fetch moves whole conversations: the
+  `max_cases` budget counts captures but takes a conversation at a time,
+  newest first, and a conversation with a new turn brings its promoted turns
+  along, whatever their age, so a fresh checkout rebuilds the new turn's
+  history instead of reporting it as missing earlier turns.
 
 ### Changed
 
@@ -97,6 +109,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   format is unchanged. A run left in progress by an
   older CLI cannot be `--resume`d across the upgrade (config-hash mismatch);
   start a fresh one.
+- `capture clean` (the default `--promoted` scope) keeps a conversation's
+  promoted captures while any of its turns is unpromoted, since a later turn
+  rebuilds its history from them, and says how many it kept. It removes the
+  conversation folders it empties.
+- `capture list <suite>`, `capture sync --suite` and `capture fetch --suite`
+  read the directory the SDK writes the suite to, so `team/support` finds
+  `captures/team_support/`.
 
 ## [1.5.0] - 2026-10-15
 

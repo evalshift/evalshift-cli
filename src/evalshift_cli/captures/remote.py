@@ -3,10 +3,10 @@
 The SDK's ``ObjectStoreSink`` writes the *local layout* under a bucket prefix --
 ``captures/<suite>/cap_<hex>.json``, ``captures/<suite>/conv_<16 hex>/cap_<hex>.json`` for a
 conversation's turns (evalshift-sdk 0.7.0 and later) and ``toolsets/<hex>.json`` -- so the CLI
-never reads a bucket directly. It fetches what is missing into ``<base>/captures`` and ``<base>/toolsets``
-and every other command runs on the local mirror unchanged. Two properties make that cheap:
-captures are immutable (a file that exists locally is current) and toolsets are
-content-addressed (same name, same bytes), so no ETag or mtime is ever compared.
+never reads a bucket directly. It fetches what is missing into ``<base>/captures`` and
+``<base>/toolsets`` and every other command runs on the local mirror unchanged. Two properties
+make that cheap: captures are immutable (a file that exists locally is current) and toolsets
+are content-addressed (same name, same bytes), so no ETag or mtime is ever compared.
 
 Keys read from a bucket are untrusted. Only basenames shaped like the SDK's are accepted
 (:data:`_CAPTURE_NAME`, :data:`_TOOLSET_NAME`), a suite segment must be one the SDK's
@@ -287,7 +287,8 @@ def fetch_captures(
     Toolsets are fetched first so a capture never lands locally before a sidecar that exists
     remotely. A capture is skipped when its file already exists, when its id is in
     ``skip_ids`` (the promoted ids -- so a capture ``capture clean`` removed is not pulled
-    back), when ``since`` is set and the object is older, or when it is over
+    back, unless its conversation folder has a new turn), when ``since`` is set and the object
+    is older, or when it is over
     :data:`MAX_OBJECT_BYTES`. Ids in ``force_ids`` are fetched even when promoted or older
     than ``since`` -- the captures ``capture sync --repair`` needs to rebuild promoted cases.
     They still respect the already-local, size-cap and malformed-key rules. Keys that do not

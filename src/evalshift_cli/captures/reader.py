@@ -353,6 +353,10 @@ def iter_captures(
 ) -> list[CaptureRecord]:
     """Return every readable capture, optionally filtered to one ``suite``.
 
+    ``suite`` maps to the directory the SDK writes it to (:func:`capture_suite_dirname`, so
+    ``team/support`` reads ``team_support/``). Each suite directory's ``*.json`` files are
+    read, then those one level down in its ``conv_<16 hex>/`` conversation folders.
+
     Capture files that fail to load are skipped; each failure is reported to
     ``on_error`` (if given) so callers can warn instead of silently dropping
     the file. Results are sorted by ``(suite, capture_id)`` for deterministic
