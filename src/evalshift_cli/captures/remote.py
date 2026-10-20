@@ -1,8 +1,9 @@
 """Mirror captures from a user-owned object store into the local capture directory.
 
 The SDK's ``ObjectStoreSink`` writes the *local layout* under a bucket prefix --
-``captures/<suite>/cap_<hex>.json`` and ``toolsets/<hex>.json`` -- so the CLI never reads a
-bucket directly. It fetches what is missing into ``<base>/captures`` and ``<base>/toolsets``
+``captures/<suite>/cap_<hex>.json``, ``captures/<suite>/conv_<16 hex>/cap_<hex>.json`` for a
+conversation's turns (evalshift-sdk 0.7.0 and later) and ``toolsets/<hex>.json`` -- so the CLI
+never reads a bucket directly. It fetches what is missing into ``<base>/captures`` and ``<base>/toolsets``
 and every other command runs on the local mirror unchanged. Two properties make that cheap:
 captures are immutable (a file that exists locally is current) and toolsets are
 content-addressed (same name, same bytes), so no ETag or mtime is ever compared.
@@ -26,7 +27,7 @@ import importlib.util
 import os
 import re
 import tempfile
-from collections.abc import Collection, Iterator, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
@@ -38,7 +39,12 @@ from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
 
-from evalshift_cli.captures.reader import capture_suite_dirname, captures_root, toolsets_root
+from evalshift_cli.captures.reader import (
+    capture_suite_dirname,
+    captures_root,
+    is_conversation_dir,
+    toolsets_root,
+)
 from evalshift_cli.captures.store_uri import StoreURI, package_for_module
 from evalshift_cli.utils.duration import parse_duration
 
@@ -249,6 +255,21 @@ def parse_since(text: str, *, now: datetime | None = None) -> datetime:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
+@dataclass(frozen=True, slots=True)
+class _ListedCapture:
+    """A capture key that passed the layout checks, and where it lands locally.
+
+    ``unit`` is what the fetch moves together: ``<suite>/<conv folder>`` for a conversation's
+    turns, the key itself for a flat capture.
+    """
+
+    info: ObjectInfo
+    suite: str
+    unit: str
+    dest: Path
+    capture_id: str
+
+
 def fetch_captures(
     store: RemoteStore,
     *,
@@ -273,10 +294,12 @@ def fetch_captures(
     match the SDK's layout are counted as malformed and ignored. ``since_label`` is how the
     summary names the ``since`` cutoff.
 
-    ``per_suite_limit`` caps the download, not just the age: only each suite's newest that-many
-    captures inside ``since`` are fetched -- newest by ``last_modified`` (unknown counts as
-    oldest), ties by key. Captures already local or promoted count toward it, so a re-run with
-    nothing new in the store fetches nothing. Forced ids are fetched beyond it.
+    ``per_suite_limit`` caps each suite's download a conversation at a time: whole
+    conversations (a flat capture is one of its own) are taken newest first while they fit,
+    then the budget left takes the leading in-window turns of the first one that does not --
+    captures already local or promoted count toward it, and forced ids are fetched beyond it.
+    With or without it, a new turn brings its conversation's promoted turns along, whatever
+    their age, so the turn's history can be rebuilt on a fresh checkout.
 
     Raises:
         RemoteStoreError: when listing or any download fails. Files already written stay, so a
@@ -311,51 +334,75 @@ def fetch_captures(
 
     capture_jobs: list[tuple[str, Path]] = []
     prefix = f"captures/{capture_suite_dirname(suite)}/" if suite else "captures/"
-    listed: list[tuple[ObjectInfo, str, Path]] = []
+    listed: list[_ListedCapture] = []
     for info in _list(store, prefix):
         if info.key.endswith("/"):
             continue  # a folder marker, as above
-        rel = info.key.removeprefix("captures/")
-        suite_seg, sep, name = rel.partition("/")
-        if (
-            not sep
-            or "/" in name
-            or not _is_safe_suite_segment(suite_seg)
-            or not _CAPTURE_NAME.fullmatch(name)
-        ):
+        parts = info.key.removeprefix("captures/").split("/")
+        conversation: str | None = None
+        if len(parts) == 2:
+            suite_seg, name = parts
+        elif len(parts) == 3 and is_conversation_dir(parts[1]):
+            suite_seg, conversation, name = parts
+        else:
             summary.skipped_malformed += 1
             continue
-        dest = captures_dir / suite_seg / name
+        if not _is_safe_suite_segment(suite_seg) or not _CAPTURE_NAME.fullmatch(name):
+            summary.skipped_malformed += 1
+            continue
+        folder = captures_dir / suite_seg
+        if conversation is not None:
+            folder = folder / conversation
+        dest = folder / name
         if not _absolute(dest.parent).is_relative_to(captures_dir):
             summary.skipped_malformed += 1
             continue
-        listed.append((info, suite_seg, dest))
+        listed.append(
+            _ListedCapture(
+                info=info,
+                suite=suite_seg,
+                unit=info.key if conversation is None else f"{suite_seg}/{conversation}",
+                dest=dest,
+                capture_id=name[: -len(".json")],
+            )
+        )
 
+    units: dict[str, list[_ListedCapture]] = {}
+    for item in listed:
+        units.setdefault(item.unit, []).append(item)
+    # A unit is fetched for a capture that is new (not promoted) and inside the window. It then
+    # brings its promoted turns too, whatever their age -- a new turn's history is rebuilt from
+    # them on a fresh checkout, and the suite bounds how many there are. Unpromoted turns
+    # outside the window stay behind, as flat captures always have.
+    wanted = {
+        unit
+        for unit, items in units.items()
+        if any(i.capture_id not in skip and _inside(i.info, since) for i in items)
+    }
     in_budget = (
-        _newest_per_suite(listed, since=since, limit=per_suite_limit)
+        _budgeted_keys(units, since=since, promoted=skip, limit=per_suite_limit)
         if per_suite_limit is not None
         else None
     )
-    for info, _, dest in listed:
+    for item in listed:
+        info, dest = item.info, item.dest
         if dest.exists():
             summary.skipped_existing += 1
             continue
-        capture_id = dest.name[: -len(".json")]
-        forced = capture_id in force
-        if not forced and capture_id in skip:
-            summary.skipped_promoted += 1
-            continue
-        if (
-            not forced
-            and since is not None
-            and info.last_modified is not None
-            and info.last_modified < since
-        ):
-            summary.skipped_old += 1
-            continue
-        if in_budget is not None and not forced and info.key not in in_budget:
-            summary.skipped_budget += 1
-            continue
+        if item.capture_id not in force:
+            promoted = item.capture_id in skip
+            if item.unit not in wanted:
+                if promoted:
+                    summary.skipped_promoted += 1
+                else:
+                    summary.skipped_old += 1
+                continue
+            if not promoted and not _inside(info, since):
+                summary.skipped_old += 1
+                continue
+            if in_budget is not None and info.key not in in_budget:
+                summary.skipped_budget += 1
+                continue
         if info.size is not None and info.size > MAX_OBJECT_BYTES:
             summary.skipped_large += 1
             continue
@@ -368,28 +415,55 @@ def fetch_captures(
     return summary
 
 
-def _newest_per_suite(
-    listed: Sequence[tuple[ObjectInfo, str, Path]], *, since: datetime | None, limit: int
-) -> frozenset[str]:
-    """The keys of each suite's newest ``limit`` captures inside ``since``.
+def _inside(info: ObjectInfo, since: datetime | None) -> bool:
+    """Whether ``info`` was written inside the ``since`` window; an unknown time always is."""
+    return since is None or info.last_modified is None or info.last_modified >= since
 
-    Newest by ``last_modified``; an unknown one counts as oldest, and ties go by key, so every
-    machine listing the same store picks the same captures.
+
+def _budgeted_keys(
+    units: Mapping[str, Sequence[_ListedCapture]],
+    *,
+    since: datetime | None,
+    promoted: Collection[str],
+    limit: int,
+) -> frozenset[str]:
+    """The keys each suite's budget of ``limit`` captures takes, a conversation at a time.
+
+    A unit is a conversation folder, or one flat capture; it counts its captures inside
+    ``since`` plus its promoted ones (the turns a fetch of it brings). Units with a capture
+    inside ``since`` are ranked newest first by their newest one (an unknown ``last_modified``
+    counts as oldest), ties by unit name, and taken whole while they fit; one too big for what
+    is left is skipped for the next. Once no whole unit fits, the budget left takes the
+    earliest-written counted captures of the first one skipped -- leading turns, never an old
+    unpromoted one. Captures already local or promoted count, so a re-run with nothing new
+    fetches nothing.
     """
 
-    def newest_first(info: ObjectInfo) -> tuple[bool, float, str]:
-        modified = info.last_modified
-        return (modified is None, -modified.timestamp() if modified else 0.0, info.key)
+    def stamp(item: _ListedCapture) -> float:
+        modified = item.info.last_modified
+        return modified.timestamp() if modified is not None else float("-inf")
 
-    by_suite: dict[str, list[ObjectInfo]] = {}
-    for info, suite_seg, _ in listed:
-        modified = info.last_modified
-        if since is not None and modified is not None and modified < since:
+    by_suite: dict[str, list[tuple[str, Sequence[_ListedCapture]]]] = {}
+    for unit, items in units.items():
+        if not any(_inside(i.info, since) for i in items):
             continue
-        by_suite.setdefault(suite_seg, []).append(info)
-    return frozenset(
-        info.key for infos in by_suite.values() for info in sorted(infos, key=newest_first)[:limit]
-    )
+        counted = [i for i in items if _inside(i.info, since) or i.capture_id in promoted]
+        by_suite.setdefault(items[0].suite, []).append((unit, counted))
+    taken: set[str] = set()
+    for ranked in by_suite.values():
+        ranked.sort(key=lambda pair: (-max(stamp(i) for i in pair[1]), pair[0]))
+        left = limit
+        skipped: Sequence[_ListedCapture] | None = None
+        for _, items in ranked:
+            if len(items) <= left:
+                taken.update(i.info.key for i in items)
+                left -= len(items)
+            elif skipped is None:
+                skipped = items
+        if left > 0 and skipped is not None:
+            earliest = sorted(skipped, key=lambda i: (stamp(i), i.info.key))
+            taken.update(i.info.key for i in earliest[:left])
+    return frozenset(taken)
 
 
 def _absolute(path: Path) -> Path:

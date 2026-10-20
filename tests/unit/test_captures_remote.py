@@ -489,3 +489,155 @@ def test_a_suite_filter_lists_the_directory_the_sdk_wrote(tmp_path: Path) -> Non
     summary = fetch_captures(store, base=tmp_path, suite="team/support")
 
     assert summary.captures == 1
+
+
+# --- conversation folders (evalshift-sdk >= 0.7.0) --------------------------------------------
+
+#: The folder evalshift-sdk writes for conversation_id "c1".
+CONV = "conv_d0f631ca1ddba8db"
+
+
+def _turns(
+    store: FakeRemoteStore, *turns: tuple[str, float], suite: str = "alpha", folder: str = CONV
+) -> None:
+    """One conversation's turns in ``folder``, each written that many hours before ``_T``."""
+    for cid, hours in turns:
+        key = f"captures/{suite}/{folder}/{cid}.json"
+        store.objects[key] = capture_payload(
+            cid, suite, model_input=f"turn {cid}", conversation_id="c1"
+        )
+        store.modified[key] = _T - timedelta(hours=hours)
+
+
+def test_fetch_mirrors_a_conversation_folder(tmp_path: Path) -> None:
+    store = populated_store()
+    _turns(store, ("cap_t0", 2), ("cap_t1", 1))
+
+    summary = fetch_captures(store, base=tmp_path)
+
+    assert summary.captures == 2
+    assert _local_captures(tmp_path) == {f"alpha/{CONV}/cap_t0.json", f"alpha/{CONV}/cap_t1.json"}
+
+
+@pytest.mark.parametrize(
+    "folder",
+    ["nested", "conv_D0F631CA1DDBA8DB", "conv_d0f631ca", f"{CONV}/deeper"],
+)
+def test_fetch_counts_folders_the_sdk_never_writes_as_malformed(
+    tmp_path: Path, folder: str
+) -> None:
+    store = populated_store()
+    store.objects[f"captures/alpha/{folder}/cap_x.json"] = capture_payload("cap_x")
+
+    summary = fetch_captures(store, base=tmp_path)
+
+    assert summary.skipped_malformed == 1
+    assert _local_captures(tmp_path) == set()
+
+
+def test_a_new_turn_brings_its_promoted_turns_along_whatever_their_age(tmp_path: Path) -> None:
+    # A fresh checkout: turns 0-1 are promoted (committed case files) and turn 0 is outside the
+    # window, but turn 2 rebuilds its history from both.
+    store = populated_store()
+    _turns(store, ("cap_t0", 72), ("cap_t1", 2), ("cap_t2", 1))
+
+    summary = fetch_captures(
+        store, base=tmp_path, skip_ids={"cap_t0", "cap_t1"}, since=_T - timedelta(days=1)
+    )
+
+    assert _local_captures(tmp_path) == {
+        f"alpha/{CONV}/{cid}.json" for cid in ("cap_t0", "cap_t1", "cap_t2")
+    }
+    assert summary.skipped_promoted == 0
+    assert summary.skipped_old == 0
+
+
+def test_an_old_unpromoted_turn_stays_behind(tmp_path: Path) -> None:
+    store = populated_store()
+    _turns(store, ("cap_t0", 72), ("cap_t1", 1))
+
+    summary = fetch_captures(store, base=tmp_path, since=_T - timedelta(days=1))
+
+    assert _local_captures(tmp_path) == {f"alpha/{CONV}/cap_t1.json"}
+    assert summary.skipped_old == 1
+
+
+def test_the_budgets_leading_turns_stay_inside_the_window(tmp_path: Path) -> None:
+    # A long conversation: three turns days old, three in the window, a budget of two.
+    store = populated_store()
+    _turns(
+        store,
+        ("cap_t0", 100),
+        ("cap_t1", 90),
+        ("cap_t2", 80),
+        ("cap_t3", 3),
+        ("cap_t4", 2),
+        ("cap_t5", 1),
+    )
+
+    summary = fetch_captures(
+        store, base=tmp_path, since=_T - timedelta(hours=10), per_suite_limit=2
+    )
+
+    assert _local_captures(tmp_path) == {f"alpha/{CONV}/cap_t3.json", f"alpha/{CONV}/cap_t4.json"}
+    assert summary.skipped_old == 3
+    assert summary.skipped_budget == 1
+
+
+def test_a_conversation_with_nothing_new_downloads_nothing(tmp_path: Path) -> None:
+    store = populated_store()
+    _turns(store, ("cap_t0", 2), ("cap_t1", 1))
+
+    summary = fetch_captures(store, base=tmp_path, skip_ids={"cap_t0", "cap_t1"})
+
+    assert _local_captures(tmp_path) == set()
+    assert summary.skipped_promoted == 2
+
+
+def test_a_conversation_entirely_outside_the_window_is_skipped(tmp_path: Path) -> None:
+    store = populated_store()
+    _turns(store, ("cap_t0", 50), ("cap_t1", 49))
+
+    summary = fetch_captures(store, base=tmp_path, since=_T - timedelta(days=1))
+
+    assert summary.skipped_old == 2
+    assert _local_captures(tmp_path) == set()
+
+
+def test_the_budget_takes_whole_conversations_newest_first(tmp_path: Path) -> None:
+    store = populated_store("cap_solo")
+    _aged(store, ("cap_solo", 1))
+    _turns(store, ("cap_a0", 3), ("cap_a1", 2), folder="conv_" + "a" * 16)
+    _turns(store, ("cap_b0", 30), ("cap_b1", 29), ("cap_b2", 28), folder="conv_" + "b" * 16)
+
+    summary = fetch_captures(store, base=tmp_path, per_suite_limit=4)
+
+    # solo (1) + conversation a (2) fit; b (3) does not, so the 1 left takes b's first turn.
+    assert _local_captures(tmp_path) == {
+        "alpha/cap_solo.json",
+        f"alpha/conv_{'a' * 16}/cap_a0.json",
+        f"alpha/conv_{'a' * 16}/cap_a1.json",
+        f"alpha/conv_{'b' * 16}/cap_b0.json",
+    }
+    assert summary.skipped_budget == 2
+
+
+def test_a_conversation_larger_than_the_budget_gives_its_earliest_turns(tmp_path: Path) -> None:
+    store = populated_store()
+    _turns(store, ("cap_t0", 4), ("cap_t1", 3), ("cap_t2", 2), ("cap_t3", 1))
+
+    summary = fetch_captures(store, base=tmp_path, per_suite_limit=2)
+
+    assert _local_captures(tmp_path) == {f"alpha/{CONV}/cap_t0.json", f"alpha/{CONV}/cap_t1.json"}
+    assert summary.skipped_budget == 2
+
+
+def test_a_conversation_budget_fetches_nothing_on_a_rerun(tmp_path: Path) -> None:
+    store = populated_store()
+    _turns(store, ("cap_t0", 4), ("cap_t1", 3), ("cap_t2", 2))
+    fetch_captures(store, base=tmp_path, per_suite_limit=2)
+    store.gets.clear()
+
+    fetch_captures(store, base=tmp_path, per_suite_limit=2)
+
+    assert store.gets == []
