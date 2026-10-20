@@ -31,8 +31,9 @@ Data flow: SDK captures -> CLI runs and bundles -> server stores/diffs -> web ap
 
 Companion package: evalshift-sdk (separate PyPI package, in-process capture SDK) records
 production agent runs as JSON captures under .evalshift/captures/<suite>/cap_<hex>.json (from
-evalshift-sdk 0.7.0 a conversation's turns under .evalshift/captures/<suite>/conv_<16 hex>/;
-EVALSHIFT_CAPTURE_LAYOUT=flat keeps the flat layout; 0.7.0 needs CLI 1.6.0+); or,
+evalshift-sdk 0.7.0 a capture.agent_session conversation's turns under
+.evalshift/captures/<suite>/conv_<16 hex>/; EVALSHIFT_CAPTURE_LAYOUT=flat keeps the flat layout,
+and @capture.agent captures stay flat; 0.7.0 needs CLI 1.6.0+); or,
 with EVALSHIFT_CAPTURE_STORE (EVALSHIFT_SINK on SDK 0.5.0), under the same layout in the
 user's bucket;
 this CLI promotes them into golden suites (`evalshift capture sync`). That file layout is the
@@ -53,7 +54,8 @@ Quickstart (recommended, capture-first):
                                            Install it alone in a production agent that only records.
 4. decorate the agent (@capture.agent(suite=..., redact=True, tools=[]), @capture.tool(name=...)), run it
    with EVALSHIFT_CAPTURE=1 -> writes .evalshift/captures/<suite>/cap_<hex>.json
-   (a conversation's turns in .evalshift/captures/<suite>/conv_<16 hex>/, SDK 0.7.0+)
+   (a capture.agent_session conversation's turns go in .evalshift/captures/<suite>/conv_<16 hex>/,
+   SDK 0.7.0+; the decorator's captures stay flat)
    redact= is REQUIRED on every sdk capture point (@capture.agent, capture.agent_session,
    capture.agent_session_async, EvalShiftCallbackHandler) as of evalshift-sdk 0.3.0: True masks
    emails/API keys/bearer tokens via default_redactor, False records verbatim, or pass a
@@ -369,7 +371,8 @@ evalshift capture fetch [--suite S] [--since 30m|24h|7d|ISO] [-c CONFIG]
   captures/<suite>/<name>.json or captures/<suite>/conv_<16 hex>/<name>.json; a fetch unit is
   one conversation folder or one flat key. A unit is WANTED when it holds an unpromoted capture
   inside --since; a wanted unit downloads its keys inside --since plus its PROMOTED keys at any
-  age (a new turn's history rebuilds on a fresh checkout); its unpromoted keys outside --since
+  age, while the bucket still holds them (a new turn's history rebuilds on a fresh checkout);
+  its unpromoted keys outside --since
   stay behind (counted "older than --since"); an unwanted unit downloads nothing. Flat keys are units of one, so
   flat buckets fetch as before. Counts keys not shaped like the SDK layout as malformed
   (never written; a key cannot escape <base>; a trailing newline makes a key malformed;
@@ -496,8 +499,9 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
     recorded no messages list of its own (history rebuilt from sibling turns) is NOT eligible
     unless every lower turn_index (0-based) of its conversation is local -- reported as
     "not eligible: N missing earlier turns" plus a per-suite warning naming the causes (cut by
-    max_age/budget, removed by capture clean, written flat -- SDK < 0.7.0 or
-    EVALSHIFT_CAPTURE_LAYOUT=flat -- and promoted on another machine or dropped by a per-turn
+    max_age/budget, expired by the bucket's lifecycle rule, removed by capture clean, written
+    flat -- SDK < 0.7.0, EVALSHIFT_CAPTURE_LAYOUT=flat or the @capture.agent decorator -- and
+    promoted on another machine or dropped by a per-turn
     sample rate, evicted by the SDK's max_captures / capture_ttl, or a turn_index numbered
     from 1). Retire: a stale case whose content key an added turn replays is
     retired OUTRIGHT, even under the cap (no duplicate content; also under --keep-duplicates); if
@@ -528,9 +532,10 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
     a unit counts its keys inside the window plus its promoted keys; units with a key inside the
     window rank newest first by their newest key (unknown last_modified = oldest, ties by unit
     name) and are taken WHOLE while they fit (one too big is skipped for the next); once none
-    fits, the budget left takes the EARLIEST-written counted keys of the first skipped unit
-    (never an out-of-window unpromoted key; can be turns already promoted, so a long
-    conversation's newest turns may wait for a later sync). Captures already local or promoted
+    fits, the budget left takes the EARLIEST-written counted keys of the first skipped unit, in
+    rank order, whose that many earliest keys include one NOT promoted (never an out-of-window
+    unpromoted key; a unit whose would all be promoted is passed over; none qualifies -> the
+    rest goes unused). Captures already local or promoted
     COUNT toward it, so a re-run with nothing new downloads nothing; forced --repair ids bypass
     window, promoted skip and budget. Toolset sidecars missing locally are
     always fetched. Summary: "(skipped 4 promoted, 11 older than captures.max_age (14d), 2400
@@ -541,8 +546,9 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
     the agent bounds volume at the source: from SDK 0.7.0 it keeps or drops a
     capture.agent_session conversation whole; older SDKs and @capture.agent sample per turn, so
     those conversations need the full messages list on every turn. Committed case files supply
-    the promoted-id skip list. The window/budget can cut a conversation's earlier turns, and on
-    a fresh checkout promoted FLAT turns are never fetched: a turn without its own messages list
+    the promoted-id skip list. The window/budget can cut a conversation's earlier turns, the
+    bucket's lifecycle rule can expire them, and on a fresh checkout promoted FLAT turns are
+    never fetched: a turn without its own messages list
     is then "missing earlier turns" (ineligible) -- pass the full messages list to
     capture.model_call.
     Route balancing is coverage-weighted, not traffic-weighted: rate budgets are measured over a

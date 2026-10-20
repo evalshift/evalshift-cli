@@ -311,6 +311,8 @@ def test_a_turn_whose_earlier_turns_are_not_local_is_not_eligible(
     assert "not eligible: 2 missing earlier turns" in flat
     assert "alpha: 2 turn(s) not promoted: earlier turns of their conversation" in flat
     assert "a turn_index that does not start at 0" in flat
+    assert "the fetch budget or the bucket's lifecycle rule" in flat
+    assert "or the @capture.agent decorator" in flat
 
 
 def test_max_age_alone_reports_turns_missing_earlier_turns(

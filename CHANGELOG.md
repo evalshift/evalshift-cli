@@ -21,8 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn that recorded no messages list of its own is promoted only when every
   earlier turn of its conversation is local, since its history is rebuilt
   from them (`not eligible: N missing earlier turns`, with a warning naming
-  the likely causes: the fetch window or budget, `capture clean`, turns
-  written flat and promoted on another machine, the SDK's per-turn sample
+  the likely causes: the fetch window or budget, the bucket's lifecycle rule,
+  `capture clean`, turns written flat and promoted on another machine, the
+  SDK's per-turn sample
   rate or its `max_captures` / `capture_ttl` eviction, or a `turn_index`
   numbered from 1). `max_age` alone caps
   nothing. `capture promote` ignores the limits.
@@ -61,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that budget, so each sync downloads at most that many per suite, however
   many captures the bucket holds, and a re-sync with nothing new downloads
   nothing. Toolset sidecars are always fetched; `--since` replaces the age
-  cutoff, not the budget; `capture fetch` is unchanged.
+  cutoff, not the budget; `capture fetch` applies neither limit.
 - **Output.** Sync prints one line per suite: `alpha: 200 cases — kept 150,
   retired 50 (32 older than 14d, 18 on another model), added 50 of 2940
   eligible; not eligible: …`. With `max_cases` set, a capture's build
@@ -80,15 +81,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Promoted case files record `captured_at` and `source_model`, with or without
   the limits. `capture sync` backfills them on existing cases whose capture is
   still local (`backfilled capture time and model on N case(s)`).
-- **Conversation folders.** evalshift-sdk 0.7.0 files a conversation's turns
-  in one folder, `captures/<suite>/conv_<16 hex>/`, on disk and in a bucket.
-  The CLI reads it beside the flat layout, which older SDKs and standalone
-  captures keep using, so existing buckets need no migration.
-  `capture sync`'s and `capture list`'s fetch moves whole conversations: the
-  `max_cases` budget counts captures but takes a conversation at a time,
-  newest first, and a conversation with a new turn brings its promoted turns
-  along, whatever their age, so a fresh checkout rebuilds the new turn's
-  history instead of reporting it as missing earlier turns.
+- **Conversation folders.** evalshift-sdk 0.7.0 files a
+  `capture.agent_session` conversation's turns in one folder,
+  `captures/<suite>/conv_<16 hex>/`, on disk and in a bucket. The CLI reads
+  it beside the flat layout, which older SDKs, `EVALSHIFT_CAPTURE_LAYOUT=flat`,
+  the `@capture.agent` decorator and standalone captures keep using, so
+  existing buckets need no migration. Every fetch (`capture sync`'s,
+  `capture list`'s and `capture fetch`) moves whole conversations: a
+  conversation with a new turn brings its promoted turns along, whatever their
+  age while the bucket still holds them, so a fresh checkout rebuilds the new
+  turn's history instead of reporting it as missing earlier turns. The
+  `max_cases` budget of sync's and list's fetch counts captures but takes a
+  conversation at a time, newest first; once none fits whole, what is left
+  takes the earliest turns of the next one whose turns that fit include one
+  not yet promoted (one whose would all be promoted is passed over), and goes
+  unused when none qualifies.
 
 ### Changed
 
@@ -113,9 +120,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   promoted captures while any of its turns is unpromoted, since a later turn
   rebuilds its history from them, and says how many it kept. It removes the
   conversation folders it empties.
-- `capture list <suite>`, `capture sync --suite` and `capture fetch --suite`
-  read the directory the SDK writes the suite to, so `team/support` finds
-  `captures/team_support/`.
+- `capture list <suite>`, `capture sync --suite`, `capture fetch --suite`,
+  `capture clean SUITE` and `capture promote --suite` read the directory the
+  SDK writes the suite to, so `team/support` finds `captures/team_support/`.
 
 ## [1.5.0] - 2026-10-15
 

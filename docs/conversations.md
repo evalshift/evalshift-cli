@@ -2,8 +2,8 @@
 
 EvalShift can evaluate multi-turn agent conversations, not just single-shot
 prompts. A conversation is captured as one file per turn by the
-`evalshift-sdk` — evalshift-sdk 0.7.0 and later groups them in the
-conversation's `conv_<16 hex>/` folder. `evalshift capture sync` links the
+`evalshift-sdk` — evalshift-sdk 0.7.0 and later groups the turns of a
+`capture.agent_session` conversation in its `conv_<16 hex>/` folder. `evalshift capture sync` links the
 turns back together into
 golden suite examples that carry a **teacher-forced** conversation prefix,
 and `run` replays each turn against a candidate model with that prefix sent
@@ -14,7 +14,8 @@ verbatim.
 Schema `1.1.0` of the capture envelope (the `evalshift-sdk` package, a
 separate install from this CLI) added three optional fields so a multi-turn
 conversation — one capture file per turn; evalshift-sdk 0.7.0 and later
-groups them in the conversation's `conv_<16 hex>/` folder — can be linked
+groups a `capture.agent_session` conversation's turns in its `conv_<16 hex>/`
+folder, while the `@capture.agent` decorator's stay flat — can be linked
 back together:
 
 | Field               | Type          | Meaning |
@@ -103,8 +104,10 @@ later sync. Under the limits, a turn that recorded no messages list of its
 own is promoted only when every earlier turn of its conversation is local
 (its history is rebuilt from them); the fetch brings a conversation folder's
 promoted turns along and `capture clean` keeps them while any turn is
-unpromoted, so this mostly catches turns written flat, cleaned with no
-`captures.store` to fetch them back, or evicted by the SDK. `turn_index` is 0-based: numbering from 1
+unpromoted, so this mostly catches turns written flat (an evalshift-sdk older
+than 0.7.0, `EVALSHIFT_CAPTURE_LAYOUT=flat`, or the `@capture.agent`
+decorator), cleaned with no `captures.store` to fetch them back, evicted by the
+SDK, or expired by the bucket's lifecycle rule. `turn_index` is 0-based: numbering from 1
 makes every rebuilt turn miss its "turn 0" (see
 [Bounded suites](configuration.md#bounded-suites)).
 

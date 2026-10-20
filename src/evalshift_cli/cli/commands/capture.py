@@ -1808,8 +1808,9 @@ def capture_sync(
             console.print(
                 f"[yellow]⚠[/yellow] {escape(suite_name)}: {ineligible['history']} turn(s) not "
                 "promoted: earlier turns of their conversation are not on disk (outside "
-                "captures.max_age or the fetch budget, removed by capture clean, written flat -- "
-                "evalshift-sdk older than 0.7.0 or EVALSHIFT_CAPTURE_LAYOUT=flat -- and promoted on "
+                "captures.max_age, the fetch budget or the bucket's lifecycle rule, removed by "
+                "capture clean, written flat -- evalshift-sdk older than 0.7.0, "
+                "EVALSHIFT_CAPTURE_LAYOUT=flat or the @capture.agent decorator -- and promoted on "
                 "another machine or sampled out, evicted by the SDK's max_captures / capture_ttl, "
                 "or a turn_index that does not start at 0). Pass the full messages list to "
                 "capture.model_call so each turn carries its own history.",

@@ -2,9 +2,11 @@
 
 Path contract::
 
-    <base>/captures/<suite>/<capture_id>.json                 standalone captures, and every
-                                                              capture evalshift-sdk < 0.7.0 wrote
-    <base>/captures/<suite>/conv_<16 hex>/<capture_id>.json   a conversation's turns,
+    <base>/captures/<suite>/<capture_id>.json                 standalone and ``@capture.agent``
+                                                              captures, and every capture
+                                                              evalshift-sdk < 0.7.0 wrote
+    <base>/captures/<suite>/conv_<16 hex>/<capture_id>.json   a ``capture.agent_session``
+                                                              conversation's turns,
                                                               evalshift-sdk >= 0.7.0
 
 ``<suite>`` is the SDK's ``_safe_segment`` of the suite name (:func:`capture_suite_dirname`);

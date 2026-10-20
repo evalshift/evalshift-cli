@@ -1114,15 +1114,15 @@ Accepted URI forms — the same grammar the SDK uses:
 to load, naming the accepted forms. A rejected value is never echoed back (it may be a pasted
 key or connection string); the error names at most its scheme. Under the prefix the layout is exactly the local one —
 `captures/<suite>/cap_<hex>.json`, `captures/<suite>/conv_<16 hex>/cap_<hex>.json` for a
-conversation's turns (evalshift-sdk 0.7.0 and later), and `toolsets/<hex>.json` — so the bucket
+`capture.agent_session` conversation's turns (evalshift-sdk 0.7.0 and later), and `toolsets/<hex>.json` — so the bucket
 is a mirror of `.evalshift/`, not a different format.
 
 What the fetch does: it lists the bucket, downloads only objects missing locally (captures
 are immutable and toolsets content-addressed, so "exists" means "current"), skips captures
-already promoted into a suite (so `capture clean` never causes a re-download, unless a
-conversation folder gains a new turn, which brings its promoted turns back;
-`capture sync --repair` alone re-fetches the promoted captures its rebuilds need, past `--since`
-too), and writes each file atomically. `--since 24h` (or `7d`, `30m`, an ISO date) limits a fetch to recently
+already promoted into a suite (so `capture clean` never causes a re-download, unless their
+conversation has a turn in the bucket, inside the window, that is not promoted yet: the fetch
+then brings its promoted turns back for that turn's history; `capture sync --repair` alone
+re-fetches the promoted captures its rebuilds need, past `--since` too), and writes each file atomically. `--since 24h` (or `7d`, `30m`, an ISO date) limits a fetch to recently
 written captures; `--offline` skips it and works with what is already local. With `max_age` set,
 the fetch that `capture sync` and `capture list` run skips captures older than it, and with
 `max_cases` set it takes at most `3 × max_cases` per suite, a conversation at a time (see
@@ -1287,17 +1287,21 @@ the limits too, using the time the bucket last wrote each object:
 - **`max_cases`** downloads at most `3 × max_cases` captures per suite per sync inside that
   window, a conversation at a time: conversation folders and lone captures newest first by their
   newest capture (ties by name), each taken whole while it fits; once none fits, what is left
-  takes the earliest turns of the next one. That holds however many captures the bucket holds,
-  and leaves enough spare for the plan to balance tool routes. Captures already local or
-  promoted count toward it, so syncing again with nothing new downloads nothing. It bounds each
-  sync, not the local mirror: frequent syncs each take the newest captures since the last one,
-  and `capture clean` prunes the mirror. The earliest turns the leftover budget takes can be
-  turns already promoted, so a long conversation's newest turns may wait for a later sync.
+  takes the earliest turns of the next one whose turns that fit include one not yet promoted
+  (one whose would all be promoted is passed over, and when none qualifies the rest goes
+  unused). That holds however many captures the bucket holds, and leaves enough spare for the
+  plan to balance tool routes. Captures already local or promoted count toward it, so syncing
+  again with nothing new downloads nothing. It bounds each sync, not the local mirror, which
+  `capture clean` prunes. Frequent syncs each take the newest conversations since the last one;
+  a conversation too big for what is left of the budget gives its earliest turns not yet
+  promoted, with the promoted turns before them, so a very long conversation is fetched from
+  its start, not its middle.
 
 A conversation folder with a new turn inside the window also brings its promoted turns, whatever
-their age, so a fresh checkout rebuilds the new turn's history; its unpromoted turns outside the
-window stay behind. Turns written flat (an evalshift-sdk older than 0.7.0, or
-`EVALSHIFT_CAPTURE_LAYOUT=flat`) are fetched one at a time, as before.
+their age while the bucket still holds them, so a fresh checkout rebuilds the new turn's history;
+its unpromoted turns outside the window stay behind. Turns written flat (an evalshift-sdk older
+than 0.7.0, `EVALSHIFT_CAPTURE_LAYOUT=flat`, or the `@capture.agent` decorator) are fetched one
+at a time, as before.
 
 The summary names both:
 `fetched 40 capture(s) and 0 toolset(s) from s3://… (skipped 4 promoted, 11 older than
@@ -1317,13 +1321,14 @@ turns and loses others: there, record the full messages list on every turn.
 A conversation turn that does not record its own messages list rebuilds its history from the
 turns before it, so it is not eligible unless all of them are on disk
 (`not eligible: 3 missing earlier turns`). They are not when the window or the budget cut them
-off, when `capture clean` removed them, when they were written flat (an evalshift-sdk older than
-0.7.0, or `EVALSHIFT_CAPTURE_LAYOUT=flat`) and promoted on another machine (a fresh checkout
+off, when the bucket's lifecycle rule expired them, when `capture clean` removed them, when they
+were written flat (an evalshift-sdk older than 0.7.0, `EVALSHIFT_CAPTURE_LAYOUT=flat`, or the
+`@capture.agent` decorator) and promoted on another machine (a fresh checkout
 never fetches promoted flat captures) or dropped by a per-turn sample rate, when the SDK's
 `max_captures` / `capture_ttl` evicted them, or when the app numbers `turn_index` from 1 instead
 of 0. Sync then warns with those causes
 (`alpha: 3 turn(s) not promoted: earlier turns of their conversation are not on disk (outside
-captures.max_age or the fetch budget, removed by capture clean, …)`).
+captures.max_age, the fetch budget or the bucket's lifecycle rule, removed by capture clean, …)`).
 Pass the full messages list to `capture.model_call` so each turn carries its own history.
 
 If `evalshift.yaml` cannot be read or does not validate, sync runs without the limits. When the
@@ -1363,7 +1368,7 @@ would give a 1%-traffic route about two cases.
 ## Capture lifecycle
 
 The companion `evalshift-sdk` package records real agent runs to
-`.evalshift/captures/<suite>/<capture_id>.json` (a conversation's turns in
+`.evalshift/captures/<suite>/<capture_id>.json` (a `capture.agent_session` conversation's turns in
 `.evalshift/captures/<suite>/conv_<16 hex>/`, from evalshift-sdk 0.7.0; set `EVALSHIFT_DIR`
 to relocate the base). The CLI consumes them via the `capture` commands:
 
