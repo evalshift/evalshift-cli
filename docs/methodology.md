@@ -119,6 +119,11 @@ pairs all moved by the same non-zero amount (d is then a placeholder 0, with
 a `uniform drop:` / `uniform gain:` note) shows **⚠ Uniform drop/gain**. The
 severity, and so the verdict, is unchanged.
 
+The report's Confidence column reads the adjusted p-value: **Certain** below
+0.01, **Likely** below 0.05, otherwise **Unclear**. A row where no test ran
+(n < 5, or zero variance) shows **—** instead, because its p-value is a
+placeholder 1.0.
+
 ### Drift inside `min_similarity` is tested as no change
 
 `semantic` pins the source at 1.0, so every target that words anything

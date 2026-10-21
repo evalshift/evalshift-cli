@@ -12,7 +12,11 @@ import pytest
 from typer.testing import CliRunner
 
 from evalshift_cli.analysis.policy import evaluate_migration_policy
-from evalshift_cli.analysis.statistics import UNIFORM_DROP_NOTE_PREFIX, UNMEASURED_NOTE_PREFIX
+from evalshift_cli.analysis.statistics import (
+    UNIFORM_DROP_NOTE_PREFIX,
+    UNMEASURED_NOTE_PREFIX,
+    ZERO_VARIANCE_NOTE,
+)
 from evalshift_cli.cli.commands.analyze import ANALYSIS_FILENAME
 from evalshift_cli.cli.commands.evaluate import SCORES_FILENAME
 from evalshift_cli.cli.main import app
@@ -579,9 +583,11 @@ class TestHtmlRender:
         # Small samples (n < 10) are flagged so tiny effect sizes aren't
         # mistaken for conclusive evidence.
         assert "small-sample" in html
-        # Raw statistics survive as hover tooltips for power users.
+        # Raw statistics survive as hover tooltips for power users. This
+        # prompt's row ran no test, so its confidence tooltip says that rather
+        # than quoting the placeholder p of 1.000 as a corrected p-value.
         assert "Cohen's |d|" in html
-        assert "Benjamini–Hochberg" in html  # noqa: RUF001 — matches report copy
+        assert "No test ran: too few pairs, or every pair scored the same" in html
 
     def test_per_example_breakdown_is_plain_language(self, tmp_path: Path) -> None:
         cwd, run_id = _scaffold_full_run(tmp_path)
@@ -1774,6 +1780,48 @@ class TestANonSignificantChangeIsNotCalledEquivalent:
         assert '<code class="warn">!</code>' in summary
         assert "No meaningful difference between models" not in summary
 
+    def test_an_untested_row_has_no_confidence_word(self) -> None:
+        """A skipped test's p-value is a placeholder 1.0, not evidence of anything.
+
+        A real converter run showed "Unclear" on four rows where both models made
+        the same tool calls on all 17 pairs: every delta 0, so no test could run.
+        """
+        from evalshift_cli.reports.html import _confidence_label
+
+        assert _confidence_label("none", 1.0, "skipped") == "—"
+        assert _confidence_label("none", 0.15, "wilcoxon") == "Unclear"
+        assert _confidence_label("high", 0.001, "paired_t") == "Certain"
+
+    def test_identical_pairs_say_so(self) -> None:
+        from evalshift_cli.reports.html import _verdict
+
+        assert _verdict("none", [ZERO_VARIANCE_NOTE], 0.0) == (
+            "Equivalent",
+            "Both models scored the same on every pair.",
+        )
+
+    def test_the_evaluator_table_renders_identical_pairs(self, tmp_path: Path) -> None:
+        run_dir, _ = _scaffold_two_axis_run(tmp_path)
+        analysis_path = run_dir / ANALYSIS_FILENAME
+        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+        for comparison in analysis["comparisons"]:
+            comparison.update(
+                severity="none",
+                test="skipped",
+                effect_size=0.0,
+                delta_avg_score=0.0,
+                p_value_corrected=1.0,
+                notes=[*comparison["notes"], ZERO_VARIANCE_NOTE],
+            )
+        analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+        html = render_html(
+            build_report_payload(run_dir, tool_evaluator_names=frozenset({"routing"}))
+        )
+
+        evaluators = _section(html, "Overall, by evaluator")
+        assert "Both models scored the same on every pair." in evaluators
+        assert "Unclear" not in evaluators
+
     def test_a_uniform_drop_outranks_a_small_tested_dip_for_the_summary(self) -> None:
         """Ranked on d, a uniform drop's placeholder 0.0 lost to a d of −0.1.
 
@@ -1809,7 +1857,7 @@ class TestANonSignificantChangeIsNotCalledEquivalent:
         analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
         for comparison in analysis["comparisons"]:
             comparison.update(severity="none", test="wilcoxon", p_value_corrected=0.15)
-        analysis["comparisons"][1].update(delta_avg_score=-0.167, **divergence)
+        analysis["comparisons"][1].update({"delta_avg_score": -0.167, **divergence})
         analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
         return run_dir
 

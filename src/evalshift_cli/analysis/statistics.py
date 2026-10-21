@@ -96,6 +96,10 @@ NOT_APPLICABLE_REASON = "the evaluator measured nothing on them"
 #: no change.
 WITHIN_TOLERANCE_REASON = "tested as no change"
 
+#: The note on a comparison whose tested deltas are all the same value, so no
+#: test ran: its p-value (1.0) and effect size (0.0) are placeholders.
+ZERO_VARIANCE_NOTE = "zero variance — no test"
+
 #: Prefixes of the note on a zero-variance comparison whose pairs all moved by
 #: the same non-zero amount. No test can run on it, so it is severity ``none``
 #: with a placeholder ``effect_size`` of 0 -- but every pair agrees, and a
@@ -425,7 +429,7 @@ def _one_comparison(
             effect_size_ci_high=0.0,
             delta_avg_score=float(np.mean(deltas)),
             severity="none",
-            notes=[*notes, "zero variance — no test", *uniform],
+            notes=[*notes, ZERO_VARIANCE_NOTE, *uniform],
         )
 
     # Pick the test based on a normality screen.
@@ -599,6 +603,7 @@ __all__ = [
     "UNIFORM_GAIN_NOTE_PREFIX",
     "UNMEASURED_NOTE_PREFIX",
     "WITHIN_TOLERANCE_REASON",
+    "ZERO_VARIANCE_NOTE",
     "ComparisonResult",
     "Severity",
     "TestKind",

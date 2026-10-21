@@ -1832,6 +1832,8 @@ All severities "none" -> usually genuinely no significant difference; check n (<
   and a zero-variance row whose pairs all moved by the same non-zero amount (note prefix
   "uniform drop:"/"uniform gain:", d is a placeholder 0) reads "⚠ Uniform drop/gain".
   Display only: severity, and so the verdict, is unchanged.
+  Report "Confidence" = corrected p: Certain (<0.01), Likely (<0.05), Unclear; "—" when no
+  test ran (n<5, or zero variance: p is a placeholder 1.0, not evidence).
 Verdict "inconclusive" -> (1) all evaluators advisory (fresh init: flip blocking: true as the
 suite grows; recommendations name each advisory judge and whether its smallest per-prompt n has
 reached 20, or which prompt is short), (2) rate-budget breach unconfirmed by Wilson CI (grow the suite), (3) all n<5,

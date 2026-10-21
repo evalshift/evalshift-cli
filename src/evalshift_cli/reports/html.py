@@ -20,6 +20,7 @@ from evalshift_cli.analysis.statistics import (
     AXIS_NOTE_PREFIX,
     NEGLIGIBLE_EFFECT,
     UNMEASURED_NOTE_PREFIX,
+    ZERO_VARIANCE_NOTE,
     unconfirmed_change,
     uniform_change,
 )
@@ -158,6 +159,9 @@ def _verdict(
             f"A {_effect_magnitude(effect_size)} {direction} that this sample can't tell "
             "from noise; more examples would settle it.",
         )
+    if severity == "none" and ZERO_VARIANCE_NOTE in (notes or ()):
+        # Not uniform (that returned above), so every tested delta is 0.
+        return ("Equivalent", "Both models scored the same on every pair.")
     return _SEVERITY_VERDICTS.get(severity, ("Unknown", ""))
 
 
@@ -197,12 +201,15 @@ def _verdict_tone(
     return "warn"
 
 
-def _confidence_label(severity: str, p_corrected: float) -> str:
+def _confidence_label(severity: str, p_corrected: float, test: str | None = None) -> str:
     """Map a corrected p-value to a plain-language confidence word.
 
-    Returns an em dash when the comparison had too little data to judge.
+    Returns an em dash when no test ran: too little data, or every tested
+    delta the same value. A skipped test's p-value is a placeholder 1.0, and
+    reading it as "Unclear" put that word on four rows where both models made
+    the same tool calls on every one of 17 pairs.
     """
-    if severity == "insufficient":
+    if severity == "insufficient" or test == "skipped":
         return "—"
     if p_corrected < 0.01:
         return "Certain"

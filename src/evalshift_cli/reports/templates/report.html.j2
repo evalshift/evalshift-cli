@@ -341,8 +341,8 @@
               {{ "%+.0f"|format(row.delta_avg_score * 100) }}%
               <span class="magnitude" style="display:block">{{ effect_magnitude(row.effect_size) }}</span>
             </td>
-            {% set conf = confidence_label(row.severity, row.p_value_corrected) %}
-            <td class="num" title="p_corrected = {{ "%.3f"|format(row.p_value_corrected) }} (Benjamini–Hochberg)">
+            {% set conf = confidence_label(row.severity, row.p_value_corrected, row.test) %}
+            <td class="num" title="{% if row.test == "skipped" %}No test ran: too few pairs, or every pair scored the same{% else %}p_corrected = {{ "%.3f"|format(row.p_value_corrected) }} (Benjamini–Hochberg){% endif %}">
               {% if conf == "—" %}<span class="faint">—</span>{% else %}<span class="badge conf conf-{{ conf|lower }}">{{ conf }}</span>{% endif %}
             </td>
             <td class="num">
@@ -551,7 +551,7 @@
           </tr></thead>
           <tbody>
           {% for row in section.aggregate_rows %}
-            {% set conf = confidence_label(row.severity, row.p_value_corrected) %}
+            {% set conf = confidence_label(row.severity, row.p_value_corrected, row.test) %}
             {% set axis = axis_of(row.notes) %}
             {% set head, blurb = verdict(row.severity, row.notes, row.effect_size) %}
             {% set unmeasured = row.n == 0 %}
@@ -611,7 +611,7 @@
           </tr></thead>
           <tbody>
           {% for row in significant %}
-            {% set conf = confidence_label(row.severity, row.p_value_corrected) %}
+            {% set conf = confidence_label(row.severity, row.p_value_corrected, row.test) %}
             {% set axis = axis_of(row.notes) %}
             <tr class="sev-{{ row.severity }} tone-{{ verdict_tone(row.severity, row.notes, row.effect_size) }}" title="{{ test_label(row.test) }} · p (raw) {{ "%.3f"|format(row.p_value) }} · p (corrected) {{ "%.3f"|format(row.p_value_corrected) }}">
               <td>{{ row.slice_name }}</td>

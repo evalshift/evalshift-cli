@@ -1029,7 +1029,9 @@ Usually correct behaviour: no statistically significant difference. Check n (n <
 - **~ Unconfirmed drop / gain**: a tested effect of Cohen's |d| ≥ 0.2 that missed significance. A medium drop at n = 21 is a change this sample can't rule in or out, not the absence of one; more examples settle it.
 - **⚠ Uniform drop / gain**: every pair moved by the same non-zero amount. Zero variance leaves nothing to test, so d is a placeholder 0, but no pair disagrees; `analyze` names it with a `uniform drop:` / `uniform gain:` note. Pairs that all sat inside the evaluator's own threshold test as zero and stay Equivalent.
 
-Neither reading changes the severity, so neither gates the verdict.
+Neither reading changes the severity, so neither gates the verdict. A zero-variance row with no shift (every pair scored the same) reads **✓ Equivalent — Both models scored the same on every pair.**
+
+The report's **Confidence** column turns the corrected p-value into **Certain** (< 0.01), **Likely** (< 0.05) or **Unclear**. A row where no test ran shows **—**: too few pairs, or every pair scoring the same. Its p-value is a placeholder 1.0, not evidence.
 
 ### The policy verdict is `inconclusive`
 

@@ -135,6 +135,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   These are display only: severities and verdicts are unchanged. The note is
   written by `analyze`, so re-run `analyze` (or `compare`) on an existing run
   to get it; `report` alone reads the old `analysis.json`.
+- A row where no test ran no longer reads "Unclear" in the Confidence
+  column. When every tested delta is the same value, `analyze` skips the test
+  and stores a placeholder p-value of 1.0, which the column read as "Unclear".
+  A real converter run showed "Unclear" on four rows where both models made
+  the same tool calls on all 17 pairs. Such a row now shows "—", its tooltip
+  says no test ran, and an all-zero row reads "Equivalent — Both models
+  scored the same on every pair."
 - The executive summary no longer puts a ✓ on a "Ground truth missed by
   both" row. Its rows never got the shared-miss annotation the evaluator
   table's rows did, so a prompt whose summary row was that axis read "✓
