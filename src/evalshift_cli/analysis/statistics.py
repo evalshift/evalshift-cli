@@ -400,10 +400,11 @@ def _one_comparison(
     if float(np.std(tested, ddof=1)) < 1e-9:
         # Every tested delta is the same value. When it is not zero, every
         # pair moved by it: name that, since d below is only a placeholder.
-        # (All pairs forgiven within tolerance test as 0 and stay unnamed.)
+        # (All pairs forgiven within tolerance test as 0 and stay unnamed, and
+        # so does a shift too small to print: "moved by -0.000" says nothing.)
         shift = float(np.mean(tested))
         uniform: list[str] = []
-        if abs(shift) >= 1e-9:
+        if round(shift, 3) != 0:
             prefix = UNIFORM_DROP_NOTE_PREFIX if shift < 0 else UNIFORM_GAIN_NOTE_PREFIX
             uniform.append(
                 f"{prefix} every pair moved by {shift:+.3f}; zero variance leaves nothing "

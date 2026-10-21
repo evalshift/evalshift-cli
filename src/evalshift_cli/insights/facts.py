@@ -93,6 +93,9 @@ FAILED_REPLY = "[the call failed]"
 MALFORMED_ARGUMENTS = "<malformed arguments>"
 #: Per-call bound on a sample's argument JSON; see :func:`_shown_arguments`.
 MAX_SHOWN_ARGUMENT_CHARS = 200
+#: Calls a sample lists before "+N more call(s)". With the per-call bound this
+#: keeps the calls well inside the sample cap, so the reply's text survives.
+MAX_SHOWN_CALLS = 6
 
 #: The two policy budgets that are ratios of increase rather than rates.
 _INCREASE_BUDGETS: frozenset[str] = frozenset({"max_cost_increase", "max_latency_increase"})
@@ -483,8 +486,10 @@ def describe_reply(call: Call) -> str:
     multi_round = any(c.round_index for c in calls)
     shown = "; ".join(
         f"{f'r{c.round_index + 1}: ' if multi_round else ''}{c.tool_name}({_shown_arguments(c)})"
-        for c in calls
+        for c in calls[:MAX_SHOWN_CALLS]
     )
+    if len(calls) > MAX_SHOWN_CALLS:
+        shown += f"; +{len(calls) - MAX_SHOWN_CALLS} more call(s)"
     reply = f"{TOOL_CALLS_MARKER} {shown}"
     return f"{reply} {TEXT_MARKER} {call.text}" if call.text else reply
 
@@ -613,6 +618,7 @@ __all__ = [
     "FAILED_REPLY",
     "MALFORMED_ARGUMENTS",
     "MAX_SHOWN_ARGUMENT_CHARS",
+    "MAX_SHOWN_CALLS",
     "NOT_AVAILABLE",
     "NOT_COMPARABLE",
     "NOT_MEASURED",

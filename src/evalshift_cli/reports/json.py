@@ -22,7 +22,11 @@ from typing import Any
 
 from evalshift_cli.analysis.policy import is_shared_ground_truth_miss
 from evalshift_cli.analysis.slicing import ALL_SLICE
-from evalshift_cli.analysis.statistics import ADVISORY_NOTE_PREFIX, AXIS_NOTE_PREFIX
+from evalshift_cli.analysis.statistics import (
+    ADVISORY_NOTE_PREFIX,
+    AXIS_NOTE_PREFIX,
+    uniform_change,
+)
 from evalshift_cli.cli.commands.analyze import ANALYSIS_FILENAME, MIGRATION_DECISION_FILENAME
 from evalshift_cli.cli.commands.evaluate import SCORES_FILENAME
 from evalshift_cli.evaluators.base import EvalRecord
@@ -607,9 +611,13 @@ def _build_executive_summary(
         "insufficient": 6,
     }
 
-    def order(comparison: dict[str, Any]) -> tuple[int, float, float]:
+    def order(comparison: dict[str, Any]) -> tuple[int, bool, float, float]:
+        # A uniform drop's effect size is a placeholder 0.0 (zero variance,
+        # nothing to test), so ranked on d it lost to a tested d of -0.1 and the
+        # summary read "Equivalent" over a prompt on which every pair dropped.
         return (
             severity_rank.get(comparison["severity"], 99),
+            uniform_change(comparison.get("notes") or []) != "drop",
             float(comparison.get("effect_size", 0.0)),
             float(comparison.get("p_value_corrected", 1.0)),
         )

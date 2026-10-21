@@ -107,9 +107,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provided specific information" for replies that each called a tool. The
   regression samples now show a reply as its tool calls with their arguments,
   then any text, and the instruction says a tool call is not an empty answer.
-  Each call's arguments are capped at 200 characters so the text always
-  survives the 2000-character sample cap, malformed arguments read
-  `<malformed arguments>`, and a multi-round reply marks each call's round.
+  Each call's arguments are capped at 200 characters and a sample lists at
+  most 6 calls ("+N more call(s)"), so the text always survives the
+  2000-character sample cap. Malformed arguments read `<malformed arguments>`,
+  and a multi-round reply marks each call's round.
 - The narrative no longer presents a run's total cost as a cost per call. The
   figures it is given were each model's whole-run total, under keys that did
   not say so, and the instruction's own example phrase was "cost per call".
@@ -126,9 +127,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   colour. A zero-variance row whose pairs all moved by the same non-zero
   amount, where d is a placeholder 0 and a uniform −1.0 drop read "✓
   Equivalent" beside "−100%", now carries a `uniform drop:` / `uniform gain:`
-  note from `analyze` and renders as "⚠ Uniform drop/gain". The `analyze`
-  terminal table uses the same reading for its glyph. These are display only:
-  severities and verdicts are unchanged.
+  note from `analyze` and renders as "⚠ Uniform drop/gain". It also outranks
+  other non-significant rows for a prompt's executive-summary row, where its
+  placeholder d had lost to a tested d of −0.1. The `analyze` terminal table
+  uses the same reading for its glyph, and `compare` adds a callout under "~
+  no significant change" naming each sub-metric that dropped on every pair.
+  These are display only: severities and verdicts are unchanged. The note is
+  written by `analyze`, so re-run `analyze` (or `compare`) on an existing run
+  to get it; `report` alone reads the old `analysis.json`.
 - The executive summary no longer puts a ✓ on a "Ground truth missed by
   both" row. Its rows never got the shared-miss annotation the evaluator
   table's rows did, so a prompt whose summary row was that axis read "✓

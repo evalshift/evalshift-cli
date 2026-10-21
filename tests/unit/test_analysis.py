@@ -472,6 +472,11 @@ class TestAnalyze:
         assert c.delta_avg_score < 0
         assert uniform_change(c.notes) is None
 
+    def test_a_shift_below_display_precision_is_not_a_uniform_change(self) -> None:
+        """A note reading "moved by -0.000" beside a warning glyph says nothing."""
+        nudged = [SlicedScore("p", "e", f"ex{i}", 1.0, 0.9999, -0.0001) for i in range(10)]
+        assert uniform_change(analyze(sliced_by_slice={"all": nudged})[0].notes) is None
+
     def test_a_non_negligible_none_is_unconfirmed(self) -> None:
         assert unconfirmed_change("none", -0.51)
         assert unconfirmed_change("none", 0.2)

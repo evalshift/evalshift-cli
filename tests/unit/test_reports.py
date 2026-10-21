@@ -1774,6 +1774,34 @@ class TestANonSignificantChangeIsNotCalledEquivalent:
         assert '<code class="warn">!</code>' in summary
         assert "No meaningful difference between models" not in summary
 
+    def test_a_uniform_drop_outranks_a_small_tested_dip_for_the_summary(self) -> None:
+        """Ranked on d, a uniform drop's placeholder 0.0 lost to a d of −0.1.
+
+        The summary then read "✓ Equivalent" over a prompt whose evaluator
+        table, one section down, read "⚠ Uniform drop" on every pair.
+        """
+        from evalshift_cli.reports.json import _build_executive_summary
+
+        dip = {
+            "prompt_id": "replay",
+            "evaluator_name": "semantic.cosine",
+            "slice_name": "all",
+            "severity": "none",
+            "effect_size": -0.1,
+            "p_value_corrected": 0.6,
+            "notes": [],
+        }
+        uniform = {
+            **dip,
+            "evaluator_name": "routing",
+            "effect_size": 0.0,
+            "p_value_corrected": 1.0,
+            "delta_avg_score": -1.0,
+            "notes": ["zero variance — no test", f"{UNIFORM_DROP_NOTE_PREFIX} every pair"],
+        }
+        rows = _build_executive_summary({"comparisons": [dip, uniform]}, set())
+        assert [row["evaluator_name"] for row in rows] == ["routing"]
+
     def _rewrite_analysis(self, tmp_path: Path, *, divergence: dict[str, object]) -> Path:
         """The two-axis run with both rows non-significant and the divergence row edited."""
         run_dir, _ = _scaffold_two_axis_run(tmp_path)

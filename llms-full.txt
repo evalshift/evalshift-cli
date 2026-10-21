@@ -1400,9 +1400,8 @@ Model: defaults.insights_model, falling back to defaults.judge_model.
   prompt rule is the primary fix; a false match costs the retry (shared with invented-number
   rejections) and a repeated one ships the templated prose, which has no findings. Cached
   narratives regenerate only when the FACTS move (key = config_hash + model + FACTS digest,
-  not the CLI version): delete insights.json to rewrite an existing run's prose. This
-  release renames the cost facts and changes sample text, so every run regenerates once on
-  its next report (push before that uploads the old narrative).
+  not the CLI version): delete insights.json to rewrite an existing run's prose. Until the
+  next report, push uploads the narrative already written.
 - Prompt input: the pre-rendered FACTS block plus the worst 8 regressions by worst_delta_score
   (input + both outputs, each truncated to 2000 chars). Same data exposure as llm_judge.
   A reply that called tools is sent as `[tool calls] name({args}); ...` (then `[text] ...`),

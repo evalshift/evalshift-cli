@@ -905,6 +905,15 @@ def test_long_arguments_cannot_push_the_text_out_of_the_sample() -> None:
     assert shown.count("…") == 2
 
 
+def test_many_calls_cannot_push_the_text_out_of_the_sample() -> None:
+    """Capped per call, a dozen long calls still filled the 2000-character cut."""
+    calls = [("create_note", {"body": "x" * 5000}) for _ in range(12)]
+    shown = describe_reply(_call(text="Saved them.", trace=_trace(*calls)))
+    assert shown.endswith("[text] Saved them.")
+    assert len(shown) < MAX_SAMPLE_TEXT_CHARS
+    assert "+6 more call(s)" in shown
+
+
 def test_malformed_arguments_are_named_not_dumped() -> None:
     reply = _call(trace=_trace(("get_tasks", {"_raw": "{oops", "_parse_error": True})))
     assert describe_reply(reply) == "[tool calls] get_tasks(<malformed arguments>)"

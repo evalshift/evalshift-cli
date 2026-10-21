@@ -34,7 +34,7 @@ from rich.live import Live
 from rich.markup import escape
 from rich.text import Text
 
-from evalshift_cli.analysis.statistics import ComparisonResult
+from evalshift_cli.analysis.statistics import ComparisonResult, uniform_change
 from evalshift_cli.captures.freshness import suite_freshness
 from evalshift_cli.cli.commands._star import print_star_prompt
 from evalshift_cli.cli.commands._suites import (
@@ -214,6 +214,18 @@ def _compose_verdict(comparisons: list[ComparisonResult]) -> _Verdict:
         callout.append(
             f"{len(minor)} sub-metric{plural} regressed "
             f"({worst.evaluator_name}; n.s. q={worst.p_value_corrected:.2f})",
+            style="yellow",
+        )
+
+    # Zero variance leaves a uniform drop untestable, so it is ``none`` and
+    # "no significant change" is true of it -- but every pair dropped.
+    uniform = [c for c in comparisons if c.severity == "none" and uniform_change(c.notes) == "drop"]
+    if uniform:
+        callout = callout.append("\n") if callout is not None else Text()
+        callout.append("⚠ ", style="yellow")
+        callout.append(
+            f"{len(uniform)} sub-metric{'s' if len(uniform) != 1 else ''} dropped by the same "
+            f"amount on every pair (untested: {', '.join(c.evaluator_name for c in uniform)})",
             style="yellow",
         )
 
