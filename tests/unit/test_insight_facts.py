@@ -31,6 +31,7 @@ from evalshift_cli.insights.facts import (
     describe_reply,
 )
 from evalshift_cli.insights.generator import banned_identifiers
+from evalshift_cli.insights.models import MAX_SAMPLE_TEXT_CHARS
 from evalshift_cli.insights.templates import fallback_insight
 from evalshift_cli.reports.economics import PromptEconomics
 from evalshift_cli.runner.models import Call
@@ -890,6 +891,36 @@ def test_only_a_reply_with_neither_is_called_empty() -> None:
 
 def test_a_failed_call_is_not_called_empty() -> None:
     assert describe_reply(_call(error="timeout")) == "[the call failed]"
+
+
+def test_long_arguments_cannot_push_the_text_out_of_the_sample() -> None:
+    """Samples are cut at 2000 characters, calls first; ``[text]`` must survive."""
+    reply = _call(
+        text="Saved it.",
+        trace=_trace(("create_note", {"body": "x" * 5000}), ("create_note", {"body": "y" * 5000})),
+    )
+    shown = describe_reply(reply)
+    assert shown.endswith("[text] Saved it.")
+    assert len(shown) < MAX_SAMPLE_TEXT_CHARS
+    assert shown.count("…") == 2
+
+
+def test_malformed_arguments_are_named_not_dumped() -> None:
+    reply = _call(trace=_trace(("get_tasks", {"_raw": "{oops", "_parse_error": True})))
+    assert describe_reply(reply) == "[tool calls] get_tasks(<malformed arguments>)"
+
+
+def test_calls_from_several_rounds_are_marked_by_round() -> None:
+    trace = ToolTrace(
+        calls=[
+            ToolCall(tool_name="search_notes", arguments={}, sequence_index=0, round_index=0),
+            ToolCall(tool_name="get_tasks", arguments={}, sequence_index=1, round_index=1),
+        ],
+        round_count=2,
+    )
+    assert describe_reply(_call(trace=trace)) == (
+        "[tool calls] r1: search_notes({}); r2: get_tasks({})"
+    )
 
 
 def _call(**overrides: Any) -> Call:

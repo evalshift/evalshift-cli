@@ -15,12 +15,13 @@ so external tools can read the report data without parsing HTML.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from evalshift_cli.analysis.policy import is_shared_ground_truth_miss
+from evalshift_cli.analysis.slicing import ALL_SLICE
 from evalshift_cli.analysis.statistics import ADVISORY_NOTE_PREFIX, AXIS_NOTE_PREFIX
 from evalshift_cli.cli.commands.analyze import ANALYSIS_FILENAME, MIGRATION_DECISION_FILENAME
 from evalshift_cli.cli.commands.evaluate import SCORES_FILENAME
@@ -339,7 +340,14 @@ def build_report_payload(
     cost = sum(c.cost_usd for c in calls)
 
     advisory = _advisory_evaluator_names(analysis, scores)
-    summary = _build_executive_summary(analysis, advisory)
+    # Annotated like the evaluator table's rows, or a shared ground-truth miss
+    # chosen as a prompt's summary row headlines as "✓ Equivalent" one table
+    # above the same row reading "Ground truth missed by both".
+    summary = _annotate_shared_misses(
+        _build_executive_summary(analysis, advisory),
+        scores,
+        {example.id: list(example.tags) for example in suite.examples},
+    )
     sections = _build_prompt_sections(
         analysis,
         scores,
@@ -920,8 +928,9 @@ def _example_tool_change(scored: list[EvalRecord]) -> ToolChange | None:
 def _annotate_shared_misses(
     rows: list[dict[str, Any]],
     records: list[EvalRecord],
+    tags_by_example_id: Mapping[str, Sequence[str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Flag aggregate rows whose every measurement was a shared ground-truth miss.
+    """Flag comparison rows whose every measurement was a shared ground-truth miss.
 
     Such a row is a genuine zero delta and the statistics are not wrong; the
     *headline* is. Left alone it renders "✓ Equivalent — No meaningful
@@ -932,7 +941,9 @@ def _annotate_shared_misses(
     Rows are matched to records on ``(prompt_id, evaluator_name)`` plus the
     axis, when the comparison names one. It only names one where the
     evaluator contributed several — which is exactly when the match would
-    otherwise be ambiguous.
+    otherwise be ambiguous. A row for a named slice is matched only to the
+    records of examples carrying that tag, which takes ``tags_by_example_id``;
+    without it such a row is left as it is.
     """
     by_key: dict[tuple[str, str, str], list[EvalRecord]] = {}
     for record in records:
@@ -943,6 +954,10 @@ def _annotate_shared_misses(
 
     out: list[dict[str, Any]] = []
     for row in rows:
+        slice_name = row.get("slice_name", ALL_SLICE)
+        if slice_name != ALL_SLICE and tags_by_example_id is None:
+            out.append(row)
+            continue
         axis = _axis_of(row.get("notes", []))
         measured = [
             record
@@ -951,6 +966,8 @@ def _annotate_shared_misses(
             and name == row["evaluator_name"]
             and (not axis or kind == axis)
             for record in group
+            if slice_name == ALL_SLICE
+            or slice_name in (tags_by_example_id or {}).get(record.example_id, ())
         ]
         misses = [record for record in measured if is_shared_ground_truth_miss(record)]
         if measured and len(misses) == len(measured):

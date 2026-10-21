@@ -16,7 +16,13 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from evalshift_cli.analysis.policy import BUDGET_LABELS, BUDGET_MEANINGS
-from evalshift_cli.analysis.statistics import AXIS_NOTE_PREFIX, UNMEASURED_NOTE_PREFIX
+from evalshift_cli.analysis.statistics import (
+    AXIS_NOTE_PREFIX,
+    NEGLIGIBLE_EFFECT,
+    UNMEASURED_NOTE_PREFIX,
+    unconfirmed_change,
+    uniform_change,
+)
 from evalshift_cli.evaluators.failures import category_label
 from evalshift_cli.evaluators.tool_selection import KIND_CONFORMANCE, KIND_DIVERGENCE
 from evalshift_cli.evaluators.trace_invariants import KIND as KIND_INVARIANTS
@@ -82,22 +88,46 @@ _SHARED_MISS_VERDICT: tuple[str, str] = (
 # Small paired samples make effect sizes and p-values unstable; flag them.
 _SMALL_SAMPLE_THRESHOLD: int = 10
 
-# Below this Cohen's |d| an effect is negligible (Cohen's conventions, the
-# boundary _effect_magnitude words as "negligible"). Only such a `none` row
-# reads as equivalent: `none` means the corrected p-value missed alpha, and a
-# medium effect that missed it at n = 21 is unconfirmed, not absent.
-_NEGLIGIBLE_EFFECT: float = 0.2
-
 _UNCONFIRMED_GLYPH: str = "~"
+_UNIFORM_GLYPH: str = "⚠"
 
 
 def _shared_miss(notes: Sequence[str] | None) -> bool:
     return any(note.startswith(SHARED_GROUND_TRUTH_NOTE_PREFIX) for note in notes or ())
 
 
-def _unconfirmed(severity: str, effect_size: float | None) -> bool:
-    """A ``none`` row whose effect is too large to call equivalent."""
-    return severity == "none" and effect_size is not None and abs(effect_size) >= _NEGLIGIBLE_EFFECT
+def _reading(
+    severity: str,
+    notes: Sequence[str] | None,
+    effect_size: float | None,
+) -> str:
+    """Which plain-language override of the severity bucket applies, or ``""``.
+
+    In each the number is right and the bucket's reading of it is not:
+
+    - ``"shared"``: both models failed the same ground truth, so the row
+      measures the suite, not the migration.
+    - ``"unmeasured"``: nothing was compared, so the result is unknown, not equal.
+    - ``"uniform drop"`` / ``"uniform gain"``: every pair moved by the same
+      amount, so ``analyze`` could not test it and its d is a placeholder 0.
+    - ``"unconfirmed"``: a non-negligible effect that missed significance. A
+      real run headlined a −17% change (d −0.51, corrected p 0.15) as
+      "Equivalent — No meaningful difference between models" under a FAIL.
+    """
+    if _shared_miss(notes):
+        return "shared"
+    if severity == "insufficient" and any(
+        note.startswith(UNMEASURED_NOTE_PREFIX) for note in notes or ()
+    ):
+        return "unmeasured"
+    if severity != "none":
+        return ""
+    direction = uniform_change(notes or ())
+    if direction is not None:
+        return f"uniform {direction}"
+    if effect_size is not None and unconfirmed_change(severity, effect_size):
+        return "unconfirmed"
+    return ""
 
 
 def _verdict(
@@ -107,21 +137,21 @@ def _verdict(
 ) -> tuple[str, str]:
     """Return the (headline, explanation) pair for a severity bucket.
 
-    Three readings override the bucket, because in each the number is right
-    and the plain-language reading of it is not: an evaluator that compared
-    nothing is unknown rather than equal, an axis both models failed
-    identically is a broken suite rather than a safe migration, and a
-    non-negligible effect that missed significance is unconfirmed rather than
-    equivalent. A real run headlined a −17% change (d −0.51, corrected p 0.15)
-    as "Equivalent — No meaningful difference between models".
+    See :func:`_reading` for the cases that override the bucket.
     """
-    if _shared_miss(notes):
+    reading = _reading(severity, notes, effect_size)
+    if reading == "shared":
         return _SHARED_MISS_VERDICT
-    if severity == "insufficient" and any(
-        note.startswith(UNMEASURED_NOTE_PREFIX) for note in notes or ()
-    ):
+    if reading == "unmeasured":
         return _UNMEASURED_VERDICT
-    if effect_size is not None and _unconfirmed(severity, effect_size):
+    if reading in ("uniform drop", "uniform gain"):
+        lower = reading == "uniform drop"
+        return (
+            "Uniform drop" if lower else "Uniform gain",
+            f"Every pair scored the same amount {'lower' if lower else 'higher'}: "
+            "no spread to test, but no pair disagrees.",
+        )
+    if reading == "unconfirmed" and effect_size is not None:
         direction = "drop" if effect_size < 0 else "gain"
         return (
             f"Unconfirmed {direction}",
@@ -138,13 +168,16 @@ def _verdict_glyph(
 ) -> str:
     """The glyph beside a verdict headline, matching :func:`_verdict`'s reading.
 
-    A shared ground-truth miss and an unconfirmed change both score ``none``,
-    whose glyph is ✓. Leaving it there would put a tick on the row that says
-    the suite is broken, or on a change nobody has ruled out.
+    Every override in :func:`_reading` but ``unmeasured`` scores ``none``,
+    whose glyph is ✓. Left there, a tick would sit on the row that says the
+    suite is broken, on a change nobody has ruled out, or beside "−100%".
     """
-    if _shared_miss(notes):
+    reading = _reading(severity, notes, effect_size)
+    if reading == "shared":
         return "!"
-    if _unconfirmed(severity, effect_size):
+    if reading in ("uniform drop", "uniform gain"):
+        return _UNIFORM_GLYPH
+    if reading == "unconfirmed":
         return _UNCONFIRMED_GLYPH
     return _SEVERITY_GLYPHS.get(severity, "?")
 
@@ -155,7 +188,7 @@ def _verdict_tone(
     effect_size: float | None = None,
 ) -> str:
     """``ok``, ``warn`` or ``bad``: the colour of :func:`_verdict`'s reading."""
-    if _shared_miss(notes) or _unconfirmed(severity, effect_size):
+    if _reading(severity, notes, effect_size):
         return "warn"
     if severity in ("none", "improved"):
         return "ok"
@@ -375,7 +408,7 @@ def _latency(ms: float, live_calls: int) -> str:
 def _effect_magnitude(effect_size: float) -> str:
     """Describe a Cohen's d magnitude in words (Cohen's conventions)."""
     d = abs(effect_size)
-    if d < _NEGLIGIBLE_EFFECT:
+    if d < NEGLIGIBLE_EFFECT:
         return "negligible"
     if d < 0.5:
         return "small"

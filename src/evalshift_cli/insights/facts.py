@@ -27,6 +27,7 @@ from evalshift_cli.analysis.policy import (
 from evalshift_cli.analysis.slicing import ALL_SLICE
 from evalshift_cli.analysis.statistics import ComparisonResult
 from evalshift_cli.evaluators.base import EvalRecord
+from evalshift_cli.evaluators.tool_models import ToolCall
 from evalshift_cli.insights.models import (
     MAX_REGRESSION_SAMPLES,
     MAX_SAMPLE_TEXT_CHARS,
@@ -88,6 +89,10 @@ TOOL_CALLS_MARKER = "[tool calls]"
 TEXT_MARKER = "[text]"
 EMPTY_REPLY = "[empty reply: no text and no tool calls]"
 FAILED_REPLY = "[the call failed]"
+#: Arguments the provider sent that did not parse as JSON.
+MALFORMED_ARGUMENTS = "<malformed arguments>"
+#: Per-call bound on a sample's argument JSON; see :func:`_shown_arguments`.
+MAX_SHOWN_ARGUMENT_CHARS = 200
 
 #: The two policy budgets that are ratios of increase rather than rates.
 _INCREASE_BUDGETS: frozenset[str] = frozenset({"max_cost_increase", "max_latency_increase"})
@@ -475,12 +480,28 @@ def describe_reply(call: Call) -> str:
     calls = call.trace.calls if call.trace is not None else []
     if not calls:
         return call.text or EMPTY_REPLY
+    multi_round = any(c.round_index for c in calls)
     shown = "; ".join(
-        f"{c.tool_name}({json.dumps(c.arguments, sort_keys=True, ensure_ascii=False)})"
+        f"{f'r{c.round_index + 1}: ' if multi_round else ''}{c.tool_name}({_shown_arguments(c)})"
         for c in calls
     )
     reply = f"{TOOL_CALLS_MARKER} {shown}"
     return f"{reply} {TEXT_MARKER} {call.text}" if call.text else reply
+
+
+def _shown_arguments(call: ToolCall) -> str:
+    """One call's arguments, bounded so the reply's text survives the sample cap.
+
+    The whole sample is cut at :data:`MAX_SAMPLE_TEXT_CHARS`, calls first, so
+    one long ``create_note`` body would otherwise push ``[text]`` off the end
+    and read as a reply that wrote nothing.
+    """
+    if call.arguments.get("_parse_error"):
+        return MALFORMED_ARGUMENTS
+    shown = json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)
+    if len(shown) <= MAX_SHOWN_ARGUMENT_CHARS:
+        return shown
+    return shown[: MAX_SHOWN_ARGUMENT_CHARS - 1] + "…"
 
 
 def _regression_samples(examples: Sequence[ExampleFact]) -> list[RegressionSample]:
@@ -590,6 +611,8 @@ __all__ = [
     "BUDGET_WITHIN",
     "EMPTY_REPLY",
     "FAILED_REPLY",
+    "MALFORMED_ARGUMENTS",
+    "MAX_SHOWN_ARGUMENT_CHARS",
     "NOT_AVAILABLE",
     "NOT_COMPARABLE",
     "NOT_MEASURED",

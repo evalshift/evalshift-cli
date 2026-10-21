@@ -168,6 +168,22 @@ async def test_the_prompt_says_a_tool_call_reply_is_not_an_empty_answer(
     assert "never as an empty or missing answer" in prompt
 
 
+async def test_the_prompt_lets_tool_names_through_and_keeps_argument_digits_out(
+    fake_client: FakeModelClient, sample_facts: Facts
+) -> None:
+    """Tool names are snake_case, and argument dates are not FACTS figures.
+
+    Quoting "2026-10-21" out of a sample fails the number check, which spends
+    the one retry and can ship the templated prose with no findings.
+    """
+    fake_client.queue_responses(_payload())
+    await _generate(sample_facts, fake_client)
+
+    prompt = fake_client.prompts[0]
+    assert "so are\n  the tool names shown in SAMPLED REGRESSIONS" in prompt
+    assert "never by\n  quoting a digit from them" in prompt
+
+
 async def test_generator_retries_once_on_an_invented_number(
     fake_client: FakeModelClient, sample_facts: Facts
 ) -> None:

@@ -33,7 +33,7 @@ Why these choices:
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -95,6 +95,40 @@ NOT_APPLICABLE_REASON = "the evaluator measured nothing on them"
 #: and the note is what tells a reader why a visible average drift tested as
 #: no change.
 WITHIN_TOLERANCE_REASON = "tested as no change"
+
+#: Prefixes of the note on a zero-variance comparison whose pairs all moved by
+#: the same non-zero amount. No test can run on it, so it is severity ``none``
+#: with a placeholder ``effect_size`` of 0 -- but every pair agrees, and a
+#: report reading that ``none`` as "no meaningful difference" put a green tick
+#: beside "-100%". The direction is in the prefix, so a reader never parses the
+#: figure. In ``notes`` for the same schema reason as
+#: :data:`UNMEASURED_NOTE_PREFIX`.
+UNIFORM_DROP_NOTE_PREFIX = "uniform drop:"
+UNIFORM_GAIN_NOTE_PREFIX = "uniform gain:"
+
+#: Cohen's |d| below which an effect is negligible (Cohen's conventions). A
+#: ``none`` comparison means only that the corrected p-value missed
+#: :data:`FDR_ALPHA`; it reads as *equivalent* only below this.
+NEGLIGIBLE_EFFECT: float = 0.2
+
+
+def uniform_change(notes: Sequence[str]) -> Literal["drop", "gain"] | None:
+    """The direction a zero-variance comparison's pairs all moved in, or ``None``."""
+    for note in notes:
+        if note.startswith(UNIFORM_DROP_NOTE_PREFIX):
+            return "drop"
+        if note.startswith(UNIFORM_GAIN_NOTE_PREFIX):
+            return "gain"
+    return None
+
+
+def unconfirmed_change(severity: str, effect_size: float) -> bool:
+    """A ``none`` comparison whose effect is too large to read as equivalent.
+
+    ``none`` means the corrected p-value missed alpha, whatever the effect: a
+    medium effect (d -0.51 at n = 21) that missed it is unconfirmed, not absent.
+    """
+    return severity == "none" and abs(effect_size) >= NEGLIGIBLE_EFFECT
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,6 +398,17 @@ def _one_comparison(
     # inference possible. Use a small tolerance to dodge catastrophic
     # cancellation that scipy already warns about.
     if float(np.std(tested, ddof=1)) < 1e-9:
+        # Every tested delta is the same value. When it is not zero, every
+        # pair moved by it: name that, since d below is only a placeholder.
+        # (All pairs forgiven within tolerance test as 0 and stay unnamed.)
+        shift = float(np.mean(tested))
+        uniform: list[str] = []
+        if abs(shift) >= 1e-9:
+            prefix = UNIFORM_DROP_NOTE_PREFIX if shift < 0 else UNIFORM_GAIN_NOTE_PREFIX
+            uniform.append(
+                f"{prefix} every pair moved by {shift:+.3f}; zero variance leaves nothing "
+                "to test, but no pair disagrees",
+            )
         return ComparisonResult(
             prompt_id=prompt_id,
             evaluator_name=evaluator_name,
@@ -379,7 +424,7 @@ def _one_comparison(
             effect_size_ci_high=0.0,
             delta_avg_score=float(np.mean(deltas)),
             severity="none",
-            notes=[*notes, "zero variance — no test"],
+            notes=[*notes, "zero variance — no test", *uniform],
         )
 
     # Pick the test based on a normality screen.
@@ -546,12 +591,17 @@ __all__ = [
     "FDR_ALPHA",
     "MIN_N_FOR_TEST",
     "MIN_N_RELIABLE",
+    "NEGLIGIBLE_EFFECT",
     "NORMALITY_ALPHA",
     "NOT_APPLICABLE_REASON",
+    "UNIFORM_DROP_NOTE_PREFIX",
+    "UNIFORM_GAIN_NOTE_PREFIX",
     "UNMEASURED_NOTE_PREFIX",
     "WITHIN_TOLERANCE_REASON",
     "ComparisonResult",
     "Severity",
     "TestKind",
     "analyze",
+    "unconfirmed_change",
+    "uniform_change",
 ]

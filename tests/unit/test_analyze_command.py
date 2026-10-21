@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from evalshift_cli.cli.commands.analyze import ANALYSIS_FILENAME
+from evalshift_cli.analysis.statistics import UNIFORM_DROP_NOTE_PREFIX, ComparisonResult
+from evalshift_cli.cli.commands.analyze import ANALYSIS_FILENAME, _severity_glyph
 from evalshift_cli.cli.commands.evaluate import SCORES_FILENAME
 from evalshift_cli.cli.main import app
 from evalshift_cli.evaluators.base import EvalRecord
@@ -538,3 +539,38 @@ class TestAnalyzeErrors:
         result = runner.invoke(app, ["analyze", run_id])
         assert result.exit_code == 1
         assert "scores.jsonl" in result.stdout
+
+
+def _comparison(**overrides: object) -> ComparisonResult:
+    fields: dict[str, object] = {
+        "prompt_id": "replay",
+        "evaluator_name": "routing",
+        "kind": "tool_selection.divergence",
+        "slice_name": "all",
+        "n": 21,
+        "test": "wilcoxon",
+        "statistic": 0.0,
+        "p_value": 0.04,
+        "p_value_corrected": 0.15,
+        "effect_size": 0.0,
+        "effect_size_ci_low": 0.0,
+        "effect_size_ci_high": 0.0,
+        "delta_avg_score": 0.0,
+        "severity": "none",
+        "notes": [],
+    }
+    fields.update(overrides)
+    return ComparisonResult(**fields)  # type: ignore[arg-type]
+
+
+def test_the_terminal_table_ticks_only_a_negligible_none() -> None:
+    """``report.html`` stopped calling these equivalent; the terminal table agrees."""
+    assert _severity_glyph(_comparison(effect_size=-0.1)) == ("✓", "green")
+    assert _severity_glyph(_comparison(effect_size=-0.51)) == ("~", "yellow")
+    uniform = _comparison(
+        test="skipped",
+        delta_avg_score=-1.0,
+        notes=["zero variance — no test", f"{UNIFORM_DROP_NOTE_PREFIX} every pair moved"],
+    )
+    assert _severity_glyph(uniform) == ("⚠", "yellow")
+    assert _severity_glyph(_comparison(severity="high", effect_size=-1.4)) == ("✗", "red")

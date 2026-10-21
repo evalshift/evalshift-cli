@@ -28,7 +28,12 @@ from evalshift_cli.analysis.slicing import (
     build_unmeasured,
     dedupe_slices,
 )
-from evalshift_cli.analysis.statistics import ComparisonResult, analyze
+from evalshift_cli.analysis.statistics import (
+    ComparisonResult,
+    analyze,
+    unconfirmed_change,
+    uniform_change,
+)
 from evalshift_cli.cli.commands.doctor import CONFIG_FILENAME
 from evalshift_cli.cli.commands.evaluate import SCORES_FILENAME
 from evalshift_cli.config.loader import ConfigError, load_config
@@ -359,6 +364,21 @@ _SEVERITY_GLYPHS: dict[str, tuple[str, str]] = {
 }
 
 
+def _severity_glyph(c: ComparisonResult) -> tuple[str, str]:
+    """The glyph and colour for ``c``, the same reading ``report.html`` gives it.
+
+    ``none`` means only that the corrected p-value missed alpha, so a green
+    tick is kept for a negligible effect. A uniform change (every pair moved by
+    the same amount, untestable) and a non-negligible effect that missed
+    significance are flagged instead.
+    """
+    if c.severity == "none" and uniform_change(c.notes) is not None:
+        return ("⚠", "yellow")
+    if unconfirmed_change(c.severity, c.effect_size):
+        return ("~", "yellow")
+    return _SEVERITY_GLYPHS.get(c.severity, ("?", "dim"))
+
+
 def _print_summary(
     console: Console,
     comparisons: list[ComparisonResult],
@@ -377,7 +397,7 @@ def _print_summary(
     for c in comparisons:
         # Skip the implicit all-slice if there's a more specific row;
         # but for the MVP just show every row to keep things simple.
-        glyph, style = _SEVERITY_GLYPHS.get(c.severity, ("?", "dim"))
+        glyph, style = _severity_glyph(c)
         table.add_row(
             f"[{style}]{glyph} {c.severity}[/{style}]",
             c.prompt_id,

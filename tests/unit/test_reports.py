@@ -12,7 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from evalshift_cli.analysis.policy import evaluate_migration_policy
-from evalshift_cli.analysis.statistics import UNMEASURED_NOTE_PREFIX
+from evalshift_cli.analysis.statistics import UNIFORM_DROP_NOTE_PREFIX, UNMEASURED_NOTE_PREFIX
 from evalshift_cli.cli.commands.analyze import ANALYSIS_FILENAME
 from evalshift_cli.cli.commands.evaluate import SCORES_FILENAME
 from evalshift_cli.cli.main import app
@@ -21,7 +21,6 @@ from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.reports.html import REPORT_HTML_FILENAME, render_html, write_html
 from evalshift_cli.reports.json import (
     REPORT_JSON_FILENAME,
-    SHARED_GROUND_TRUTH_NOTE_PREFIX,
     TopRegression,
     build_report_payload,
     write_report_json,
@@ -1728,30 +1727,68 @@ class TestANonSignificantChangeIsNotCalledEquivalent:
         assert _verdict_glyph("none", [], -0.19) == "✓"
         assert _verdict_tone("none", [], -0.19) == "ok"
 
-    def test_a_shared_ground_truth_miss_has_no_tick_in_any_table(self) -> None:
-        """The summary and evaluator tables used the bare severity glyph, a ✓."""
-        from evalshift_cli.reports.html import _verdict_glyph, _verdict_tone
+    def test_a_uniform_drop_is_not_equivalent(self) -> None:
+        """Zero variance leaves d at a placeholder 0.0; ``analyze`` names the drop."""
+        from evalshift_cli.reports.html import _verdict, _verdict_glyph, _verdict_tone
 
-        notes = [f"{SHARED_GROUND_TRUTH_NOTE_PREFIX} both sides missed"]
-        assert _verdict_glyph("none", notes, 0.0) == "!"
+        notes = ["zero variance — no test", f"{UNIFORM_DROP_NOTE_PREFIX} every pair moved"]
+        head, blurb = _verdict("none", notes, 0.0)
+        assert head == "Uniform drop"
+        assert "no pair disagrees" in blurb
+        assert _verdict_glyph("none", notes, 0.0) == "⚠"
         assert _verdict_tone("none", notes, 0.0) == "warn"
+        assert _verdict("none", ["zero variance — no test"], 0.0)[0] == "Equivalent"
 
-    def test_the_executive_summary_renders_the_unconfirmed_drop(self, tmp_path: Path) -> None:
+    def test_the_unconfirmed_drop_renders_in_both_tables(self, tmp_path: Path) -> None:
+        run_dir = self._rewrite_analysis(tmp_path, divergence={"effect_size": -0.51})
+        html = render_html(
+            build_report_payload(run_dir, tool_evaluator_names=frozenset({"routing"}))
+        )
+
+        summary = _section(html, "<h2>Executive summary</h2>")
+        assert "Unconfirmed drop" in summary
+        assert "No meaningful difference between models" not in summary
+        assert '<code class="warn">~</code>' in summary
+        assert "tone-warn" in summary
+        evaluators = _section(html, "Overall, by evaluator")
+        assert "~ Unconfirmed drop" in evaluators
+        assert "tone-warn" in evaluators
+
+    def test_a_shared_miss_chosen_for_the_summary_is_not_a_tick(self, tmp_path: Path) -> None:
+        """The summary rows never got the shared-miss note the evaluator table had.
+
+        With the divergence row a small, non-significant gain, the conformance
+        row (both models missed every recorded call) is the prompt's summary
+        row, and it read "✓ Equivalent" one table above "! Ground truth missed
+        by both".
+        """
+        run_dir = self._rewrite_analysis(
+            tmp_path, divergence={"effect_size": 0.1, "p_value_corrected": 0.4}
+        )
+        html = render_html(
+            build_report_payload(run_dir, tool_evaluator_names=frozenset({"routing"}))
+        )
+
+        summary = _section(html, "<h2>Executive summary</h2>")
+        assert "Ground truth missed by both" in summary
+        assert '<code class="warn">!</code>' in summary
+        assert "No meaningful difference between models" not in summary
+
+    def _rewrite_analysis(self, tmp_path: Path, *, divergence: dict[str, object]) -> Path:
+        """The two-axis run with both rows non-significant and the divergence row edited."""
         run_dir, _ = _scaffold_two_axis_run(tmp_path)
         analysis_path = run_dir / ANALYSIS_FILENAME
         analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
         for comparison in analysis["comparisons"]:
             comparison.update(severity="none", test="wilcoxon", p_value_corrected=0.15)
-        analysis["comparisons"][1].update(effect_size=-0.51, delta_avg_score=-0.167)
+        analysis["comparisons"][1].update(delta_avg_score=-0.167, **divergence)
         analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+        return run_dir
 
-        payload = build_report_payload(run_dir, tool_evaluator_names=frozenset({"routing"}))
-        html = render_html(payload)
 
-        summary = html.split("<h2>Executive summary</h2>", 1)[1].split("</table>", 1)[0]
-        assert "Unconfirmed drop" in summary
-        assert "No meaningful difference between models" not in summary
-        assert '<code class="warn">~</code>' in summary
+def _section(html: str, heading: str) -> str:
+    """The first table after ``heading``."""
+    return html.split(heading, 1)[1].split("</table>", 1)[0]
 
 
 # ---------------------------------------------------------------------------

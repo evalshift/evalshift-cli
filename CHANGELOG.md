@@ -107,6 +107,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provided specific information" for replies that each called a tool. The
   regression samples now show a reply as its tool calls with their arguments,
   then any text, and the instruction says a tool call is not an empty answer.
+  Each call's arguments are capped at 200 characters so the text always
+  survives the 2000-character sample cap, malformed arguments read
+  `<malformed arguments>`, and a multi-round reply marks each call's round.
 - The narrative no longer presents a run's total cost as a cost per call. The
   figures it is given were each model's whole-run total, under keys that did
   not say so, and the instruction's own example phrase was "cost per call".
@@ -120,9 +123,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   n = 21) got a green tick directly under a FAIL verdict. A `none` row now
   reads Equivalent only when |d| < 0.2. A larger effect renders as "~
   Unconfirmed drop" or "~ Unconfirmed gain", with its magnitude, in a warning
-  colour. The executive summary and the significant-rows table also now use
-  the same glyph as the evaluator table, so a "Ground truth missed by both"
-  row no longer carries a ✓ there either.
+  colour. A zero-variance row whose pairs all moved by the same non-zero
+  amount, where d is a placeholder 0 and a uniform −1.0 drop read "✓
+  Equivalent" beside "−100%", now carries a `uniform drop:` / `uniform gain:`
+  note from `analyze` and renders as "⚠ Uniform drop/gain". The `analyze`
+  terminal table uses the same reading for its glyph. These are display only:
+  severities and verdicts are unchanged.
+- The executive summary no longer puts a ✓ on a "Ground truth missed by
+  both" row. Its rows never got the shared-miss annotation the evaluator
+  table's rows did, so a prompt whose summary row was that axis read "✓
+  Equivalent" one table above "! Ground truth missed by both".
+- An existing run's narrative regenerates on its next `report`, because the
+  facts it is built from changed. Re-run `report` before `push` to replace an
+  already-written narrative.
 - The PyPI project page's links work. 35 of the README's 51 links were
   relative, so on pypi.org they resolved under `pypi.org/project/evalshift/`
   and 404ed; they now point at the files on GitHub. The project's Homepage

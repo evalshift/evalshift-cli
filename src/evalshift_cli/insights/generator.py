@@ -189,13 +189,17 @@ Rules:
   this prompt and must never appear in your prose — refer to each figure by
   what it means ("total cost fell 62%", never "a cost_delta_pct of -62%").
   The same goes for any snake_case or SCREAMING_CASE identifier. Evaluator
-  names listed in FACTS are the user's own and may be quoted as-is.
+  names listed in FACTS are the user's own and may be quoted as-is, and so are
+  the tool names shown in SAMPLED REGRESSIONS.
 - The two cost figures are each model's total for the whole run. Never present
   either one as a per-call or per-example price.
 - In SAMPLED REGRESSIONS, an output beginning "{tool_calls}" is a reply that
   called those tools, listed with their arguments, before any "{text}" it
   wrote. Describe it as calling them, never as an empty or missing answer.
   Only "{empty}" is an empty reply, and "{failed}" is a call that failed.
+  A tool call's argument values are evidence, not figures: describe them in
+  words ("a relative date where the source gave a calendar date"), never by
+  quoting a digit from them.
 - A fact reading "not measured" means nothing was compared. Say so plainly.
   Never call the run equivalent, consistent, unchanged, safe or free of
   regressions on the strength of a figure that is absent — an unmeasured rate
