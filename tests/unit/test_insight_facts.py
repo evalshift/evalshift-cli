@@ -20,6 +20,7 @@ from evalshift_cli.analysis.policy import (
 from evalshift_cli.analysis.statistics import ComparisonResult
 from evalshift_cli.config.models import MigrationPolicy, SliceMigrationPolicy
 from evalshift_cli.evaluators.base import EvalRecord
+from evalshift_cli.evaluators.tool_models import ToolCall, ToolTrace
 from evalshift_cli.insights.facts import (
     BUDGET_BREACHED,
     BUDGET_UNCONFIRMED,
@@ -27,6 +28,7 @@ from evalshift_cli.insights.facts import (
     BUDGET_WITHIN,
     _scoped_budget_label,
     build_facts,
+    describe_reply,
 )
 from evalshift_cli.insights.generator import banned_identifiers
 from evalshift_cli.insights.templates import fallback_insight
@@ -50,8 +52,8 @@ from tests.unit.insights_factories import (
 def test_figures_are_pre_rendered_as_display_strings(sample_run: dict[str, Any]) -> None:
     """The model copies these verbatim; it never sees a raw float to round."""
     facts = build_facts(**sample_run)
-    assert facts.rendered["cost_source_usd"] == "$0.0101"
-    assert facts.rendered["cost_target_usd"] == "$0.0204"
+    assert facts.rendered["cost_source_total_usd"] == "$0.0101"
+    assert facts.rendered["cost_target_total_usd"] == "$0.0204"
     assert facts.rendered["cost_delta_pct"] == "+102%"
     assert facts.rendered["effect_size"] == "−2.51"
     assert facts.rendered["p_value"] == "< 0.0001"
@@ -226,6 +228,13 @@ def test_fallback_insight_uses_only_rendered_figures(sample_run: dict[str, Any])
     assert "$0.0204" in insight.economics_summary
     assert insight.model == "none"
     assert insight.findings == []
+
+
+def test_the_fallback_calls_the_costs_totals(sample_run: dict[str, Any]) -> None:
+    """Each figure is one model's whole-run cost; "across 42 calls" read as per call."""
+    summary = fallback_insight(build_facts(**sample_run)).economics_summary
+    assert summary.startswith("Total cost $0.0101 → $0.0204 (")
+    assert "per call" not in summary
 
 
 def test_fallback_handles_a_run_with_no_regressions(passing_run: dict[str, Any]) -> None:
@@ -848,3 +857,56 @@ def test_a_dropped_params_reason_reaches_the_facts_in_plain_words(
     assert "migration_policy." not in facts.verdict_reason
     assert "drop_params" not in facts.verdict_reason
     assert "anthropic/claude-sonnet-5-5 dropped temperature" in facts.verdict_reason
+
+
+def test_a_text_reply_is_described_by_its_text() -> None:
+    assert describe_reply(_call(text="You have 3 tasks.")) == "You have 3 tasks."
+
+
+def test_a_tool_call_reply_is_described_by_its_calls() -> None:
+    """A replay of round 1 ends at the tool call, so its text is empty.
+
+    Shown as a blank, the narrative model reported "the target returned empty
+    outputs" for replies that each called a tool.
+    """
+    reply = _call(trace=_trace(("get_tasks", {"status": "pending"})))
+    assert describe_reply(reply) == '[tool calls] get_tasks({"status": "pending"})'
+
+
+def test_a_reply_with_calls_and_text_carries_both() -> None:
+    reply = _call(
+        text="Checking both.",
+        trace=_trace(("search_notes", {"query": "PO"}), ("get_tasks", {})),
+    )
+    assert describe_reply(reply) == (
+        '[tool calls] search_notes({"query": "PO"}); get_tasks({}) [text] Checking both.'
+    )
+
+
+def test_only_a_reply_with_neither_is_called_empty() -> None:
+    assert describe_reply(_call()) == "[empty reply: no text and no tool calls]"
+    assert describe_reply(_call(trace=_trace())) == "[empty reply: no text and no tool calls]"
+
+
+def test_a_failed_call_is_not_called_empty() -> None:
+    assert describe_reply(_call(error="timeout")) == "[the call failed]"
+
+
+def _call(**overrides: Any) -> Call:
+    fields: dict[str, Any] = {
+        "run_id": "r_20260803_abcdef",
+        "prompt_id": "replay",
+        "example_id": "e1",
+        "model_id": "anthropic/claude-sonnet-5",
+        "role": "target",
+    }
+    return Call(**{**fields, **overrides})
+
+
+def _trace(*calls: tuple[str, dict[str, Any]]) -> ToolTrace:
+    return ToolTrace(
+        calls=[
+            ToolCall(tool_name=name, arguments=arguments, sequence_index=index)
+            for index, (name, arguments) in enumerate(calls)
+        ]
+    )

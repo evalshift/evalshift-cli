@@ -82,33 +82,86 @@ _SHARED_MISS_VERDICT: tuple[str, str] = (
 # Small paired samples make effect sizes and p-values unstable; flag them.
 _SMALL_SAMPLE_THRESHOLD: int = 10
 
+# Below this Cohen's |d| an effect is negligible (Cohen's conventions, the
+# boundary _effect_magnitude words as "negligible"). Only such a `none` row
+# reads as equivalent: `none` means the corrected p-value missed alpha, and a
+# medium effect that missed it at n = 21 is unconfirmed, not absent.
+_NEGLIGIBLE_EFFECT: float = 0.2
 
-def _verdict(severity: str, notes: Sequence[str] | None = None) -> tuple[str, str]:
+_UNCONFIRMED_GLYPH: str = "~"
+
+
+def _shared_miss(notes: Sequence[str] | None) -> bool:
+    return any(note.startswith(SHARED_GROUND_TRUTH_NOTE_PREFIX) for note in notes or ())
+
+
+def _unconfirmed(severity: str, effect_size: float | None) -> bool:
+    """A ``none`` row whose effect is too large to call equivalent."""
+    return severity == "none" and effect_size is not None and abs(effect_size) >= _NEGLIGIBLE_EFFECT
+
+
+def _verdict(
+    severity: str,
+    notes: Sequence[str] | None = None,
+    effect_size: float | None = None,
+) -> tuple[str, str]:
     """Return the (headline, explanation) pair for a severity bucket.
 
-    Two notes override the bucket, because in both cases the number is right
+    Three readings override the bucket, because in each the number is right
     and the plain-language reading of it is not: an evaluator that compared
-    nothing is unknown rather than equal, and an axis both models failed
-    identically is a broken suite rather than a safe migration.
+    nothing is unknown rather than equal, an axis both models failed
+    identically is a broken suite rather than a safe migration, and a
+    non-negligible effect that missed significance is unconfirmed rather than
+    equivalent. A real run headlined a −17% change (d −0.51, corrected p 0.15)
+    as "Equivalent — No meaningful difference between models".
     """
-    if any(note.startswith(SHARED_GROUND_TRUTH_NOTE_PREFIX) for note in notes or ()):
+    if _shared_miss(notes):
         return _SHARED_MISS_VERDICT
     if severity == "insufficient" and any(
         note.startswith(UNMEASURED_NOTE_PREFIX) for note in notes or ()
     ):
         return _UNMEASURED_VERDICT
+    if effect_size is not None and _unconfirmed(severity, effect_size):
+        direction = "drop" if effect_size < 0 else "gain"
+        return (
+            f"Unconfirmed {direction}",
+            f"A {_effect_magnitude(effect_size)} {direction} that this sample can't tell "
+            "from noise; more examples would settle it.",
+        )
     return _SEVERITY_VERDICTS.get(severity, ("Unknown", ""))
 
 
-def _verdict_glyph(severity: str, notes: Sequence[str] | None = None) -> str:
-    """The glyph beside a verdict headline.
+def _verdict_glyph(
+    severity: str,
+    notes: Sequence[str] | None = None,
+    effect_size: float | None = None,
+) -> str:
+    """The glyph beside a verdict headline, matching :func:`_verdict`'s reading.
 
-    A shared ground-truth miss scores ``none``, whose glyph is ✓. Leaving it
-    there would put a tick on the row that says the suite is broken.
+    A shared ground-truth miss and an unconfirmed change both score ``none``,
+    whose glyph is ✓. Leaving it there would put a tick on the row that says
+    the suite is broken, or on a change nobody has ruled out.
     """
-    if any(note.startswith(SHARED_GROUND_TRUTH_NOTE_PREFIX) for note in notes or ()):
+    if _shared_miss(notes):
         return "!"
+    if _unconfirmed(severity, effect_size):
+        return _UNCONFIRMED_GLYPH
     return _SEVERITY_GLYPHS.get(severity, "?")
+
+
+def _verdict_tone(
+    severity: str,
+    notes: Sequence[str] | None = None,
+    effect_size: float | None = None,
+) -> str:
+    """``ok``, ``warn`` or ``bad``: the colour of :func:`_verdict`'s reading."""
+    if _shared_miss(notes) or _unconfirmed(severity, effect_size):
+        return "warn"
+    if severity in ("none", "improved"):
+        return "ok"
+    if severity in ("critical", "high"):
+        return "bad"
+    return "warn"
 
 
 def _confidence_label(severity: str, p_corrected: float) -> str:
@@ -322,7 +375,7 @@ def _latency(ms: float, live_calls: int) -> str:
 def _effect_magnitude(effect_size: float) -> str:
     """Describe a Cohen's d magnitude in words (Cohen's conventions)."""
     d = abs(effect_size)
-    if d < 0.2:
+    if d < _NEGLIGIBLE_EFFECT:
         return "negligible"
     if d < 0.5:
         return "small"
@@ -483,9 +536,9 @@ def render_html(report: ReportData, *, insight: Insight | None = None) -> str:
         autoescape=select_autoescape(enabled_extensions=("html", "j2")),
         keep_trailing_newline=True,
     )
-    env.globals["severity_glyph"] = lambda sev: _SEVERITY_GLYPHS.get(sev, "?")
     env.globals["verdict"] = _verdict
     env.globals["verdict_glyph"] = _verdict_glyph
+    env.globals["verdict_tone"] = _verdict_tone
     env.globals["confidence_label"] = _confidence_label
     env.globals["effect_magnitude"] = _effect_magnitude
     env.globals["small_sample_threshold"] = _SMALL_SAMPLE_THRESHOLD

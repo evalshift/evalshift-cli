@@ -454,6 +454,28 @@ def test_the_verdict_lead_stays_neutral_without_a_decision(
     assert 'class="insight-block insight-block-lead verdict-unknown"' in html
 
 
+def test_a_tool_call_reply_reaches_the_samples_as_its_calls(project: RunFixture) -> None:
+    """A single-shot tool replay records ``text: ""``; the sample must not read empty.
+
+    The narrative model was shown a blank target output for every reply that
+    called a tool, and reported that the target "returned empty outputs".
+    """
+    raw = project.run_dir / "raw.jsonl"
+    lines = [json.loads(line) for line in raw.read_text(encoding="utf-8").splitlines() if line]
+    for line in lines:
+        if line["role"] == "target":
+            line["text"] = ""
+            line["trace"] = {
+                "calls": [{"tool_name": "get_tasks", "arguments": {}, "sequence_index": 0}],
+            }
+    raw.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+
+    samples = build_run_facts(project.run_dir).regression_samples
+
+    assert samples
+    assert {sample.target_output for sample in samples} == {"[tool calls] get_tasks({})"}
+
+
 def test_the_html_report_escapes_model_output(project: RunFixture) -> None:
     """The prose is model output rendered into HTML."""
     client = FakeModelClient()

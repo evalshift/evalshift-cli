@@ -440,7 +440,8 @@ bad generations fall back to deterministic templated prose.
 - A generation failure never fails the run.
 - The worst 8 regressions' inputs and both models' outputs are sent to
   `insights_model` (truncated to 2000 characters each) — the same
-  exposure an `llm_judge` criterion already has. Use `--no-insights`
+  exposure an `llm_judge` criterion already has. A reply that called
+  tools is sent as those calls with their arguments. Use `--no-insights`
   if that is not acceptable for your suite.
 
 ## `evaluators`

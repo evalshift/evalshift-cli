@@ -100,6 +100,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The report's narrative no longer calls a reply that called tools an "empty
+  output". A first-round tool replay ends at the tool call, so its text is
+  empty, and the narrative model was shown that blank. A real run's findings
+  read "the target model returned empty outputs where the source model
+  provided specific information" for replies that each called a tool. The
+  regression samples now show a reply as its tool calls with their arguments,
+  then any text, and the instruction says a tool call is not an empty answer.
+- The narrative no longer presents a run's total cost as a cost per call. The
+  figures it is given were each model's whole-run total, under keys that did
+  not say so, and the instruction's own example phrase was "cost per call".
+  The same run read "the cost per call increased from $0.1045 to $0.1056", for
+  21 calls each at about $0.005. The keys now name the totals, and the
+  Economics panel and the templated fallback say "Total".
+- A change that missed significance is no longer headlined as equivalent.
+  Severity `none` means the corrected p-value missed 0.05, whatever the effect
+  size, and the report read every such row as "✓ Equivalent — No meaningful
+  difference between models": a −17% tool-selection change (Cohen's d −0.51,
+  n = 21) got a green tick directly under a FAIL verdict. A `none` row now
+  reads Equivalent only when |d| < 0.2. A larger effect renders as "~
+  Unconfirmed drop" or "~ Unconfirmed gain", with its magnitude, in a warning
+  colour. The executive summary and the significant-rows table also now use
+  the same glyph as the evaluator table, so a "Ground truth missed by both"
+  row no longer carries a ✓ there either.
 - The PyPI project page's links work. 35 of the README's 51 links were
   relative, so on pypi.org they resolved under `pypi.org/project/evalshift/`
   and 404ed; they now point at the files on GitHub. The project's Homepage

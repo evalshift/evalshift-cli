@@ -21,6 +21,7 @@ from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.reports.html import REPORT_HTML_FILENAME, render_html, write_html
 from evalshift_cli.reports.json import (
     REPORT_JSON_FILENAME,
+    SHARED_GROUND_TRUTH_NOTE_PREFIX,
     TopRegression,
     build_report_payload,
     write_report_json,
@@ -1694,6 +1695,65 @@ def test_unmeasured_comparison_does_not_render_as_too_few_samples() -> None:
     assert _verdict("insufficient") == ("Not enough data", "Too few samples to judge.")
 
 
+class TestANonSignificantChangeIsNotCalledEquivalent:
+    """``none`` means the corrected p-value missed alpha, whatever the effect size.
+
+    A real run headlined a −17% tool-selection change (Cohen's d −0.51,
+    corrected p 0.15, n = 21) as "✓ Equivalent — No meaningful difference
+    between models", directly under a FAIL verdict.
+    """
+
+    def test_a_non_negligible_drop_is_unconfirmed(self) -> None:
+        from evalshift_cli.reports.html import _verdict, _verdict_glyph, _verdict_tone
+
+        head, blurb = _verdict("none", [], -0.51)
+        assert head == "Unconfirmed drop"
+        assert "medium" in blurb
+        assert "Equivalent" not in head
+        assert _verdict_glyph("none", [], -0.51) == "~"
+        assert _verdict_tone("none", [], -0.51) == "warn"
+
+    def test_a_non_negligible_gain_is_unconfirmed(self) -> None:
+        from evalshift_cli.reports.html import _verdict
+
+        head, blurb = _verdict("none", [], 0.35)
+        assert head == "Unconfirmed gain"
+        assert "small" in blurb
+
+    def test_a_negligible_effect_is_still_equivalent(self) -> None:
+        from evalshift_cli.reports.html import _verdict, _verdict_glyph, _verdict_tone
+
+        assert _verdict("none", [], -0.19)[0] == "Equivalent"
+        assert _verdict("none", [])[0] == "Equivalent"
+        assert _verdict_glyph("none", [], -0.19) == "✓"
+        assert _verdict_tone("none", [], -0.19) == "ok"
+
+    def test_a_shared_ground_truth_miss_has_no_tick_in_any_table(self) -> None:
+        """The summary and evaluator tables used the bare severity glyph, a ✓."""
+        from evalshift_cli.reports.html import _verdict_glyph, _verdict_tone
+
+        notes = [f"{SHARED_GROUND_TRUTH_NOTE_PREFIX} both sides missed"]
+        assert _verdict_glyph("none", notes, 0.0) == "!"
+        assert _verdict_tone("none", notes, 0.0) == "warn"
+
+    def test_the_executive_summary_renders_the_unconfirmed_drop(self, tmp_path: Path) -> None:
+        run_dir, _ = _scaffold_two_axis_run(tmp_path)
+        analysis_path = run_dir / ANALYSIS_FILENAME
+        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+        for comparison in analysis["comparisons"]:
+            comparison.update(severity="none", test="wilcoxon", p_value_corrected=0.15)
+        analysis["comparisons"][1].update(effect_size=-0.51, delta_avg_score=-0.167)
+        analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+        payload = build_report_payload(run_dir, tool_evaluator_names=frozenset({"routing"}))
+        html = render_html(payload)
+
+        summary = html.split("<h2>Executive summary</h2>", 1)[1].split("</table>", 1)[0]
+        assert "Unconfirmed drop" in summary
+        assert "No meaningful difference between models" not in summary
+        assert '<code class="warn">~</code>' in summary
+
+
 # ---------------------------------------------------------------------------
 # S4 — the two tool-selection axes in the report
 # ---------------------------------------------------------------------------
@@ -2101,6 +2161,12 @@ class TestReportShell:
         assert "Equivalent 0.0%" in html
         assert "Regressed 100.0%" in html
         assert "Top regression causes" in html
+
+    def test_the_economics_panel_names_its_costs_totals(self, tmp_path: Path) -> None:
+        """Beside "+1.0% cost", a bare "$0.1045 → $0.1056" was read as a per-call price."""
+        html = self._html(tmp_path, decision=True)
+        panel = html.split('<span class="eyebrow">Economics</span>', 1)[1].split("</p>", 1)[0]
+        assert re.search(r"Total \$\d+\.\d{4} → \$\d+\.\d{4}\.", panel)
 
     def test_budget_tally_ignores_gates_that_measured_nothing(self) -> None:
         """A ``0/0`` budget renders as a clean row and measures nothing.

@@ -810,7 +810,7 @@ defaults:
 - **Cost**: one model call per run (a second only when the first generation is rejected). The narrative is cached in `insights.json` and keyed on the run's `config_hash`, the model id and the figures it describes (the FACTS block, read off the run's scores, analysis and persisted decision), so re-running `report` or `push` costs nothing. Changing any of them invalidates the cache and regenerates — including a re-run of `evaluate` or `analyze` on the same run after an `evalshift.yaml` edit, which `config_hash` alone cannot see because it is fixed when the run is created. `push` ships the narrative the last `report` wrote, so run `report` after a re-`analyze` before pushing.
 - **Skipped** silently when `--no-insights` is passed, and with a warning when no API key is set for the chosen model or the run directory has no usable `evalshift.yaml`. A skip is never an error.
 - **Never fatal.** Any failure inside generation is logged and leaves the narrative empty; a run that already has its statistics is not worth failing over a missing paragraph.
-- **What gets sent to the model**: the pre-rendered figures, plus the **worst 8 regressions'** inputs and both models' outputs (each truncated to 2000 characters). That is the same exposure `llm_judge` already has, but it is real — if your suite carries data you would not send to an LLM judge, run with `--no-insights`.
+- **What gets sent to the model**: the pre-rendered figures, plus the **worst 8 regressions'** inputs and both models' outputs (each truncated to 2000 characters). A reply that called tools is sent as its calls with their arguments (`[tool calls] get_tasks({"status": "pending"})`, then `[text] …` if it also wrote text): a first-round replay ends at the tool call, and sent as its blank text it was narrated as an "empty output". Cost figures are labelled as each model's run total. That is the same exposure `llm_judge` already has, but it is real — if your suite carries data you would not send to an LLM judge, run with `--no-insights`.
 - `insights.json` is a cache envelope (`{"config_hash": …, "insight": {…}}`); only the inner `insight` object is uploaded. Do not hand-edit it — an envelope the CLI does not recognise is treated as a cache miss.
 
 ---
@@ -1023,6 +1023,8 @@ Resume requires the config and the suite path to match the original run — a ch
 ### Everything comes back severity `none`
 
 Usually correct behaviour: no statistically significant difference. Check n (n < 5 → `insufficient`; n < 20 → noted as uncertain), and remember BH correction across many comparisons raises the significance bar. Zero-variance comparisons (every delta identical) are skipped as `none` by design.
+
+`none` only means the corrected p-value missed 0.05; it says nothing about the effect's size. So the report reads a `none` row as **✓ Equivalent** only when the effect is negligible (Cohen's |d| < 0.2). A larger effect that missed significance renders as **~ Unconfirmed drop** or **~ Unconfirmed gain**, with its magnitude: a medium drop at n = 21 is a change this sample can't rule in or out, not the absence of one. More examples settle it.
 
 ### The policy verdict is `inconclusive`
 

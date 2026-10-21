@@ -150,8 +150,9 @@ def _advisory_summary(facts: Facts) -> str:
 
 def _economics_summary(rendered: dict[str, str]) -> str:
     return (
-        f"{rendered['cost_source_usd']} → {rendered['cost_target_usd']} across "
-        f"{rendered['n_calls']} calls. Cost {rendered['cost_delta_pct']}, "
+        f"Total cost {rendered['cost_source_total_usd']} → "
+        f"{rendered['cost_target_total_usd']} ({rendered['n_calls']} calls, both "
+        f"models). Cost {rendered['cost_delta_pct']}, "
         f"latency {rendered['latency_delta_pct']}. Ceilings: cost "
         f"{rendered['cost_ceiling_pct']}, latency {rendered['latency_ceiling_pct']}."
     )

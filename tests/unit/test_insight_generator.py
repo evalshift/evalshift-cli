@@ -139,6 +139,35 @@ async def test_the_prompt_carries_the_facts_and_the_regression_samples(
     assert sample_facts.regression_samples[0].target_output[:40] in prompt
 
 
+async def test_the_prompt_presents_the_costs_as_run_totals(
+    fake_client: FakeModelClient, sample_facts: Facts
+) -> None:
+    """A shipped narrative read "the cost per call increased from $0.1045 to $0.1056".
+
+    Those were the two models' totals over 21 calls each. The keys did not
+    say so, and the instruction's own example phrase was "cost per call".
+    """
+    fake_client.queue_responses(_payload())
+    await _generate(sample_facts, fake_client)
+
+    prompt = fake_client.prompts[0]
+    assert "cost_source_total_usd: $0.0101" in prompt
+    assert "cost_target_total_usd: $0.0204" in prompt
+    assert "cost per call" not in prompt.lower()
+
+
+async def test_the_prompt_says_a_tool_call_reply_is_not_an_empty_answer(
+    fake_client: FakeModelClient, sample_facts: Facts
+) -> None:
+    """A shipped narrative called tool-call replies "empty outputs"."""
+    fake_client.queue_responses(_payload())
+    await _generate(sample_facts, fake_client)
+
+    prompt = fake_client.prompts[0]
+    assert '"[tool calls]"' in prompt
+    assert "never as an empty or missing answer" in prompt
+
+
 async def test_generator_retries_once_on_an_invented_number(
     fake_client: FakeModelClient, sample_facts: Facts
 ) -> None:

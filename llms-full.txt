@@ -1403,6 +1403,8 @@ Model: defaults.insights_model, falling back to defaults.judge_model.
   not the CLI version): delete insights.json to rewrite an existing run's prose.
 - Prompt input: the pre-rendered FACTS block plus the worst 8 regressions by worst_delta_score
   (input + both outputs, each truncated to 2000 chars). Same data exposure as llm_judge.
+  A reply that called tools is sent as `[tool calls] name({args}); ...` (then `[text] ...`),
+  never as its blank text; cost figures are named as each model's run total.
 - Cost: 1 model call per run (2 on a rejected generation). Cached in insights.json keyed on
   state.config_hash + model id + a digest of the FACTS block, so re-running report/push is
   free; any moving = cache miss. state.config_hash is fixed at run creation, so the FACTS
@@ -1824,6 +1826,8 @@ Run seems expensive -> estimate is worst-case at max_tokens; actual usually far 
 makes repeats of unchanged examples free, tool-calling ones included; iterate with a small suite.
 All severities "none" -> usually genuinely no significant difference; check n (<5 insufficient,
 <20 uncertain) and remember BH correction raises the bar; zero-variance comparisons skip.
+  The report calls a "none" row "Equivalent" only at |d| < 0.2; a larger effect that missed
+  significance reads "~ Unconfirmed drop/gain" (unconfirmed, not absent; grow the suite).
 Verdict "inconclusive" -> (1) all evaluators advisory (fresh init: flip blocking: true as the
 suite grows; recommendations name each advisory judge and whether its smallest per-prompt n has
 reached 20, or which prompt is short), (2) rate-budget breach unconfirmed by Wilson CI (grow the suite), (3) all n<5,

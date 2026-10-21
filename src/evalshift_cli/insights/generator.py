@@ -25,7 +25,15 @@ from typing import Any, cast
 
 from evalshift_cli.analysis.policy import BUDGET_LABELS
 from evalshift_cli.evaluators.failures import CATEGORY_LABELS, category_label
-from evalshift_cli.insights.facts import BUDGET_WITHIN, Facts, RegressionSample
+from evalshift_cli.insights.facts import (
+    BUDGET_WITHIN,
+    EMPTY_REPLY,
+    FAILED_REPLY,
+    TEXT_MARKER,
+    TOOL_CALLS_MARKER,
+    Facts,
+    RegressionSample,
+)
 from evalshift_cli.insights.models import (
     INSIGHT_KINDS,
     MAX_FINDING_DETAIL_CHARS,
@@ -179,9 +187,15 @@ Rules:
   Never calculate, round, infer or restate a number that is not in FACTS.
 - Write plain English. FACTS keys (like cost_delta_pct) address figures inside
   this prompt and must never appear in your prose — refer to each figure by
-  what it means ("cost per call fell 62%", never "a cost_delta_pct of -62%").
+  what it means ("total cost fell 62%", never "a cost_delta_pct of -62%").
   The same goes for any snake_case or SCREAMING_CASE identifier. Evaluator
   names listed in FACTS are the user's own and may be quoted as-is.
+- The two cost figures are each model's total for the whole run. Never present
+  either one as a per-call or per-example price.
+- In SAMPLED REGRESSIONS, an output beginning "{tool_calls}" is a reply that
+  called those tools, listed with their arguments, before any "{text}" it
+  wrote. Describe it as calling them, never as an empty or missing answer.
+  Only "{empty}" is an empty reply, and "{failed}" is a call that failed.
 - A fact reading "not measured" means nothing was compared. Say so plainly.
   Never call the run equivalent, consistent, unchanged, safe or free of
   regressions on the strength of a figure that is absent — an unmeasured rate
@@ -521,6 +535,10 @@ def build_prompt(
             max_findings=MAX_FINDINGS,
             max_summary=MAX_SUMMARY_CHARS,
             max_title=MAX_FINDING_TITLE_CHARS,
+            tool_calls=TOOL_CALLS_MARKER,
+            text=TEXT_MARKER,
+            empty=EMPTY_REPLY,
+            failed=FAILED_REPLY,
         ),
         _facts_block(facts),
         _samples_block(facts.regression_samples),
