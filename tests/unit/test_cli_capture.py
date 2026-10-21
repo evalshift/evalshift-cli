@@ -1725,6 +1725,82 @@ def test_promote_rounds_all_carries_tool_result_fixtures(tmp_path: Path) -> None
     assert example.rounds_to_replay() == 3
 
 
+def _set_captures_rounds(config: Path, rounds: str) -> None:
+    text = config.read_text(encoding="utf-8")
+    config.write_text(f"{text}\ncaptures:\n  rounds: {rounds}\n", encoding="utf-8")
+
+
+def test_sync_takes_rounds_from_the_config(tmp_path: Path) -> None:
+    """A durable setting belongs in evalshift.yaml, not on every sync's command line."""
+    _write_capture(
+        tmp_path,
+        capture_id="cap_multi",
+        suite="main_chat",
+        events=_multi_round_events_with_results(),
+    )
+    config = tmp_path / "evalshift.yaml"
+    _write_min_config(config)
+    _set_captures_rounds(config, "all")
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    suite = load_jsonl(tmp_path / "suites" / "main_chat" / "golden.jsonl")
+    assert suite.examples[0].tool_result_fixtures is not None
+
+
+def test_the_rounds_flag_overrides_the_config(tmp_path: Path) -> None:
+    _write_capture(
+        tmp_path,
+        capture_id="cap_multi",
+        suite="main_chat",
+        events=_multi_round_events_with_results(),
+    )
+    config = tmp_path / "evalshift.yaml"
+    _write_min_config(config)
+    _set_captures_rounds(config, "all")
+
+    result = _invoke(["sync", "--rounds", "first", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    suite = load_jsonl(tmp_path / "suites" / "main_chat" / "golden.jsonl")
+    assert suite.examples[0].tool_result_fixtures is None
+
+
+def test_sync_names_cases_still_replaying_one_round(tmp_path: Path) -> None:
+    """Switching captures.rounds to all leaves promoted cases as they were.
+
+    Sync skips an already-promoted capture, so without a word the new setting
+    would seem to do nothing; --force is the explicit way to re-promote.
+    """
+    _write_capture(
+        tmp_path,
+        capture_id="cap_multi",
+        suite="main_chat",
+        events=_multi_round_events_with_results(),
+    )
+    config = tmp_path / "evalshift.yaml"
+    _write_min_config(config)
+    assert _invoke(["sync", "--config", str(config)], tmp_path).exit_code == 0
+    _set_captures_rounds(config, "all")
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    out = _flat(result.stdout)
+    assert "1 promoted case(s) replay only their first round" in out
+    assert "capture sync --force" in out
+    suite = load_jsonl(tmp_path / "suites" / "main_chat" / "golden.jsonl")
+    assert suite.examples[0].tool_result_fixtures is None
+
+    forced = _invoke(["sync", "--force", "--config", str(config)], tmp_path)
+
+    assert forced.exit_code == 0, forced.stdout
+    assert "replay only their first round" not in _flat(forced.stdout)
+    suite = load_jsonl(tmp_path / "suites" / "main_chat" / "golden.jsonl")
+    assert suite.examples[0].tool_result_fixtures is not None
+
+
 def test_promote_records_every_round_on_the_case(tmp_path: Path) -> None:
     _write_capture(
         tmp_path,

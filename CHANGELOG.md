@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`captures.rounds` in `evalshift.yaml`.** `first` (the default) or `all` sets
+  how many recorded agent rounds the cases `capture sync` promotes are
+  replayed over. It was a `--rounds` flag only, so teacher-forced replay had
+  to be repeated on every sync. With `first`, an agent that answers after a
+  tool call is scored on the call alone, and `semantic` and `llm_judge` see
+  no answer text. On a real converter suite that left them 2 of 17 rows.
+  `capture sync --rounds` still overrides it for one run; `capture promote`
+  takes only the flag. The setting applies to cases promoted from then on.
+  When it is `all` and promoted cases still replay one round although their
+  captures carry the tool results to replay more, sync says how many and
+  suggests `capture sync --force`. `init` scaffolds it commented out. Older
+  CLIs reject the key, so update a CI `evalshift-version:` pin first.
 - **Bounded capture suites.** Two optional settings under `captures:`,
   `max_age: 14d` and `max_cases: 200`, together keep each captured suite a
   capped, route-balanced sample of recent production on

@@ -154,7 +154,7 @@ evalshift init [-f/--force] [-d/--directory DIR] [--ci] [--wire-agents/--no-wire
   Without --ci, warns after writing when an existing .github/workflows/*.yml pins an older or
   newer evalshift-version than this CLI, or none (advisory, exit 0; see CI pin drift). --ci writes
   the pin itself and does not warn about the file it just wrote.
-  Also scaffolds `captures: {max_age: 14d, max_cases: 200}` (store: commented out) between
+  Also scaffolds `captures: {max_age: 14d, max_cases: 200}` (store: and rounds: all commented out) between
   migration_policy and the managed region, so new projects get bounded suites (see capture
   sync). Existing configs are never rewritten; doctor's `captures limits` row nudges them.
   PROFILE budgets (regression/critical/equivalence/arg-drift/tool-divergence/
@@ -385,9 +385,14 @@ evalshift capture promote CAPTURE_ID [--as CASE_ID] [--suite S] [--input-var NAM
   (no cross-capture reconstruction; warns if unpromoted sibling turns exist -> use sync).
   EXITS 1 if the capture's trace carries an error event; --allow-errored promotes anyway.
 evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--strict-args]
-    [--names-only] [--tool-count] [--rounds first(default)|all] [--allow-errored] [-c CONFIG] [-f]
+    [--names-only] [--tool-count] [--rounds first|all (default captures.rounds, else first)]
+    [--allow-errored] [-c CONFIG] [-f]
     [--write/--print (default write)] [--keep-duplicates] [--since 30m|24h|7d|ISO] [--offline]
     [--repair]
+  captures.rounds: first|all in evalshift.yaml sets the sync default (promote takes only the
+  flag). It applies to cases promoted from then on; with rounds: all, sync warns "N promoted
+  case(s) replay only their first round ..." when existing single-shot cases could be
+  teacher-forced, and `capture sync --force` re-promotes them. Older CLIs reject the key.
   With captures.store set, sync runs fetch first (same summary line) unless --offline; a fetch
   failure or missing extra exits 1 before anything is promoted. --since without a store (or
   with --offline) exits 1. An unreadable or invalid evalshift.yaml skips the fetch (warning

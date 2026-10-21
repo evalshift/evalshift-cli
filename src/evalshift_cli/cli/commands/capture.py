@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal
 
 import typer
 from rich.console import Console
@@ -594,6 +594,8 @@ class _SyncLimits:
     max_age: timedelta | None = None
     max_cases: int | None = None
     source_model: str | None = None
+    #: ``captures.rounds``: not a limit, read here because sync reads its config here.
+    rounds: Literal["first", "all"] = "first"
 
     @property
     def active(self) -> bool:
@@ -631,6 +633,7 @@ def _sync_limits(config_path: Path, *, console: Console, warn: bool) -> _SyncLim
             max_age=cfg.captures.max_age,
             max_cases=cfg.captures.max_cases,
             source_model=cfg.defaults.source_model,
+            rounds=cfg.captures.rounds,
         )
     if warn and _mentions_captures(config_path):
         console.print(
@@ -1332,16 +1335,17 @@ def capture_sync(
         typer.Option("--tool-count", help="Also pin the expected tool-call count."),
     ] = False,
     rounds: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--rounds",
             help=(
-                "How many recorded agent rounds to replay: 'first' (default, single-shot, "
-                "scored against round 1) or 'all' (teacher-forced — every round is replayed "
-                "with the recorded tool results fed back, scored round by round)."
+                "How many recorded agent rounds to replay: 'first' (single-shot, scored "
+                "against round 1) or 'all' (teacher-forced — every round is replayed with the "
+                "recorded tool results fed back, scored round by round). Default: "
+                "captures.rounds in evalshift.yaml, else 'first'."
             ),
         ),
-    ] = "first",
+    ] = None,
     allow_errored: Annotated[
         bool,
         typer.Option(
@@ -1405,8 +1409,12 @@ def capture_sync(
     each suite's newest 3x max_cases.
     """
     console = Console()
-    _check_rounds(rounds)
+    if rounds is not None:
+        _check_rounds(rounds)
     limits = _sync_limits(config_path, console=console, warn=True)
+    replay_rounds: Literal["first", "all"] = (
+        limits.rounds if rounds is None else ("all" if rounds == "all" else "first")
+    )
     now = _now()
     selection = _repair_selection(base=base, suite=suite, console=console)
     _maybe_fetch(
@@ -1442,13 +1450,16 @@ def capture_sync(
         names_only=names_only,
         tool_count=tool_count,
         allow_errored=allow_errored,
-        rounds="all" if rounds == "all" else "first",
+        rounds=replay_rounds,
         tool_properties=_declared_tool_properties([r.envelope for r in records], base=base),
     )
 
     promoted = 0
     wired_generation = 0
     skipped_existing = 0
+    # Promoted single-shot although captures.rounds is all and the capture now builds a
+    # teacher-forced case: sync never rewrites a promoted case unasked, so it says so.
+    single_shot = 0
     skipped_empty = 0
     skipped_duplicates = 0
     skipped_errored = 0
@@ -1557,6 +1568,16 @@ def capture_sync(
         pending: list[PromotedCase] = []
         pending_warnings: dict[str, list[str]] = {}
         built_pairs = build_conversation_examples(suite_records, opts, base=base)
+        if replay_rounds == "all" and not force:
+            promoted_from = {c.from_capture: c for _, c in kept}
+            single_shot += sum(
+                1
+                for record, built in built_pairs
+                if built.blocked is None
+                and built.example.tool_result_fixtures
+                and (promoted_case := promoted_from.get(record.envelope.capture_id)) is not None
+                and not promoted_case.example.tool_result_fixtures
+            )
         local_ids = {r.envelope.capture_id for r in suite_records}
         local_turns: dict[str, set[int]] = {}
         for r in suite_records:
@@ -1900,6 +1921,14 @@ def capture_sync(
     console.print(summary + ".")
     for line in plan_lines:
         console.print(escape(line), soft_wrap=True)
+    if single_shot:
+        console.print(
+            f"[yellow]⚠[/yellow] {single_shot} promoted case(s) replay only their first round, "
+            "although their captures carry the recorded tool results that rounds: all replays. "
+            "Sync never rewrites a promoted case unasked: run [bold]evalshift capture sync "
+            "--force[/bold] once to re-promote every case with the current settings.",
+            soft_wrap=True,
+        )
 
     if not suite_paths:
         return

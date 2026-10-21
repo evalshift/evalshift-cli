@@ -184,6 +184,9 @@ scored against. Scoring it against round-2 calls would record a regression no
 model could avoid. A multi-round capture promoted this way prints a warning
 naming the later calls it will not replay.
 
+To make it the default for `capture sync`, set `captures.rounds: all` in `evalshift.yaml`
+(see [configuration](configuration.md#captures)); the flag then overrides it for one run.
+
 **`--rounds all`: teacher-forced multi-round replay.** Promotion also carries
 the recorded tool results on the case as `tool_result_fixtures`, aligned by
 position with `expected_tool_rounds`. Each round's calls are paired with that
