@@ -1789,7 +1789,8 @@ def test_sync_names_cases_still_replaying_one_round(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.stdout
     out = _flat(result.stdout)
     assert "1 promoted case(s) replay only their first round" in out
-    assert "capture sync --force" in out
+    assert "evalshift capture sync --force once" in out
+    assert "drops hand edits and provenance: reviewed marks" in out
     suite = load_jsonl(tmp_path / "suites" / "main_chat" / "golden.jsonl")
     assert suite.examples[0].tool_result_fixtures is None
 
@@ -1799,6 +1800,109 @@ def test_sync_names_cases_still_replaying_one_round(tmp_path: Path) -> None:
     assert "replay only their first round" not in _flat(forced.stdout)
     suite = load_jsonl(tmp_path / "suites" / "main_chat" / "golden.jsonl")
     assert suite.examples[0].tool_result_fixtures is not None
+    again = _invoke(["sync", "--config", str(config)], tmp_path)
+    assert "replay only their first round" not in _flat(again.stdout)
+
+
+def _first_round_case(tmp_path: Path, *, capture_id: str = "cap_multi") -> Path:
+    """A capture with recorded results, promoted single-shot by a plain sync."""
+    _write_capture(
+        tmp_path,
+        capture_id=capture_id,
+        suite="main_chat",
+        events=_multi_round_events_with_results(),
+    )
+    config = tmp_path / "evalshift.yaml"
+    _write_min_config(config)
+    assert _invoke(["sync", "--config", str(config)], tmp_path).exit_code == 0
+    return config
+
+
+def test_the_hint_names_the_flag_that_asked_for_all_rounds(tmp_path: Path) -> None:
+    """A bare `sync --force` would re-promote as the config's `first` again."""
+    config = _first_round_case(tmp_path)
+
+    result = _invoke(["sync", "--rounds", "all", "--config", str(config)], tmp_path)
+
+    assert "evalshift capture sync --force --rounds all once" in _flat(result.stdout)
+
+
+def test_the_hint_names_the_suite_it_counted(tmp_path: Path) -> None:
+    """A bare `sync --force` would overwrite every suite, not just the one counted."""
+    config = _first_round_case(tmp_path)
+    _set_captures_rounds(config, "all")
+
+    result = _invoke(["sync", "--suite", "main_chat", "--config", str(config)], tmp_path)
+
+    assert "evalshift capture sync --force --suite main_chat once" in _flat(result.stdout)
+
+
+def test_the_hint_leaves_out_reviewed_cases(tmp_path: Path) -> None:
+    """--force would wipe the review mark, so a reviewed case is never pointed at it."""
+    config = _first_round_case(tmp_path)
+    case_path = tmp_path / "suites" / "main_chat" / "cap_multi.json"
+    case = json.loads(case_path.read_text(encoding="utf-8"))
+    for call in case["example"]["expected_tools"]:
+        call["provenance"] = "reviewed"
+    case_path.write_text(json.dumps(case), encoding="utf-8")
+    _set_captures_rounds(config, "all")
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert "replay only their first round" not in _flat(result.stdout)
+
+
+def test_the_hint_leaves_out_a_case_force_would_not_rewrite(tmp_path: Path) -> None:
+    """`promote --as` names the case; sync's dedup never rewrites it, --force or not."""
+    _write_capture(
+        tmp_path,
+        capture_id="cap_multi",
+        suite="main_chat",
+        events=_multi_round_events_with_results(),
+    )
+    assert _invoke(["promote", "cap_multi", "--as", "my_case"], tmp_path).exit_code == 0
+    config = tmp_path / "evalshift.yaml"
+    _write_min_config(config)
+    _set_captures_rounds(config, "all")
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert "replay only their first round" not in _flat(result.stdout)
+
+
+def test_the_hint_counts_bounded_suites_too(tmp_path: Path) -> None:
+    """With captures.max_cases set, sync skips a kept case on another branch."""
+    _write_capture(
+        tmp_path,
+        capture_id="cap_multi",
+        suite="main_chat",
+        events=_multi_round_events_with_results(),
+    )
+    config = tmp_path / "evalshift.yaml"
+    _write_min_config(config)
+    base_text = config.read_text(encoding="utf-8")
+    config.write_text(f"{base_text}\ncaptures:\n  max_cases: 5\n", encoding="utf-8")
+    assert _invoke(["sync", "--config", str(config)], tmp_path).exit_code == 0
+    config.write_text(f"{base_text}\ncaptures:\n  max_cases: 5\n  rounds: all\n", encoding="utf-8")
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert "1 promoted case(s) replay only their first round" in _flat(result.stdout)
+    _invoke(["sync", "--force", "--config", str(config)], tmp_path)
+    again = _invoke(["sync", "--config", str(config)], tmp_path)
+    assert "replay only their first round" not in _flat(again.stdout)
+
+
+def test_sync_rejects_an_unknown_rounds_value(tmp_path: Path) -> None:
+    config = tmp_path / "evalshift.yaml"
+    _write_min_config(config)
+
+    result = _invoke(["sync", "--rounds", "some", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 2
+    assert "--rounds" in result.output
 
 
 def test_promote_records_every_round_on_the_case(tmp_path: Path) -> None:

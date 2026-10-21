@@ -1093,10 +1093,14 @@ captures:
 
 `rounds` applies to the cases `capture sync` promotes from then on: sync never rewrites a promoted
 case unasked. When `rounds` is `all` and promoted cases still replay one round although their
-captures carry the tool results `all` needs, sync says how many and suggests `evalshift capture sync
---force`, which re-promotes every case with the current settings. An evalshift older than the
-release that added `rounds` rejects the key, so update a CI pin (`evalshift-version:`) before
-adding it.
+captures carry the tool results `all` needs, sync says how many and names the command that would
+upgrade them (`evalshift capture sync --force`, plus `--rounds all` or `--suite <S>` when this run
+used them). Take it knowingly: `--force` rebuilds every promoted case whose capture is still local
+(not after `capture clean` or on a fresh checkout, where promoted captures are not fetched) from
+its capture, which drops hand edits and `provenance: reviewed` marks. Reviewed cases, stale ones
+and ones promoted under another name (`capture promote --as`) are left out of the count. An
+evalshift older than the release that added `rounds` rejects the key, so update a CI pin
+(`evalshift-version:`) before adding it.
 
 Setting either `max_age` or `max_cases` turns [bounded suites](#bounded-suites) on. Both work
 without `store`: they govern how captures become suites, whether the captures came from disk or
@@ -1419,9 +1423,10 @@ a capture no valid case can be built from, and
 blocks. Useful flags: `--input-var`
 (default `input`), `--suite <name>` to filter to one suite, `--tag`,
 `--names-only`, `--tool-count`, `--strict-args`, `--rounds first|all`
-(`first`, the default, scores single-shot replay against round 1; `all`
-carries the recorded tool results so `run` replays every round teacher-forced
-— see [Agent rounds](agents.md#agent-rounds-and-what-a-replay-can-reproduce)),
+(`first` scores single-shot replay against round 1; `all` carries the recorded
+tool results so `run` replays every round teacher-forced — see
+[Agent rounds](agents.md#agent-rounds-and-what-a-replay-can-reproduce); the
+default is [`captures.rounds`](#captures), else `first`),
 `--force`/`-f` to overwrite
 existing suite files, and `--print` to preview the wiring without writing
 (`--write` is the default). After syncing, run the whole pipeline against a

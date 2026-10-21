@@ -864,7 +864,8 @@ class CapturesConfig(_StrictModel):
             after a tool call is scored on the call alone; ``all`` replays every recorded round
             teacher-forced, with the recorded tool results fed back, through the answer round.
             ``capture sync --rounds`` overrides it for one sync. It applies to cases promoted
-            from then on; ``capture sync --force`` re-promotes the existing ones.
+            from then on: ``capture sync --force`` rebuilds the existing ones whose capture is
+            local, dropping hand edits and ``provenance: reviewed`` marks.
     """
 
     store: str | None = None

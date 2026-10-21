@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from rich.table import Table
 from evalshift_cli import __version__
 from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
 from evalshift_cli.captures.promote import (
+    BuiltExample,
     PromoteOptions,
     build_conversation_examples,
     build_example_from_capture,
@@ -638,7 +640,8 @@ def _sync_limits(config_path: Path, *, console: Console, warn: bool) -> _SyncLim
     if warn and _mentions_captures(config_path):
         console.print(
             f"[yellow]⚠[/yellow] could not read {escape(str(config_path))} ({escape(reason)}); "
-            "syncing without captures.max_age / captures.max_cases.",
+            "syncing without captures.max_age / captures.max_cases / captures.rounds "
+            "(replaying the first round only).",
         )
     return _SyncLimits()
 
@@ -841,6 +844,30 @@ def capture_fetch(
         )
         raise typer.Exit(code=1)
     _fetch_into_base(store, base=base, suite=suite, since=_resolve_since(since), console=console)
+
+
+def _replays_fewer_rounds(
+    existing: tuple[Path, PromotedCase] | None,
+    built: BuiltExample,
+    stale_by_path: Mapping[Path, StaleReason | None],
+) -> bool:
+    """Whether sync just declined to rewrite ``existing``, a case ``built`` would replay further.
+
+    Called only where sync skips an already-promoted case. Counted only when ``--force``
+    would rewrite it to replay every round: not a case marked ``provenance: reviewed``
+    (``--force`` would drop the mark) and not a stale one (the planner may retire it this
+    very run).
+    """
+    if existing is None:
+        return False
+    path, case = existing
+    return (
+        built.blocked is None
+        and bool(built.example.tool_result_fixtures)
+        and not case.example.tool_result_fixtures
+        and not is_reviewed(case.example)
+        and stale_by_path.get(path) is None
+    )
 
 
 def _check_rounds(rounds: str) -> None:
@@ -1568,16 +1595,9 @@ def capture_sync(
         pending: list[PromotedCase] = []
         pending_warnings: dict[str, list[str]] = {}
         built_pairs = build_conversation_examples(suite_records, opts, base=base)
-        if replay_rounds == "all" and not force:
-            promoted_from = {c.from_capture: c for _, c in kept}
-            single_shot += sum(
-                1
-                for record, built in built_pairs
-                if built.blocked is None
-                and built.example.tool_result_fixtures
-                and (promoted_case := promoted_from.get(record.envelope.capture_id)) is not None
-                and not promoted_case.example.tool_result_fixtures
-            )
+        # Sync writes a case under its capture id, so that is the case `--force` would
+        # rewrite: a custom `promote --as` name is never reached (dedup gives it the content).
+        kept_by_name = {c.name: (path, c) for path, c in kept}
         local_ids = {r.envelope.capture_id for r in suite_records}
         local_turns: dict[str, set[int]] = {}
         for r in suite_records:
@@ -1720,6 +1740,9 @@ def capture_sync(
                     continue
             if limits.max_cases is not None and envelope.capture_id in kept_from and not force:
                 skipped_existing += 1
+                single_shot += _replays_fewer_rounds(
+                    kept_by_name.get(envelope.capture_id), built, stale_by_path
+                )
                 continue
             content_key = (suite_name, example_content_key(built.example))
             owner = seen_examples.get(content_key)
@@ -1770,6 +1793,9 @@ def capture_sync(
                     wired_generation += 1
             except FileExistsError:
                 skipped_existing += 1
+                single_shot += _replays_fewer_rounds(
+                    kept_by_name.get(case.name), built, stale_by_path
+                )
         if repaired_here:
             repaired += len(repaired_here)
             _warn_repaired_duplicates(suite_name, repaired_here, base=base, console=console)
@@ -1922,11 +1948,19 @@ def capture_sync(
     for line in plan_lines:
         console.print(escape(line), soft_wrap=True)
     if single_shot:
+        # Named as this run was asked: a bare `--force` resolves rounds from the config
+        # (maybe `first`) and overwrites every suite, not just the one counted.
+        command = "evalshift capture sync --force"
+        if rounds is not None:
+            command += " --rounds all"
+        if suite is not None:
+            command += f" --suite {shlex.quote(suite)}"
         console.print(
             f"[yellow]⚠[/yellow] {single_shot} promoted case(s) replay only their first round, "
-            "although their captures carry the recorded tool results that rounds: all replays. "
-            "Sync never rewrites a promoted case unasked: run [bold]evalshift capture sync "
-            "--force[/bold] once to re-promote every case with the current settings.",
+            "although their captures carry the recorded tool results to replay every round. "
+            f"Sync never rewrites a promoted case unasked: [bold]{escape(command)}[/bold] once "
+            "re-promotes each case whose capture is still local, which drops hand edits and "
+            "provenance: reviewed marks (reviewed cases are not counted here).",
             soft_wrap=True,
         )
 

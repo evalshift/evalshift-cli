@@ -18,9 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `capture sync --rounds` still overrides it for one run; `capture promote`
   takes only the flag. The setting applies to cases promoted from then on.
   When it is `all` and promoted cases still replay one round although their
-  captures carry the tool results to replay more, sync says how many and
-  suggests `capture sync --force`. `init` scaffolds it commented out. Older
-  CLIs reject the key, so update a CI `evalshift-version:` pin first.
+  captures carry the tool results to replay more, sync says how many. It
+  names the command that would upgrade them: `capture sync --force`, plus
+  `--rounds all` or `--suite <S>` when the run used them. It also warns that
+  `--force` rebuilds every promoted case whose capture is local, dropping
+  hand edits and `provenance: reviewed` marks. Reviewed, stale and
+  `promote --as` cases are not counted. An unreadable config now also says
+  sync is running without `captures.rounds`. `init` scaffolds the key
+  commented out. Older CLIs reject the key, so update a CI
+  `evalshift-version:` pin first.
 - **Bounded capture suites.** Two optional settings under `captures:`,
   `max_age: 14d` and `max_cases: 200`, together keep each captured suite a
   capped, route-balanced sample of recent production on
