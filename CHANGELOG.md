@@ -100,6 +100,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tool-calling replays work again on a fresh install. From 1.106.0, LiteLLM
+  imports its MCP proxy module on every completion that carries tools, and
+  that module needs the `mcp` package, which only LiteLLM's proxy extra
+  installs. So every tool-calling call failed with `ModelError` (`No module
+  named 'mcp'`) before any request was sent, and every retry failed the same
+  way. The dependency is now `litellm>=1.77,<1.106`.
 - The PyPI project page's links work. 35 of the README's 51 links were
   relative, so on pypi.org they resolved under `pypi.org/project/evalshift/`
   and 404ed; they now point at the files on GitHub. The project's Homepage

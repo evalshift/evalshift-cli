@@ -463,6 +463,21 @@ class TestCompleteWithTools:
         assert result.finish_reason == "length"
         assert result.truncated is True
 
+    async def test_real_litellm_dispatches_a_tool_call(self) -> None:
+        # No monkeypatch: the request goes through the installed LiteLLM, which
+        # returns `mock_response` without contacting the provider. LiteLLM
+        # 1.106.x imports its MCP proxy module, which needs the `mcp` package
+        # we don't install, on every call that carries tools, so this fails
+        # there -- the reason pyproject caps litellm below 1.106.
+        result = await ModelClient(retry_policy=RetryPolicy(max_attempts=1)).complete_with_tools(
+            model="claude-sonnet-5",
+            prompt="hi",
+            tools=[_DEMO_TOOL],
+            extra={"mock_response": "no tool needed"},
+        )
+        assert result.model_id == "anthropic/claude-sonnet-5"
+        assert result.trace.call_count == 0
+
     async def test_tool_max_tokens_forwarded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured = _patch_tools_acompletion(monkeypatch, _OPENAI_SINGLE_RESPONSE)
         await ModelClient().complete_with_tools(

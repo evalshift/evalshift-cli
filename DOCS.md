@@ -1016,6 +1016,10 @@ Yes — every `run` calls a real model. Before dispatch you get a worst-case cos
 
 The error is recorded on that call in `raw.jsonl`; the run completes. At evaluate time the affected pair gets an errored row (a 0.5/0.5 placeholder with the error attached) that is excluded from the statistics, so it can't masquerade as a regression or an improvement. Re-running the same command re-uses cached successes (for a multi-round tool example, the rounds before the failed one) and retries the failures (errored calls in a *resumed* run are not retried — start a fresh run to retry them).
 
+### Every tool-calling call fails with `No module named 'mcp'`
+
+The environment has LiteLLM 1.106.0 or later. From that release, every completion that carries tools imports LiteLLM's MCP proxy module, which needs the `mcp` package, and that package comes only with LiteLLM's proxy extra. The call fails before any request is sent, so every retry fails the same way and `raw.jsonl` records `litellm.APIConnectionError: No module named 'mcp'`. Calls without tools are unaffected. This release caps the dependency at `litellm<1.106`, so upgrading the CLI fixes it. If you're pinned to an older CLI, install `litellm<1.106` alongside it.
+
 ### `--resume` aborts with a config-hash mismatch
 
 Resume requires the config and the suite path to match the original run — a changed config would corrupt the pairing. Start a fresh run. Upgrading the CLI counts as a config change when the release added config fields (they join the hashed canonical dump), so an older CLI's in-progress run cannot be resumed after upgrading. The suite's *contents* are not part of the hash, so an edited suite at the same path resumes without this error; start a fresh run after editing examples.
