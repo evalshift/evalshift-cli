@@ -2990,7 +2990,7 @@ class TestTopRegressionsListEveryRealRegression:
             delta,
             evaluator_name="semantic.cosine",
             kind="semantic",
-            metadata={"failure_categories": categories},
+            metadata={"failure_categories": categories, "raw_cosine": 1.0 + delta},
         )
 
     @staticmethod
@@ -3113,6 +3113,72 @@ class TestTopRegressionsListEveryRealRegression:
         note = f"showing the worst {MAX_REGRESSION_CARDS}"
         assert note in html
         assert "Per-example breakdown" in html.split(note, 1)[1].split("</span>", 1)[0]
+
+    def test_tied_examples_rank_by_evaluator_count_then_id(self, tmp_path: Path) -> None:
+        run_dir = self._run(
+            tmp_path,
+            [
+                self._record("b", -0.5),
+                self._record("a", -0.5),
+                self._record("c", -0.5),
+                self._record("c", -0.5, evaluator_name="routing", kind="tool_selection.divergence"),
+            ],
+        )
+        section = build_report_payload(run_dir).prompt_sections[0]
+        assert [g.example_id for g in section.regressed_examples] == ["c", "a", "b"]
+
+    def test_a_within_threshold_card_does_not_claim_a_regression(self, tmp_path: Path) -> None:
+        html = render_html(build_report_payload(self._threshold_run(tmp_path)))
+        within = self._top(html).split('<details class="within-threshold">', 1)[1]
+        assert "Within threshold" in within
+        assert "Why flagged" not in within
+        assert "notice-bad" not in within
+        assert "badge-bad" not in within
+        assert "drift" not in within
+        assert "93% similar" in within
+
+    def test_the_within_list_has_its_own_cap(self, tmp_path: Path) -> None:
+        from evalshift_cli.reports.json import MAX_REGRESSION_CARDS
+
+        total = MAX_REGRESSION_CARDS + 3
+        run_dir = self._run(
+            tmp_path,
+            [
+                self._semantic(f"e{i:03d}", -(i + 1) / 1000, beyond_threshold=False)
+                for i in range(total)
+            ],
+        )
+        payload = build_report_payload(run_dir)
+        section = payload.prompt_sections[0]
+        assert len(section.within_threshold_examples) == MAX_REGRESSION_CARDS
+        assert section.within_threshold_example_count == total
+        html = render_html(payload)
+        # Nothing regressed: the header says so, and the line drops its "more".
+        assert '<span class="mono muted count-note">0 of 2 examples regressed</span>' in html
+        assert "No specific regressions to surface." in html
+        assert (
+            f"{total} examples dropped within the evaluator's threshold (scored as no change)"
+            f" · showing the largest {MAX_REGRESSION_CARDS}"
+        ) in html
+
+    def test_the_breakdown_marks_only_examples_that_regressed(self, tmp_path: Path) -> None:
+        payload = build_report_payload(self._threshold_run(tmp_path))
+        rows = {row.example_id: row for row in payload.prompt_sections[0].example_rows}
+        assert (rows["ex1"].regressed, rows["ex2"].regressed) == (False, True)
+        table = _section(render_html(payload), "<h3>Per-example breakdown</h3>")
+        assert table.count('class="ex-regression"') == 1
+
+    def test_a_regressed_rows_worst_delta_is_the_regression(self, tmp_path: Path) -> None:
+        # The forgiven semantic drop is larger; the breakdown quotes the one
+        # that counts, as the card does.
+        run_dir = self._run(
+            tmp_path,
+            [self._semantic("ex1", -0.08, beyond_threshold=False), self._record("ex1", -0.05)],
+        )
+        section = build_report_payload(run_dir).prompt_sections[0]
+        row = next(r for r in section.example_rows if r.example_id == "ex1")
+        assert (row.regressed, row.worst_delta_score) == (True, -0.05)
+        assert section.regressed_examples[0].regressions[0].delta == -0.05
 
     def test_report_json_carries_the_counts_and_the_within_threshold_rows(
         self, tmp_path: Path

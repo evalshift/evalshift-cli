@@ -38,7 +38,10 @@
     outputs and context once. The outputs are the same whichever evaluator
     scored them, so a card per evaluator repeated them and let one example
     fill the list. -#}
-{%- macro regression_card(card, opened=False) -%}
+{%- macro regression_card(card, opened=False, within=False) -%}
+{#- ``within``: a drop the evaluator's own threshold forgives. The card then
+    says so in a neutral tone instead of "Why flagged" in red. -#}
+{%- set target_tone = "muted" if within else "bad" -%}
 {%- set first = card.regressions[0] -%}
 {%- set single = card.regressions|length == 1 -%}
 <details class="panel regression"{% if opened %} open{% endif %}>
@@ -49,22 +52,22 @@
     <span class="reg-what">{% for tr in card.regressions %}{{ evaluator_label(tr.evaluator_name, tr.kind) }}{% if not loop.last %} · {% endif %}{% endfor %}</span>
     {% if first.truncated %}<span class="badge badge-warn trunc-flag">truncated (token cap)</span>{% endif %}
     {% if first.target_empty_output %}<span class="badge badge-warn empty-output-flag" title="The model returned no visible text despite spending tokens (often thinking-only responses).">empty output</span>{% endif %}
-    <span class="delta">{{ "%+.3f"|format(first.delta) }}</span>
+    <span class="delta{{ " delta-muted" if within }}">{{ "%+.3f"|format(first.delta) }}</span>
     <span class="reg-toggle" aria-hidden="true"></span>
   </summary>
   <div class="reg-body">
     {% for tr in card.regressions %}
-    {% set reason = regression_reason(tr) %}
-    <div class="notice notice-bad reg-why">
+    {% set reason = regression_reason(tr, within) %}
+    <div class="notice{{ " notice-bad" if not within }} reg-why">
       <div class="reg-why-line">
-        <span class="eyebrow">Why flagged</span>
+        <span class="eyebrow">{{ "Within threshold" if within else "Why flagged" }}</span>
         {% if not single %}<span class="reg-why-evaluator">{{ evaluator_label(tr.evaluator_name, tr.kind) }}</span>{% endif %}
         <span class="reg-scores">source {{ "%.2f"|format(tr.source_score) }} → target {{ "%.2f"|format(tr.target_score) }} (0–1)</span>
         {#- The evaluator's own failure category when it wrote one: it names
             what went wrong, where the axis slug only names what was scored. -#}
         {%- set categories = tr.metadata.get("failure_categories") or [] %}
-        {% for category in categories %}<span class="badge badge-bad">{{ category_label(category) }}</span>{% endfor %}
-        {% if not categories and tr.kind %}<span class="badge badge-bad">{{ kind_label(tr.kind) }}</span>{% endif %}
+        {% for category in categories %}<span class="badge{{ " badge-bad" if not within }}">{{ category_label(category) }}</span>{% endfor %}
+        {% if not categories and tr.kind %}<span class="badge{{ " badge-bad" if not within }}">{{ kind_label(tr.kind) }}</span>{% endif %}
         {% if not single %}<span class="reg-why-delta">{{ "%+.3f"|format(tr.delta) }}</span>{% endif %}
       </div>
       {% if reason %}<p>{{ reason }}</p>{% endif %}
@@ -94,7 +97,7 @@
         {% endif %}
       </div>
       <div class="reg-col">
-        <div class="reg-col-head"><span class="eyebrow">Target agent trace</span>{% if single %}<span class="reg-col-score bad">score {{ "%.3f"|format(first.target_score) }}</span>{% endif %}</div>
+        <div class="reg-col-head"><span class="eyebrow">Target agent trace</span>{% if single %}<span class="reg-col-score {{ target_tone }}">score {{ "%.3f"|format(first.target_score) }}</span>{% endif %}</div>
         {% if first.target_agent_trace and first.target_agent_trace.tool_calls %}
         {% set source_names = (first.source_agent_trace.tool_calls if first.source_agent_trace else []) | map(attribute='name') | list %}
         <ol class="trace-list trace-target">
@@ -143,7 +146,7 @@
         {% endif %}
       </div>
       <div class="reg-col">
-        <div class="reg-col-head"><span class="eyebrow">Target trace</span>{% if single %}<span class="reg-col-score bad">score {{ "%.3f"|format(first.target_score) }}</span>{% endif %}</div>
+        <div class="reg-col-head"><span class="eyebrow">Target trace</span>{% if single %}<span class="reg-col-score {{ target_tone }}">score {{ "%.3f"|format(first.target_score) }}</span>{% endif %}</div>
         {% if first.target_trace and first.target_trace.calls %}
         {% set source_names = (first.source_trace.calls if first.source_trace else []) | map(attribute='tool_name') | list %}
         <ol class="trace-list trace-target">
@@ -180,7 +183,7 @@
         <pre>{{ first.source_text }}</pre>
       </div>
       <div class="reg-col">
-        <div class="reg-col-head"><span class="eyebrow">Target</span>{% if single %}<span class="reg-col-score bad">score {{ "%.3f"|format(first.target_score) }}</span>{% endif %}</div>
+        <div class="reg-col-head"><span class="eyebrow">Target</span>{% if single %}<span class="reg-col-score {{ target_tone }}">score {{ "%.3f"|format(first.target_score) }}</span>{% endif %}</div>
         <pre>{{ first.target_text }}</pre>
       </div>
     </div>
@@ -667,13 +670,13 @@
             <th>Tags</th>
             <th class="num" title="Target latency minus source, in seconds. Shown only when both sides ran fully live (no round replayed from cache).">Time Δ</th>
             <th class="num" title="Target cost minus source cost, per call.">Cost Δ</th>
-            <th title="On the evaluator where the target dropped most: target score minus source score, on a 0–1 scale. Negative = target worse.">Worst score Δ</th>
+            <th title="On the evaluator where the target dropped most: target score minus source score, on a 0–1 scale. Negative = target worse. A drop inside the evaluator's own threshold is scored as no change and shows muted; a regressed example quotes its worst drop beyond one.">Worst score Δ</th>
             <th title="Whether the target held every tool measurement the source held. ✗ when some tool evaluator scored the target below the source; — when no tool evaluator applies.">Tool match</th>
             <th class="wrap" title="Which tools each side actually called, as the tool evaluator scored them.">Tools called (source → target)</th>
           </tr></thead>
           <tbody>
           {% for row in section.example_rows %}
-            <tr class="{% if row.worst_delta_score is not none and row.worst_delta_score < 0 %}ex-regression{% elif row.worst_delta_score is not none and row.worst_delta_score > 0 %}ex-improved{% endif %}">
+            <tr class="{% if row.regressed %}ex-regression{% elif row.worst_delta_score is not none and row.worst_delta_score > 0 %}ex-improved{% endif %}">
               <td class="num" style="text-align:left"><code>{{ row.example_id }}</code>{% if row.turn_index is not none %}<span class="turn-badge">turn {{ row.turn_index }}</span>{% endif %}</td>
               {# One dot-separated line, not a chip per tag: a stack of chips in a
                  narrow column pushes every other row taller. #}
@@ -684,9 +687,10 @@
                 {%- if row.worst_delta_score is none %}<span class="faint mono">—</span>
                 {%- elif row.worst_delta_score == 0 %}<span class="delta-value ok">±0.00</span>
                 {%- else %}
-                <div class="delta-cell">
-                  <div class="meter-track delta-track"><div class="meter {{ "meter-bad" if row.worst_delta_score < 0 else "" }}" style="width:{{ "%.1f"|format((row.worst_delta_score|abs) / scale * 100 if scale else 0) }}%"></div></div>
-                  <span class="delta-value {{ "bad" if row.worst_delta_score < 0 else "ok" }}">{{ "%+.2f"|format(row.worst_delta_score) }}</span>
+                {%- set forgiven = row.worst_delta_score < 0 and not row.regressed %}
+                <div class="delta-cell"{% if forgiven %} title="Inside the evaluator's own threshold: scored as no change"{% endif %}>
+                  <div class="meter-track delta-track"><div class="meter {{ "meter-bad" if row.regressed else ("meter-muted" if forgiven else "") }}" style="width:{{ "%.1f"|format((row.worst_delta_score|abs) / scale * 100 if scale else 0) }}%"></div></div>
+                  <span class="delta-value {{ "bad" if row.regressed else ("muted" if forgiven else "ok") }}">{{ "%+.2f"|format(row.worst_delta_score) }}</span>
                 </div>
                 {%- endif %}
               </td>
@@ -831,7 +835,7 @@
         <summary><span class="caret"></span>{{ within_count }} {% if section.regressed_example_count %}more {% endif %}example{{ "s" if within_count != 1 }} dropped within the evaluator's threshold (scored as no change){% if within_count > section.within_threshold_examples|length %} · showing the largest {{ section.within_threshold_examples|length }}{% endif %}</summary>
         <div class="within-threshold-body">
           {% for card in section.within_threshold_examples %}
-          {{ regression_card(card) }}
+          {{ regression_card(card, within=True) }}
           {% endfor %}
         </div>
       </details>

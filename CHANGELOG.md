@@ -20,12 +20,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ("15 of 21 examples regressed"), not rows.
 - A drop inside an evaluator's own threshold is no longer listed as a
   regression. The analysis already tests a `semantic` row above
-  `min_similarity` as no change, yet a 0.93 similarity under a 0.9 threshold
+  `min_similarity` as no change, yet a 0.93 similarity with a 0.9 threshold
   sat in the list. Those examples now sit in a closed "N more examples dropped
   within the evaluator's threshold (scored as no change)" line under the
-  cards. `report.json` keeps `top_regressions`, one row per example and
-  evaluator for the examples shown, and adds `regressed_example_count`,
-  `within_threshold_regressions` and `within_threshold_example_count`.
+  cards, and their cards read "Within threshold" in a neutral tone rather than
+  "Why flagged" in red. `report.json` keeps `top_regressions`, one row per
+  example and evaluator for the examples shown, and adds
+  `regressed_example_count`, `within_threshold_regressions` and
+  `within_threshold_example_count`.
+- The per-example breakdown applies the same rule. It tinted every row with a
+  negative delta, so all 21 rows of that planner run were red under a list of
+  15 regressed examples. Only a regressed example's row is tinted now, it
+  quotes its worst drop beyond a threshold (the delta its card leads with),
+  and a forgiven drop shows muted. Each `example_rows` row in `report.json`
+  carries `regressed`.
 - The report has more room between its sections, between the blocks of a
   prompt's section, and between each heading and its table.
 

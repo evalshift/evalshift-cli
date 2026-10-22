@@ -96,7 +96,7 @@ as one section under the pipeline block (also on stage failure); errors are neve
 | scores.jsonl | evaluate | one EvalRecord per (pair x evaluator): source/target scores in [0,1], delta |
 | analysis.json | analyze | per-(prompt,evaluator,slice) statistics + severity |
 | migration_decision.json | analyze | policy verdict (only when migration_policy configured) |
-| report.json + report.html | report | payload + single-file HTML (no external assets, dark-only). report.json top-level invariant_violations: one row per trace rule the target broke (see evaluators.trace_invariants). Per prompt section: top_regressions (one row per example x evaluator, regressed examples shown), regressed_example_count, within_threshold_regressions, within_threshold_example_count |
+| report.json + report.html | report | payload + single-file HTML (no external assets, dark-only). report.json top-level invariant_violations: one row per trace rule the target broke (see evaluators.trace_invariants). Per prompt section: top_regressions (one row per example x evaluator, regressed examples shown, at most 50), regressed_example_count (all of them), within_threshold_regressions + within_threshold_example_count (examples whose every drop stayed inside its evaluator's threshold; a forgiven drop on a regressed example is in neither), example_rows[].regressed |
 | insights.json | report | cached machine-written narrative (optional; --no-insights skips) |
 | traces.jsonl | traces import | optional BYO agent traces |
 | run_bundle.json.gz | bundle/push | optional hosted upload bundle |
@@ -257,7 +257,9 @@ evalshift report RUN_ID [-c CONFIG] [--open] [--insights/--no-insights (default 
   per regressed example, worst first, naming every evaluator that dropped it; at most 50 per
   prompt (the per-example table lists all); a drop inside an evaluator's own threshold
   (semantic min_similarity) is tested as no change, so it sits in a closed line below the
-  cards, not among them. Dark-only, no external assets, no JS. Rendered surfaces show
+  cards ("Within threshold", neutral tone), not among them; the per-example table tints
+  only regressed rows and shows a forgiven drop muted. Dark-only, no external assets, no
+  JS. Rendered surfaces show
   display names, never internal identifiers: failure categories as plain language
   (TOOL_SELECTION_DRIFT -> "Different tools chosen"; map in evaluators/failures.py), budgets
   as their labels (max_tool_divergence -> "Tool-selection divergence"; map in

@@ -327,6 +327,8 @@ p.empty {
 .meter { height: 100%; background: var(--ok); }
 .meter-warn { background: var(--warn); }
 .meter-bad { background: var(--bad); }
+/* A drop the evaluator's own threshold forgives: shown, but not as a regression. */
+.meter-muted { background: var(--dim2); }
 .meter-track {
   height: 6px;
   background: var(--well);
@@ -610,6 +612,7 @@ details[open] > summary .caret::after { content: "\25BE"; }
   background: var(--bad-tint);
   border: 1px solid var(--bad-edge);
 }
+.reg-head .delta-muted { color: var(--dim); background: var(--panel-2); border-color: var(--stroke); }
 .reg-body {
   display: flex;
   flex-direction: column;

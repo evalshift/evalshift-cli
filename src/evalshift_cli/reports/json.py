@@ -234,11 +234,15 @@ class ExampleRow:
     tool_match: bool | None
     # Which tools each side called, when a divergence axis scored this
     # example. This column is the plan's table: one line per example, source
-    # called / target called, for every example rather than the worst five.
+    # called / target called, for every example, regressed or not.
     tool_change: ToolChange | None = None
     # Multi-turn — zero-based turn position within the source conversation.
     # None for single-turn examples or when the example isn't in the suite.
     turn_index: int | None = None
+    # Whether some evaluator dropped this example beyond its own threshold:
+    # the rule the top-regressions list uses. ``False`` on a row whose only
+    # drops the threshold forgives, though its worst delta is negative.
+    regressed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -897,7 +901,12 @@ def _build_example_rows(
 
         ex_records = records_by_example.get(example_id, [])
         scored = [r for r in ex_records if r.error is None]
-        worst = min((r.delta for r in scored), default=None)
+        # A drop inside its evaluator's own threshold is tested as no change,
+        # so a regressed row quotes the worst drop that counts, as its
+        # top-regressions card does.
+        counted = [r.delta for r in scored if not within_tolerance(r)]
+        regressed = any(d < 0 for d in counted)
+        worst = min(counted) if regressed else min((r.delta for r in scored), default=None)
 
         example = examples_by_id.get(example_id)
         rows.append(
@@ -911,13 +920,16 @@ def _build_example_rows(
                 tool_match=_tool_match(scored, tool_evaluator_names),
                 tool_change=_example_tool_change(scored),
                 turn_index=example.turn_index if example is not None else None,
+                regressed=regressed,
             ),
         )
 
-    # Worst regression first (most-negative delta score), tiebreak on
-    # most-expensive (highest +delta cost), then example_id for stability.
+    # Regressed examples first, worst first (most-negative delta score),
+    # tiebreak on most-expensive (highest +delta cost), then example_id for
+    # stability.
     rows.sort(
         key=lambda r: (
+            not r.regressed,
             r.worst_delta_score if r.worst_delta_score is not None else 0.0,
             -r.delta_cost_usd,
             r.example_id,
@@ -1319,6 +1331,7 @@ def _to_jsonable(report: ReportData) -> dict[str, Any]:
                         "tool_match": er.tool_match,
                         "tool_change": _tool_change_to_dict(er.tool_change),
                         "turn_index": er.turn_index,
+                        "regressed": er.regressed,
                     }
                     for er in ps.example_rows
                 ],
