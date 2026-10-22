@@ -1,16 +1,24 @@
 """Locate, load, and validate capture files on disk.
 
-Path contract (frozen at SDK schema ``1.0.0``)::
+Path contract::
 
-    <base>/captures/<suite>/<capture_id>.json
+    <base>/captures/<suite>/<capture_id>.json                 standalone and ``@capture.agent``
+                                                              captures, and every capture
+                                                              evalshift-sdk < 0.7.0 wrote
+    <base>/captures/<suite>/conv_<16 hex>/<capture_id>.json   a ``capture.agent_session``
+                                                              conversation's turns,
+                                                              evalshift-sdk >= 0.7.0
 
-``base`` resolves to ``$EVALSHIFT_DIR`` if set, else ``.evalshift`` (CWD
-relative) — matching the SDK's ``FileSink`` exactly, so the CLI reads from
-wherever the agent process wrote. Promoted cases live under
-``<base>/suites/<suite>/``. Toolset sidecars — one content-addressed file per
-distinct toolset, shared across every capture and promoted case that used it
-— live under ``<base>/toolsets/<hex>.json`` (see :func:`toolset_path`; the
-fingerprint itself is :func:`evalshift_cli.captures.toolset.fingerprint_tools`).
+``<suite>`` is the SDK's ``_safe_segment`` of the suite name (:func:`capture_suite_dirname`);
+``conv_<16 hex>`` is the first 16 hex digits of ``sha256(conversation_id)``. ``base`` resolves
+to ``$EVALSHIFT_DIR`` if set, else ``.evalshift`` (CWD relative) — matching the SDK's
+``FileSink`` exactly, so the CLI reads from wherever the agent process wrote.
+
+Promoted cases live under ``<base>/suites/<suite>/``. Toolset sidecars — one
+content-addressed file per distinct toolset, shared across every capture and
+promoted case that used it — live under ``<base>/toolsets/<hex>.json`` (see
+:func:`toolset_path`; the fingerprint itself is
+:func:`evalshift_cli.captures.toolset.fingerprint_tools`).
 
 Unlike the capture *write* path in the SDK (which fails open — a broken write
 is silently dropped), the CLI read path **raises** a structured
@@ -22,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable, Iterator, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +50,51 @@ CAPTURES_DIRNAME = "captures"
 SUITES_DIRNAME = "suites"
 TOOLSETS_DIRNAME = "toolsets"
 _DEFAULT_BASE = ".evalshift"
+
+#: The folder evalshift-sdk (0.7.0 and later) files a conversation's turns under, inside the
+#: suite's directory: ``conv_`` + the first 16 hex digits of ``sha256(conversation_id)``.
+#: Lowercase only, so two names never collide on a case-insensitive filesystem. Always used
+#: with ``fullmatch``.
+CONVERSATION_DIR = re.compile(r"conv_[0-9a-f]{16}")
+
+
+def is_conversation_dir(name: str) -> bool:
+    """Whether ``name`` is a conversation folder the SDK writes (``conv_<16 hex>``)."""
+    return CONVERSATION_DIR.fullmatch(name) is not None
+
+
+def capture_suite_dirname(suite: str) -> str:
+    """The directory the SDK files ``suite``'s captures under.
+
+    Mirrors ``evalshift.sinks.file._safe_segment`` exactly: separators become ``_``, every
+    ``..`` becomes ``_``, leading and trailing dots and spaces are stripped, and an empty result
+    is ``_``. So ``team/support`` reads from ``team_support``, where the SDK wrote it, and a
+    suite argument can never name a conversation folder.
+    """
+    cleaned = suite.replace("\\", "/").replace("/", "_")
+    while ".." in cleaned:
+        cleaned = cleaned.replace("..", "_")
+    cleaned = cleaned.strip(". ")
+    return cleaned or "_"
+
+
+def _capture_files(suite_dir: Path) -> list[Path]:
+    """A suite directory's capture files: its flat ones, then each conversation folder's.
+
+    A directory that cannot be listed gives just what ``glob`` found (nothing, when it is
+    unreadable), so one bad suite never aborts a command for the others -- as before
+    conversation folders.
+    """
+    files = sorted(suite_dir.glob("*.json"))
+    try:
+        children = sorted(suite_dir.iterdir())
+    except OSError:
+        return files
+    for child in children:
+        if is_conversation_dir(child.name) and child.is_dir():
+            files.extend(sorted(child.glob("*.json")))
+    return files
+
 
 # Major schema versions this CLI knows how to read. Bumped to 2 for per-call
 # toolset capture (``ModelCallEvent.toolset_ref`` / ``.tools_offered``): a 1.x
@@ -310,6 +364,10 @@ def iter_captures(
 ) -> list[CaptureRecord]:
     """Return every readable capture, optionally filtered to one ``suite``.
 
+    ``suite`` maps to the directory the SDK writes it to (:func:`capture_suite_dirname`, so
+    ``team/support`` reads ``team_support/``). Each suite directory's ``*.json`` files are
+    read, then those one level down in its ``conv_<16 hex>/`` conversation folders.
+
     Capture files that fail to load are skipped; each failure is reported to
     ``on_error`` (if given) so callers can warn instead of silently dropping
     the file. Results are sorted by ``(suite, capture_id)`` for deterministic
@@ -320,14 +378,16 @@ def iter_captures(
         return []
 
     suite_dirs = (
-        [root / suite] if suite is not None else sorted(p for p in root.iterdir() if p.is_dir())
+        [root / capture_suite_dirname(suite)]
+        if suite is not None
+        else sorted(p for p in root.iterdir() if p.is_dir())
     )
 
     records: list[CaptureRecord] = []
     for suite_dir in suite_dirs:
         if not suite_dir.is_dir():
             continue
-        for path in sorted(suite_dir.glob("*.json")):
+        for path in _capture_files(suite_dir):
             try:
                 envelope = load_capture(path)
             except CaptureError as exc:
@@ -529,17 +589,20 @@ def promoted_toolset_refs(*, base: Path | None = None) -> set[str]:
 
 __all__ = [
     "CAPTURES_DIRNAME",
+    "CONVERSATION_DIR",
     "SUITES_DIRNAME",
     "TOOLSETS_DIRNAME",
     "CaptureError",
     "CaptureErrorKind",
     "CaptureRecord",
     "capture_base",
+    "capture_suite_dirname",
     "capture_toolset_refs",
     "captures_root",
     "envelope_toolset_ref",
     "envelope_toolset_refs",
     "find_capture",
+    "is_conversation_dir",
     "iter_captures",
     "load_capture",
     "load_toolset",

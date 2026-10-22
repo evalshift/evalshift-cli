@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from datetime import UTC, datetime
@@ -184,3 +185,46 @@ def test_a_source_model_typo_neither_empties_nor_retires_an_established_suite(
     assert "planner: 4 cases — kept 4, retired 0, added 0 of 2 eligible" in said
     assert "on another model" not in said
     assert _cases(tmp_path) == established
+
+
+#: The folder evalshift-sdk >= 0.7.0 writes for conversation_id "planner:session-1" (pinned in
+#: evalshift-sdk tests/test_conversation_layout.py too).
+CONV = "conv_e1961a13f5bd6642"
+
+
+def _turn(bucket: _Bucket, turn: int, when: datetime) -> None:
+    key = f"captures/planner/{CONV}/cap_t{turn}.json"
+    bucket.store.objects[key] = capture_payload(
+        f"cap_t{turn}",
+        "planner",
+        model_input=f"step {turn}",
+        created_at=when.isoformat(),
+        model_id="claude-sonnet-5-20260301",
+        conversation_id="planner:session-1",
+        turn_index=turn,
+    )
+    bucket.store.modified[key] = when
+
+
+def test_a_fresh_checkout_rebuilds_a_new_turns_history_from_promoted_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bucket = _Bucket(monkeypatch)
+    _config(tmp_path / "evalshift.yaml")
+    _turn(bucket, 0, _day(10))
+    _turn(bucket, 1, _day(11))
+    _sync(tmp_path, monkeypatch, _day(12))
+    assert _cases(tmp_path) == {"cap_t0", "cap_t1"}
+
+    # A teammate's fresh checkout: the committed case files, no local captures.
+    shutil.rmtree(tmp_path / "captures")
+    _turn(bucket, 2, _day(12))
+    result = _sync(tmp_path, monkeypatch, _day(13))
+
+    assert _cases(tmp_path) == {"cap_t0", "cap_t1", "cap_t2"}
+    assert "missing earlier turns" not in _said(result)
+    case = json.loads((tmp_path / "suites" / "planner" / "cap_t2.json").read_text())
+    assert [m["content"] for m in case["example"]["history"] if m["role"] == "user"] == [
+        "step 0",
+        "step 1",
+    ]
