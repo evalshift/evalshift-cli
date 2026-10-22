@@ -7,7 +7,8 @@ Lifecycle for captures recorded by the separate ``evalshift-sdk``:
 * ``capture clean``   — prune capture files (never touches promoted suites).
 * ``capture diff``    — compare two captures' tool-call traces.
 
-Captures live under ``<base>/captures/<suite>/`` and promoted cases under
+Captures live under ``<base>/captures/<suite>/`` (a conversation's turns in its
+``conv_<16 hex>/`` folder there, from evalshift-sdk 0.7.0) and promoted cases under
 ``<base>/suites/<suite>/``, where ``base`` follows the SDK convention
 (``$EVALSHIFT_DIR`` else ``.evalshift``). ``--base`` overrides for tests/advanced use.
 """
@@ -19,7 +20,8 @@ import os
 import re
 import shlex
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -56,6 +58,7 @@ from evalshift_cli.captures.reader import (
     capture_toolset_refs,
     envelope_toolset_ref,
     find_capture,
+    is_conversation_dir,
     iter_captures,
     load_toolset,
     promoted_capture_ids,
@@ -581,8 +584,9 @@ def _warn_store_skipped(config_path: Path, reason: str, *, console: Console) -> 
 
 
 FETCH_BUDGET_PER_CASE: Final = 3
-"""With ``captures.max_cases`` set, sync's fetch takes each suite's newest ``3 x max_cases``
-captures: spare enough for the planner to balance tool routes, and never the whole bucket."""
+"""With ``captures.max_cases`` set, sync's fetch takes at most ``3 x max_cases`` captures per
+suite, a conversation at a time: spare enough for the planner to balance tool routes, and never
+the whole bucket."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -605,7 +609,7 @@ class _SyncLimits:
 
     @property
     def fetch_budget(self) -> int | None:
-        """How many of each suite's newest captures the fetch takes; ``None``: all of them."""
+        """How many captures per suite the fetch takes; ``None``: all of them."""
         return FETCH_BUDGET_PER_CASE * self.max_cases if self.max_cases is not None else None
 
     def fetch_window(self, now: datetime) -> tuple[datetime, str] | None:
@@ -670,7 +674,8 @@ def _fetch_into_base(
 
     ``force_ids`` are fetched even when promoted or older than ``since`` -- the captures
     ``capture sync --repair`` needs to rebuild promoted cases. ``per_suite_limit`` caps each
-    suite at its newest that-many captures (``fetch_captures``).
+    suite at that many captures, taken a conversation at a time, newest first; the budget left
+    takes the next conversation's earliest turns (``fetch_captures``).
     """
     skip_ids = _promoted_capture_ids_or_warn(base=base, console=console)
     try:
@@ -752,8 +757,8 @@ def capture_list(
     """List captures recorded by the SDK.
 
     Fetches from captures.store first, as capture sync does: only captures within
-    captures.max_age and, with captures.max_cases set, each suite's newest 3x
-    max_cases.
+    captures.max_age and, with captures.max_cases set, at most 3x max_cases per
+    suite, a conversation at a time, newest first.
     """
     # With --json, stdout carries only the JSON: the fetch line and every warning go to stderr.
     console = Console(stderr=as_json)
@@ -1091,6 +1096,42 @@ def capture_promote(
     )
 
 
+def _cleanable(
+    records: Sequence[CaptureRecord], promoted: Collection[str]
+) -> tuple[list[CaptureRecord], int]:
+    """The promoted captures ``capture clean`` deletes, and how many promoted ones it keeps.
+
+    A conversation is cleaned whole, whichever folder its turns sit in: while any of its local
+    turns is unpromoted, its promoted turns stay, because a later turn without its own messages
+    list rebuilds its history from them. A capture outside any conversation goes on its own.
+    """
+    units: dict[tuple[str, ...], list[CaptureRecord]] = {}
+    for record in records:
+        envelope = record.envelope
+        key = (
+            ("conversation", envelope.suite, envelope.conversation_id)
+            if envelope.conversation_id is not None
+            else ("capture", str(record.path))
+        )
+        units.setdefault(key, []).append(record)
+    doomed: list[CaptureRecord] = []
+    kept = 0
+    for unit in units.values():
+        done = [r for r in unit if r.envelope.capture_id in promoted]
+        if len(done) == len(unit):
+            doomed.extend(unit)
+        else:
+            kept += len(done)
+    return sorted(doomed, key=lambda r: r.path), kept
+
+
+def _remove_empty_conversation_dirs(paths: Iterable[Path]) -> None:
+    """Remove the conversation folders ``paths`` emptied; a folder still holding files stays."""
+    for folder in sorted({p.parent for p in paths if is_conversation_dir(p.parent.name)}):
+        with suppress(OSError):
+            folder.rmdir()
+
+
 @capture_app.command(name="clean")
 def capture_clean(
     suite: Annotated[
@@ -1113,7 +1154,8 @@ def capture_clean(
 ) -> None:
     """Delete capture files, then sweep orphaned toolset sidecars.
 
-    Never touches promoted suites. Capture deletion is scoped by ``suite``/
+    Never touches promoted suites. A conversation's promoted turns stay while any of its turns
+    is unpromoted; folders it empties are removed. Capture deletion is scoped by ``suite``/
     ``--promoted``/``--all`` as usual; the sweep that follows is not -- a
     toolset sidecar is shared across every suite that used it, so refcounting
     it is global regardless of what this invocation's capture-deletion scope
@@ -1135,14 +1177,20 @@ def capture_clean(
     console = Console()
     records = iter_captures(suite=suite, base=base, on_error=_warn_unreadable(console))
 
+    held = 0
     if not all_captures:
         promoted = _promoted_capture_ids_or_warn(base=base, console=console)
-        records = [r for r in records if r.envelope.capture_id in promoted]
+        records, held = _cleanable(records, promoted)
+        if held:
+            console.print(
+                f"[dim]kept {held} promoted capture(s): their conversation still has unpromoted "
+                "turns, whose history is rebuilt from them.[/dim]"
+            )
 
-    if not records:
+    if not records and not held:
         scope = "captures" if all_captures else "promoted captures"
         console.print(f"[dim]nothing to clean — no {scope} found.[/dim]")
-    else:
+    elif records:
         if not yes:
             scope = "all captures" if all_captures else "promoted captures"
             typer.confirm(
@@ -1152,12 +1200,16 @@ def capture_clean(
             )
 
         removed = 0
+        gone: list[Path] = []
         for r in records:
             try:
                 r.path.unlink()
-                removed += 1
             except OSError as exc:
                 console.print(f"[yellow]⚠[/yellow] could not remove {r.path}: {exc}")
+                continue
+            removed += 1
+            gone.append(r.path)
+        _remove_empty_conversation_dirs(gone)
         console.print(f"[green]✓[/green] removed {removed} capture file(s).")
 
     _sweep_orphan_toolsets(base=base, console=console, yes=yes)
@@ -1433,7 +1485,7 @@ def capture_sync(
     for fresh captures; reviewed cases are never retired. captures.max_age
     keeps older captures out of a suite. The fetch from captures.store takes
     only captures within captures.max_age and, with captures.max_cases set,
-    each suite's newest 3x max_cases.
+    at most 3x max_cases per suite, a conversation at a time, newest first.
     """
     console = Console()
     if rounds is not None:
@@ -1803,10 +1855,12 @@ def capture_sync(
             console.print(
                 f"[yellow]⚠[/yellow] {escape(suite_name)}: {ineligible['history']} turn(s) not "
                 "promoted: earlier turns of their conversation are not on disk (outside "
-                "captures.max_age or the fetch budget, promoted on another machine or removed by "
-                "capture clean, sampled out by EVALSHIFT_SAMPLE_RATE, or a turn_index that does "
-                "not start at 0). Pass the full messages list to capture.model_call so each turn "
-                "carries its own history.",
+                "captures.max_age, the fetch budget or the bucket's lifecycle rule, removed by "
+                "capture clean, written flat -- evalshift-sdk older than 0.7.0, "
+                "EVALSHIFT_CAPTURE_LAYOUT=flat or the @capture.agent decorator -- and promoted on "
+                "another machine or sampled out, evicted by the SDK's max_captures / capture_ttl, "
+                "or a turn_index that does not start at 0). Pass the full messages list to "
+                "capture.model_call so each turn carries its own history.",
                 soft_wrap=True,
             )
         suite_line: str | None = None

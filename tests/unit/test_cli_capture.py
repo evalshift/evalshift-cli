@@ -129,6 +129,7 @@ def _write_capture(
     turn_index: int | None = None,
     input_hash: str | None = None,
     model_id: str = "m",
+    conversation_dir: str | None = None,
 ) -> Path:
     _write_toolset_sidecar(base)
     payload = {
@@ -157,6 +158,8 @@ def _write_capture(
         "turn_index": turn_index,
     }
     suite_dir = base / "captures" / suite
+    if conversation_dir is not None:
+        suite_dir = suite_dir / conversation_dir
     suite_dir.mkdir(parents=True, exist_ok=True)
     path = suite_dir / f"{capture_id}.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -2534,3 +2537,120 @@ def test_promote_records_when_and_on_what_the_capture_ran(tmp_path: Path) -> Non
     )
     assert case.source_model == "gpt-5-2026-08-07"
     assert case.captured_at == "2026-06-16T12:00:00+00:00"
+
+
+#: The folder evalshift-sdk >= 0.7.0 writes for conversation_id "c1".
+CONV = "conv_d0f631ca1ddba8db"
+
+
+def test_clean_keeps_a_sidecar_only_a_conversation_folder_capture_uses(tmp_path: Path) -> None:
+    _write_capture(
+        tmp_path, capture_id="cap_t0", conversation_id="c1", turn_index=0, conversation_dir=CONV
+    )
+
+    result = _invoke(["clean", "--yes"], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert (tmp_path / "toolsets" / f"{_TOOLSET_REF.removeprefix('sha256:')}.json").exists()
+
+
+def test_a_conversation_split_across_layouts_syncs_as_one(tmp_path: Path) -> None:
+    # The SDK was upgraded mid-conversation: turn 0 is flat, turn 1 sits in its folder.
+    _write_min_config(tmp_path / "evalshift.yaml")
+    _write_capture(
+        tmp_path, capture_id="cap_t0", conversation_id="c1", turn_index=0, model_input="turn zero"
+    )
+    _write_capture(
+        tmp_path,
+        capture_id="cap_t1",
+        conversation_id="c1",
+        turn_index=1,
+        model_input="turn one",
+        conversation_dir=CONV,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "capture",
+            "sync",
+            "--offline",
+            "--config",
+            str(tmp_path / "evalshift.yaml"),
+            "--base",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    case = json.loads((tmp_path / "suites" / "support_agent" / "cap_t1.json").read_text())
+    assert [m["content"] for m in case["example"]["history"]][:1] == ["turn zero"]
+
+
+@pytest.mark.parametrize("folder", [None, CONV])
+def test_clean_keeps_a_conversation_whole_while_a_turn_is_unpromoted(
+    tmp_path: Path, folder: str | None
+) -> None:
+    for turn in range(2):
+        _write_capture(
+            tmp_path,
+            capture_id=f"cap_t{turn}",
+            conversation_id="c1",
+            turn_index=turn,
+            model_input=f"turn {turn}",
+            conversation_dir=folder,
+        )
+    assert _invoke(["promote", "cap_t0", "--as", "t0"], tmp_path).exit_code == 0
+
+    result = _invoke(["clean", "--yes"], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    suite_dir = tmp_path / "captures" / "support_agent"
+    where = suite_dir / folder if folder else suite_dir
+    assert (where / "cap_t0.json").exists()
+    assert (where / "cap_t1.json").exists()
+    said = " ".join(result.stdout.split())
+    assert "kept 1 promoted capture(s)" in said
+    assert "nothing to clean" not in said
+
+
+def test_clean_removes_a_fully_promoted_conversation_folder(tmp_path: Path) -> None:
+    for turn in range(2):
+        _write_capture(
+            tmp_path,
+            capture_id=f"cap_t{turn}",
+            conversation_id="c1",
+            turn_index=turn,
+            model_input=f"turn {turn}",
+            conversation_dir=CONV,
+        )
+        assert _invoke(["promote", f"cap_t{turn}", "--as", f"t{turn}"], tmp_path).exit_code == 0
+
+    result = _invoke(["clean", "--yes"], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert not (tmp_path / "captures" / "support_agent" / CONV).exists()
+    assert (tmp_path / "suites" / "support_agent" / "t1.json").exists()
+
+
+def test_clean_all_removes_conversation_folders(tmp_path: Path) -> None:
+    _write_capture(
+        tmp_path, capture_id="cap_t0", conversation_id="c1", turn_index=0, conversation_dir=CONV
+    )
+
+    result = _invoke(["clean", "--all", "--yes"], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert not (tmp_path / "captures" / "support_agent" / CONV).exists()
+
+
+def test_clean_leaves_a_folder_it_did_not_empty(tmp_path: Path) -> None:
+    _write_capture(
+        tmp_path, capture_id="cap_t0", conversation_id="c1", turn_index=0, conversation_dir=CONV
+    )
+    (tmp_path / "captures" / "support_agent" / CONV / "notes.txt").write_text("keep me")
+
+    result = _invoke(["clean", "--all", "--yes"], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert (tmp_path / "captures" / "support_agent" / CONV / "notes.txt").exists()

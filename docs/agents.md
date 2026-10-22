@@ -623,6 +623,12 @@ tags an advisory entry's row the same way.
 
 ## Troubleshooting
 
+* **Every tool-calling call fails with `No module named 'mcp'`** — the
+  environment has LiteLLM 1.106.0 or later, which needs the proxy-only `mcp`
+  package for any completion that carries tools. This release pins
+  `litellm<1.106`, so upgrade the CLI; on an older pinned CLI, install
+  `litellm<1.106` beside it. See
+  [DOCS.md](../DOCS.md#every-tool-calling-call-fails-with-no-module-named-mcp).
 * **A suite reports tool evaluator scores you didn't expect on some rows** —
   run `evalshift doctor`. It reports the toolset each configured suite
   carries and flags a suite whose examples carry more than one distinct

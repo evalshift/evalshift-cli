@@ -21,6 +21,7 @@ from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
 from evalshift_cli.captures.reader import (
     CaptureError,
     capture_base,
+    capture_suite_dirname,
     capture_toolset_refs,
     captures_root,
     find_capture,
@@ -1021,3 +1022,103 @@ class TestPromotedCaptureIds:
         with pytest.raises(CaptureError) as exc:
             promoted_capture_ids(base=tmp_path)
         assert exc.value.path.name == "broken.json"
+
+
+#: The folder evalshift-sdk >= 0.7.0 writes for conversation_id "c1" (pinned in
+#: evalshift-sdk tests/test_conversation_layout.py too).
+CONV = "conv_d0f631ca1ddba8db"
+
+
+def _write_nested(base: Path, payload: dict[str, Any], folder: str = CONV) -> Path:
+    conv_dir = base / "captures" / payload["suite"] / folder
+    conv_dir.mkdir(parents=True, exist_ok=True)
+    path = conv_dir / f"{payload['capture_id']}.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_iter_captures_reads_conversation_folders_beside_flat_captures(tmp_path: Path) -> None:
+    _write_capture(tmp_path, _capture_dict(capture_id="cap_flat", suite="alpha"))
+    nested = _write_nested(tmp_path, _capture_dict(capture_id="cap_turn", suite="alpha"))
+
+    records = iter_captures(suite="alpha", base=tmp_path)
+
+    assert {r.envelope.capture_id: r.path for r in records} == {
+        "cap_flat": tmp_path / "captures" / "alpha" / "cap_flat.json",
+        "cap_turn": nested,
+    }
+    assert [r.envelope.capture_id for r in iter_captures(base=tmp_path)] == ["cap_flat", "cap_turn"]
+
+
+@pytest.mark.parametrize(
+    "folder",
+    ["nested", "conv_D0F631CA1DDBA8DB", "conv_d0f631ca", "conv_d0f631ca1ddba8db0"],
+)
+def test_iter_captures_ignores_folders_the_sdk_never_writes(tmp_path: Path, folder: str) -> None:
+    _write_nested(tmp_path, _capture_dict(capture_id="cap_x", suite="alpha"), folder=folder)
+    assert iter_captures(base=tmp_path) == []
+
+
+def test_iter_captures_ignores_a_conversation_folder_two_levels_deep(tmp_path: Path) -> None:
+    _write_nested(
+        tmp_path, _capture_dict(capture_id="cap_x", suite="alpha"), folder=f"{CONV}/{CONV}"
+    )
+    assert iter_captures(base=tmp_path) == []
+
+
+def test_iter_captures_skips_a_suite_directory_it_cannot_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As 1.5.x did: an unreadable suite directory is passed over, not fatal for every suite.
+    _write_capture(tmp_path, _capture_dict(capture_id="cap_a", suite="alpha"))
+    _write_capture(tmp_path, _capture_dict(capture_id="cap_b", suite="beta"))
+    unreadable = tmp_path / "captures" / "alpha"
+    real_iterdir = Path.iterdir
+
+    def iterdir(self: Path) -> Any:
+        if self == unreadable:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+
+    assert [r.envelope.capture_id for r in iter_captures(base=tmp_path)] == ["cap_a", "cap_b"]
+    assert [r.envelope.capture_id for r in iter_captures(suite="beta", base=tmp_path)] == ["cap_b"]
+
+
+def test_find_capture_finds_a_turn_in_a_conversation_folder(tmp_path: Path) -> None:
+    path = _write_nested(tmp_path, _capture_dict(capture_id="cap_turn", suite="alpha"))
+    assert find_capture("cap_turn", base=tmp_path).path == path
+
+
+def test_a_suite_name_reads_the_directory_the_sdk_wrote_it_to(tmp_path: Path) -> None:
+    suite_dir = tmp_path / "captures" / "team_support"
+    suite_dir.mkdir(parents=True)
+    payload = _capture_dict(capture_id="cap_1", suite="team/support")
+    (suite_dir / "cap_1.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    for name in ("team/support", "team_support"):
+        assert [r.envelope.capture_id for r in iter_captures(suite=name, base=tmp_path)] == [
+            "cap_1"
+        ]
+
+
+def test_a_suite_argument_cannot_address_a_conversation_folder(tmp_path: Path) -> None:
+    _write_nested(tmp_path, _capture_dict(capture_id="cap_turn", suite="alpha"))
+    assert iter_captures(suite=f"alpha/{CONV}", base=tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("suite", "dirname"),
+    [
+        ("alpha", "alpha"),
+        ("team/support", "team_support"),
+        ("a\\b", "a_b"),
+        ("../x", "__x"),
+        (" .hidden. ", "hidden"),
+        ("..", "_"),
+        ("", "_"),
+    ],
+)
+def test_capture_suite_dirname_matches_the_sdks_safe_segment(suite: str, dirname: str) -> None:
+    assert capture_suite_dirname(suite) == dirname
