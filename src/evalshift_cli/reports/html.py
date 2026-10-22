@@ -333,7 +333,7 @@ def _kind_label(kind: str) -> str:
     return f"{label} — {axis}" if axis else label
 
 
-def _regression_reason(regression: TopRegression) -> str:
+def _regression_reason(regression: TopRegression, within: bool = False) -> str:
     """Explain, in one plain sentence, why an example was flagged.
 
     Prefers the evaluator's own written rationale (e.g. an llm_judge verdict).
@@ -345,7 +345,24 @@ def _regression_reason(regression: TopRegression) -> str:
     user's: on the run this work came from both tool axes were called
     ``routing``, which matched no family prefix, so every tool regression
     rendered its scores and no reason at all.
+
+    Args:
+        regression: The drop to explain.
+        within: The drop is inside its evaluator's own threshold, so the
+            analysis tests it as no change. The sentence says that instead
+            of claiming the meaning drifted.
     """
+    if within:
+        raw = regression.metadata.get("raw_cosine")
+        similar = (
+            f" ({raw * 100:.0f}% similar; 100% = identical)"
+            if isinstance(raw, (int, float))
+            else ""
+        )
+        return (
+            f"The target reworded the answer but stayed inside the evaluator's threshold"
+            f"{similar}, so the analysis scores it as no change."
+        )
     text = regression.explanation.strip()
     if text:
         return text

@@ -117,7 +117,7 @@ class ExampleFact:
 
     Deliberately not ``reports.json.ExampleRow`` — that row carries the deltas
     but no output text, and ``TopRegression`` carries the text but only for the
-    worst five of each prompt. The insights path needs both on every example.
+    examples that regressed. The insights path needs both on every example.
     """
 
     example_id: str

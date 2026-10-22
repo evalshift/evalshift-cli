@@ -602,8 +602,8 @@ Two places name the tools themselves, both read off the evaluator's own
 record rather than re-derived from the call trace:
 
 * the **per-example breakdown** gains a `Tools called (source → target)`
-  column — one line per example, so a ten-example suite shows all ten
-  rather than only the five worst;
+  column — one line per example, so a ten-example suite shows all ten,
+  regressed or not;
 * each **top regression** card states both sides' tools in its "why
   flagged" line.
 

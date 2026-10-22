@@ -27,6 +27,7 @@ from evalshift_cli.analysis.statistics import (
     AXIS_NOTE_PREFIX,
     uniform_change,
 )
+from evalshift_cli.analysis.tolerance import within_tolerance
 from evalshift_cli.cli.commands.analyze import ANALYSIS_FILENAME, MIGRATION_DECISION_FILENAME
 from evalshift_cli.cli.commands.evaluate import SCORES_FILENAME
 from evalshift_cli.evaluators.base import EvalRecord
@@ -56,6 +57,12 @@ from evalshift_cli.traces.loader import (
 from evalshift_cli.traces.models import AgentTrace
 
 REPORT_JSON_FILENAME: str = "report.json"
+
+#: The most regressed examples a prompt's top-regressions list shows as cards.
+#: Every card carries both outputs and their traces, so a suite of thousands
+#: would otherwise bloat the single-file report; the per-example breakdown
+#: table still lists every example.
+MAX_REGRESSION_CARDS: int = 50
 
 #: Prefix of the display note marking an aggregate row whose every
 #: measurement was a shared ground-truth miss. Written here rather than in
@@ -194,6 +201,19 @@ class TopRegression:
 
 
 @dataclass(frozen=True, slots=True)
+class RegressedExample:
+    """One example's card in the top-regressions list.
+
+    ``regressions`` are its drops beyond each evaluator's own threshold, worst
+    first. They describe the same pair of outputs, so the card shows the
+    example's traces and context once, from the first.
+    """
+
+    example_id: str
+    regressions: list[TopRegression]
+
+
+@dataclass(frozen=True, slots=True)
 class ExampleRow:
     """One row in the per-example breakdown table.
 
@@ -214,11 +234,15 @@ class ExampleRow:
     tool_match: bool | None
     # Which tools each side called, when a divergence axis scored this
     # example. This column is the plan's table: one line per example, source
-    # called / target called, for every example rather than the worst five.
+    # called / target called, for every example, regressed or not.
     tool_change: ToolChange | None = None
     # Multi-turn — zero-based turn position within the source conversation.
     # None for single-turn examples or when the example isn't in the suite.
     turn_index: int | None = None
+    # Whether some evaluator dropped this example beyond its own threshold:
+    # the rule the top-regressions list uses. ``False`` on a row whose only
+    # drops the threshold forgives, though its worst delta is negative.
+    regressed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,12 +280,22 @@ class PromptSection:
     prompt_id: str
     aggregate_rows: list[dict[str, Any]]  # serialised SliceAggregate per evaluator
     slice_rows: list[dict[str, Any]]  # serialised ComparisonResult rows
+    # Every row of ``regressed_examples``, card by card: the per-row view
+    # report.json has always carried.
     top_regressions: list[TopRegression]
     economics: PromptEconomics
     example_rows: list[ExampleRow]
     # v0.2 — when at least one Call has a populated trace, render a
     # "Tool Trace Comparison" section with example-level diffs.
     has_tool_traces: bool = False
+    # The examples that regressed, worst first, at most
+    # ``MAX_REGRESSION_CARDS``; the count is before that cut.
+    regressed_examples: list[RegressedExample] = field(default_factory=list)
+    regressed_example_count: int = 0
+    # Examples whose every drop stayed inside its evaluator's own threshold:
+    # the analysis scores them as no change, so they are not regressions.
+    within_threshold_examples: list[RegressedExample] = field(default_factory=list)
+    within_threshold_example_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -677,71 +711,28 @@ def _build_prompt_sections(
         ]
         # Slice rows: every non-all comparison for this prompt.
         slice_rows = [c for c in prompt_comparisons if c["slice_name"] != "all"]
-        # Top regressions: the 5 records with the most-negative delta.
-        ranked = sorted(
-            prompt_records,
-            key=lambda r: (
-                r.delta,
-                0
-                if (
-                    (r.prompt_id, r.example_id, "source") in agent_traces
-                    and (r.prompt_id, r.example_id, "target") in agent_traces
+        # Top regressions: every example that regressed, one card each.
+        regressed, within = _group_drops(prompt_records, agent_traces)
+
+        def cards(groups: list[tuple[str, list[EvalRecord]]]) -> list[RegressedExample]:
+            return [
+                RegressedExample(
+                    example_id=example_id,
+                    regressions=[
+                        _top_regression(
+                            r,
+                            calls_by_pair=by_prompt_calls,
+                            agent_traces=agent_traces,
+                            examples_by_id=examples_by_id,
+                        )
+                        for r in drops
+                    ],
                 )
-                else 1,
-            ),
-        )[:5]
-        top: list[TopRegression] = []
-        for r in ranked:
-            if r.delta >= 0 or r.error is not None:
-                continue
-            calls_for_pair = by_prompt_calls.get((r.prompt_id, r.example_id), {})
-            src = calls_for_pair.get("source")
-            tgt = calls_for_pair.get("target")
-            source_agent_trace = agent_traces.get((r.prompt_id, r.example_id, "source"))
-            target_agent_trace = agent_traces.get((r.prompt_id, r.example_id, "target"))
-            trace_diff = (
-                diff_traces(source_agent_trace, target_agent_trace)
-                if source_agent_trace is not None and target_agent_trace is not None
-                else None
-            )
-            example = examples_by_id.get(r.example_id)
-            top.append(
-                TopRegression(
-                    prompt_id=r.prompt_id,
-                    example_id=r.example_id,
-                    evaluator_name=r.evaluator_name,
-                    delta=r.delta,
-                    source_text=src.text if src else "",
-                    target_text=tgt.text if tgt else "",
-                    kind=r.kind,
-                    tool_change=_tool_change(r.metadata),
-                    source_score=r.source_score,
-                    target_score=r.target_score,
-                    explanation=r.explanation,
-                    metadata=r.metadata,
-                    source_trace=src.trace if src else None,
-                    target_trace=tgt.trace if tgt else None,
-                    tool_diffs=_build_tool_diffs(
-                        src.trace if src else None, tgt.trace if tgt else None
-                    ),
-                    source_agent_trace=source_agent_trace,
-                    target_agent_trace=target_agent_trace,
-                    trace_diff=trace_diff,
-                    truncated=(bool(src and src.truncated) or bool(tgt and tgt.truncated)),
-                    target_empty_output=bool(tgt and is_empty_output(tgt)),
-                    history=(
-                        [m.model_dump(exclude_none=True) for m in example.history]
-                        if example is not None and example.history is not None
-                        else None
-                    ),
-                    turn_index=example.turn_index if example is not None else None,
-                    input_text=(
-                        _render_input_text(example.inputs, example_id=r.example_id)
-                        if example is not None
-                        else None
-                    ),
-                ),
-            )
+                for example_id, drops in groups[:MAX_REGRESSION_CARDS]
+            ]
+
+        regressed_examples = cards(regressed)
+        within_threshold_examples = cards(within)
         # v0.2 — does this prompt have any traces at all? Drives the
         # "Tool Trace Comparison" subsection in the HTML template.
         has_traces = any(
@@ -764,13 +755,113 @@ def _build_prompt_sections(
                 prompt_id=prompt_id,
                 aggregate_rows=aggregates_all,
                 slice_rows=slice_rows,
-                top_regressions=top,
+                top_regressions=[tr for card in regressed_examples for tr in card.regressions],
                 economics=build_economics(prompt_calls),
                 example_rows=example_rows,
                 has_tool_traces=has_traces,
+                regressed_examples=regressed_examples,
+                regressed_example_count=len(regressed),
+                within_threshold_examples=within_threshold_examples,
+                within_threshold_example_count=len(within),
             ),
         )
     return sections
+
+
+def _group_drops(
+    records: list[EvalRecord],
+    agent_traces: dict[TraceKey, AgentTrace],
+) -> tuple[list[tuple[str, list[EvalRecord]]], list[tuple[str, list[EvalRecord]]]]:
+    """Split a prompt's drops into regressed examples and within-threshold ones.
+
+    A drop is a scored row with ``delta < 0`` and no error. An example
+    regressed when any drop falls beyond its evaluator's own threshold, and
+    its card lists just those: a drop :func:`within_tolerance` forgives is
+    tested as no change, so it is not a regression. An example whose every
+    drop stayed inside a threshold goes to the second list instead.
+
+    Both lists run worst example first. Ties go to an example with imported
+    agent traces on both sides (its card can show them), then to the one that
+    dropped on more evaluators, then to the example id, so the cut at
+    ``MAX_REGRESSION_CARDS`` is deterministic.
+    """
+    drops_by_example: dict[str, list[EvalRecord]] = {}
+    for record in records:
+        if record.delta < 0 and record.error is None:
+            drops_by_example.setdefault(record.example_id, []).append(record)
+
+    regressed: list[tuple[str, list[EvalRecord]]] = []
+    within: list[tuple[str, list[EvalRecord]]] = []
+    for example_id, drops in drops_by_example.items():
+        beyond = [r for r in drops if not within_tolerance(r)]
+        shown = sorted(beyond or drops, key=lambda r: (r.delta, r.evaluator_name, r.kind))
+        (regressed if beyond else within).append((example_id, shown))
+
+    def worst_first(group: tuple[str, list[EvalRecord]]) -> tuple[float, int, int, str]:
+        example_id, drops = group
+        prompt_id = drops[0].prompt_id
+        imported = (prompt_id, example_id, "source") in agent_traces and (
+            prompt_id,
+            example_id,
+            "target",
+        ) in agent_traces
+        return (drops[0].delta, 0 if imported else 1, -len(drops), example_id)
+
+    return sorted(regressed, key=worst_first), sorted(within, key=worst_first)
+
+
+def _top_regression(
+    r: EvalRecord,
+    *,
+    calls_by_pair: dict[tuple[str, str], dict[str, Call]],
+    agent_traces: dict[TraceKey, AgentTrace],
+    examples_by_id: dict[str, SuiteExample],
+) -> TopRegression:
+    """One drop with the pair's outputs, traces and context attached."""
+    calls_for_pair = calls_by_pair.get((r.prompt_id, r.example_id), {})
+    src = calls_for_pair.get("source")
+    tgt = calls_for_pair.get("target")
+    source_agent_trace = agent_traces.get((r.prompt_id, r.example_id, "source"))
+    target_agent_trace = agent_traces.get((r.prompt_id, r.example_id, "target"))
+    trace_diff = (
+        diff_traces(source_agent_trace, target_agent_trace)
+        if source_agent_trace is not None and target_agent_trace is not None
+        else None
+    )
+    example = examples_by_id.get(r.example_id)
+    return TopRegression(
+        prompt_id=r.prompt_id,
+        example_id=r.example_id,
+        evaluator_name=r.evaluator_name,
+        delta=r.delta,
+        source_text=src.text if src else "",
+        target_text=tgt.text if tgt else "",
+        kind=r.kind,
+        tool_change=_tool_change(r.metadata),
+        source_score=r.source_score,
+        target_score=r.target_score,
+        explanation=r.explanation,
+        metadata=r.metadata,
+        source_trace=src.trace if src else None,
+        target_trace=tgt.trace if tgt else None,
+        tool_diffs=_build_tool_diffs(src.trace if src else None, tgt.trace if tgt else None),
+        source_agent_trace=source_agent_trace,
+        target_agent_trace=target_agent_trace,
+        trace_diff=trace_diff,
+        truncated=(bool(src and src.truncated) or bool(tgt and tgt.truncated)),
+        target_empty_output=bool(tgt and is_empty_output(tgt)),
+        history=(
+            [m.model_dump(exclude_none=True) for m in example.history]
+            if example is not None and example.history is not None
+            else None
+        ),
+        turn_index=example.turn_index if example is not None else None,
+        input_text=(
+            _render_input_text(example.inputs, example_id=r.example_id)
+            if example is not None
+            else None
+        ),
+    )
 
 
 def _build_example_rows(
@@ -810,7 +901,12 @@ def _build_example_rows(
 
         ex_records = records_by_example.get(example_id, [])
         scored = [r for r in ex_records if r.error is None]
-        worst = min((r.delta for r in scored), default=None)
+        # A drop inside its evaluator's own threshold is tested as no change,
+        # so a regressed row quotes the worst drop that counts, as its
+        # top-regressions card does.
+        counted = [r.delta for r in scored if not within_tolerance(r)]
+        regressed = any(d < 0 for d in counted)
+        worst = min(counted) if regressed else min((r.delta for r in scored), default=None)
 
         example = examples_by_id.get(example_id)
         rows.append(
@@ -824,13 +920,16 @@ def _build_example_rows(
                 tool_match=_tool_match(scored, tool_evaluator_names),
                 tool_change=_example_tool_change(scored),
                 turn_index=example.turn_index if example is not None else None,
+                regressed=regressed,
             ),
         )
 
-    # Worst regression first (most-negative delta score), tiebreak on
-    # most-expensive (highest +delta cost), then example_id for stability.
+    # Regressed examples first, worst first (most-negative delta score),
+    # tiebreak on most-expensive (highest +delta cost), then example_id for
+    # stability.
     rows.sort(
         key=lambda r: (
+            not r.regressed,
             r.worst_delta_score if r.worst_delta_score is not None else 0.0,
             -r.delta_cost_usd,
             r.example_id,
@@ -1133,6 +1232,69 @@ def _tool_change_to_dict(change: ToolChange | None) -> dict[str, Any] | None:
     return payload
 
 
+def _top_regression_to_dict(tr: TopRegression) -> dict[str, Any]:
+    """One regression row as report.json writes it, in either list."""
+    return {
+        "prompt_id": tr.prompt_id,
+        "example_id": tr.example_id,
+        "evaluator_name": tr.evaluator_name,
+        "kind": tr.kind,
+        "tool_change": _tool_change_to_dict(tr.tool_change),
+        "delta": tr.delta,
+        "truncated": tr.truncated,
+        "target_empty_output": tr.target_empty_output,
+        "history": tr.history,
+        "turn_index": tr.turn_index,
+        "input_text": tr.input_text,
+        "source_score": tr.source_score,
+        "target_score": tr.target_score,
+        "explanation": tr.explanation,
+        "metadata": tr.metadata,
+        "source_text": tr.source_text,
+        "target_text": tr.target_text,
+        "source_trace": (tr.source_trace.model_dump() if tr.source_trace else None),
+        "target_trace": (tr.target_trace.model_dump() if tr.target_trace else None),
+        "source_agent_trace": (
+            tr.source_agent_trace.model_dump(mode="json") if tr.source_agent_trace else None
+        ),
+        "target_agent_trace": (
+            tr.target_agent_trace.model_dump(mode="json") if tr.target_agent_trace else None
+        ),
+        "trace_diff": (
+            {
+                "prompt_id": tr.trace_diff.prompt_id,
+                "example_id": tr.trace_diff.example_id,
+                "items": [
+                    {
+                        "kind": item.kind,
+                        "category": item.category,
+                        "source_index": item.source_index,
+                        "target_index": item.target_index,
+                        "source_name": item.source_name,
+                        "target_name": item.target_name,
+                        "field": item.field,
+                        "source_value": item.source_value,
+                        "target_value": item.target_value,
+                    }
+                    for item in tr.trace_diff.items
+                ],
+            }
+            if tr.trace_diff
+            else None
+        ),
+        "tool_diffs": [
+            {
+                "kind": d.kind,
+                "tool_name": d.tool_name,
+                "message": d.message,
+                "source_arguments": d.source_arguments,
+                "target_arguments": d.target_arguments,
+            }
+            for d in tr.tool_diffs
+        ],
+    }
+
+
 def _to_jsonable(report: ReportData) -> dict[str, Any]:
     return {
         "run_id": report.run_id,
@@ -1169,75 +1331,18 @@ def _to_jsonable(report: ReportData) -> dict[str, Any]:
                         "tool_match": er.tool_match,
                         "tool_change": _tool_change_to_dict(er.tool_change),
                         "turn_index": er.turn_index,
+                        "regressed": er.regressed,
                     }
                     for er in ps.example_rows
                 ],
-                "top_regressions": [
-                    {
-                        "prompt_id": tr.prompt_id,
-                        "example_id": tr.example_id,
-                        "evaluator_name": tr.evaluator_name,
-                        "kind": tr.kind,
-                        "tool_change": _tool_change_to_dict(tr.tool_change),
-                        "delta": tr.delta,
-                        "truncated": tr.truncated,
-                        "target_empty_output": tr.target_empty_output,
-                        "history": tr.history,
-                        "turn_index": tr.turn_index,
-                        "input_text": tr.input_text,
-                        "source_score": tr.source_score,
-                        "target_score": tr.target_score,
-                        "explanation": tr.explanation,
-                        "metadata": tr.metadata,
-                        "source_text": tr.source_text,
-                        "target_text": tr.target_text,
-                        "source_trace": (tr.source_trace.model_dump() if tr.source_trace else None),
-                        "target_trace": (tr.target_trace.model_dump() if tr.target_trace else None),
-                        "source_agent_trace": (
-                            tr.source_agent_trace.model_dump(mode="json")
-                            if tr.source_agent_trace
-                            else None
-                        ),
-                        "target_agent_trace": (
-                            tr.target_agent_trace.model_dump(mode="json")
-                            if tr.target_agent_trace
-                            else None
-                        ),
-                        "trace_diff": (
-                            {
-                                "prompt_id": tr.trace_diff.prompt_id,
-                                "example_id": tr.trace_diff.example_id,
-                                "items": [
-                                    {
-                                        "kind": item.kind,
-                                        "category": item.category,
-                                        "source_index": item.source_index,
-                                        "target_index": item.target_index,
-                                        "source_name": item.source_name,
-                                        "target_name": item.target_name,
-                                        "field": item.field,
-                                        "source_value": item.source_value,
-                                        "target_value": item.target_value,
-                                    }
-                                    for item in tr.trace_diff.items
-                                ],
-                            }
-                            if tr.trace_diff
-                            else None
-                        ),
-                        "tool_diffs": [
-                            {
-                                "kind": d.kind,
-                                "tool_name": d.tool_name,
-                                "message": d.message,
-                                "source_arguments": d.source_arguments,
-                                "target_arguments": d.target_arguments,
-                            }
-                            for d in tr.tool_diffs
-                        ],
-                    }
-                    for tr in ps.top_regressions
+                "top_regressions": [_top_regression_to_dict(tr) for tr in ps.top_regressions],
+                "regressed_example_count": ps.regressed_example_count,
+                "within_threshold_regressions": [
+                    _top_regression_to_dict(tr)
+                    for card in ps.within_threshold_examples
+                    for tr in card.regressions
                 ],
+                "within_threshold_example_count": ps.within_threshold_example_count,
             }
             for ps in report.prompt_sections
         ],
@@ -1251,11 +1356,13 @@ def _to_jsonable(report: ReportData) -> dict[str, Any]:
 
 
 __all__ = [
+    "MAX_REGRESSION_CARDS",
     "REPORT_JSON_FILENAME",
     "SHARED_GROUND_TRUTH_NOTE_PREFIX",
     "InvariantViolationRow",
     "PromptEconomics",
     "PromptSection",
+    "RegressedExample",
     "ReportData",
     "RoleEconomics",
     "RoundToolChange",
