@@ -44,6 +44,11 @@
 {%- set target_tone = "muted" if within else "bad" -%}
 {%- set first = card.regressions[0] -%}
 {%- set single = card.regressions|length == 1 -%}
+{#- The target's trace reads red only where its calls differ from the
+    source's: a matching trace under a red box read as a tool failure on
+    cards flagged for their wording alone. -#}
+{%- set agent_differs = first.trace_diff is not none and first.trace_diff.items|length > 0 -%}
+{%- set tools_differ = first.tool_diffs|length > 0 -%}
 <details class="panel regression"{% if opened %} open{% endif %}>
   <summary class="reg-head">
     <span class="caret"></span>
@@ -58,7 +63,7 @@
   <div class="reg-body">
     {% for tr in card.regressions %}
     {% set reason = regression_reason(tr, within) %}
-    <div class="notice{{ " notice-bad" if not within }} reg-why">
+    <div class="notice {{ "notice-neutral" if within else "notice-bad" }} reg-why">
       <div class="reg-why-line">
         <span class="eyebrow">{{ "Within threshold" if within else "Why flagged" }}</span>
         {% if not single %}<span class="reg-why-evaluator">{{ evaluator_label(tr.evaluator_name, tr.kind) }}</span>{% endif %}
@@ -100,13 +105,13 @@
         <div class="reg-col-head"><span class="eyebrow">Target agent trace</span>{% if single %}<span class="reg-col-score {{ target_tone }}">score {{ "%.3f"|format(first.target_score) }}</span>{% endif %}</div>
         {% if first.target_agent_trace and first.target_agent_trace.tool_calls %}
         {% set source_names = (first.source_agent_trace.tool_calls if first.source_agent_trace else []) | map(attribute='name') | list %}
-        <ol class="trace-list trace-target">
+        <ol class="trace-list{{ ' trace-target' if agent_differs }}">
           {% for c in first.target_agent_trace.tool_calls %}
           <li class="trace-call {{ "" if c.name in source_names else "trace-extra" }}">{{ c.name }} <span class="trace-args">({{ c.arguments|tojson }})</span></li>
           {% endfor %}
         </ol>
         {% else %}
-        <p class="trace-empty trace-missing">(no tool calls)</p>
+        <p class="trace-empty{{ ' trace-missing' if agent_differs }}">(no tool calls)</p>
         {% endif %}
       </div>
     </div>
@@ -149,7 +154,7 @@
         <div class="reg-col-head"><span class="eyebrow">Target trace</span>{% if single %}<span class="reg-col-score {{ target_tone }}">score {{ "%.3f"|format(first.target_score) }}</span>{% endif %}</div>
         {% if first.target_trace and first.target_trace.calls %}
         {% set source_names = (first.source_trace.calls if first.source_trace else []) | map(attribute='tool_name') | list %}
-        <ol class="trace-list trace-target">
+        <ol class="trace-list{{ ' trace-target' if tools_differ }}">
           {% for round_index, calls in first.target_trace.calls|groupby("round_index") %}
           {% if first.target_trace.round_count > 1 %}<li class="trace-round-label" value="0">round {{ round_index + 1 }}</li>{% endif %}
           {% for c in calls %}
@@ -158,7 +163,7 @@
           {% endfor %}
         </ol>
         {% else %}
-        <p class="trace-empty trace-missing">(no tool calls)</p>
+        <p class="trace-empty{{ ' trace-missing' if tools_differ }}">(no tool calls)</p>
         {% endif %}
         {% if first.target_trace and first.target_trace.final_text %}
         <p class="trace-final"><em>final text:</em> {{ first.target_trace.final_text }}</p>

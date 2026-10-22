@@ -154,6 +154,8 @@ pre {
 }
 .notice p { margin: 0; font-size: 14.5px; line-height: 1.65; color: var(--body); }
 .notice-bad { background: var(--bad-tint); border-color: var(--bad-edge); }
+/* A finding that is not a problem (a drop inside its own threshold). */
+.notice-neutral { background: var(--well); border-color: var(--stroke); }
 
 /* --- Header ------------------------------------------------------------- */
 
