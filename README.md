@@ -303,8 +303,8 @@ assets, works offline) has:
   behavioural drift explained by `defaults.insights_model`. Every figure in it
   is copied from the computed statistics, never generated. Needs a provider
   key; skip it with `--no-insights`.
-* **Per-prompt deep dive** — aggregate stats, per-slice breakdown,
-  top-5 worst regressions side-by-side.
+* **Per-prompt deep dive** — aggregate stats, per-slice breakdown, and
+  every regressed example side-by-side, worst first, one card per example.
 * **Methodology appendix** — every test, p-value, effect size, and
   CI is documented.
 

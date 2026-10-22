@@ -2949,3 +2949,181 @@ class TestAdvisoryEvaluatorsInSummary:
         )
         html = render_html(build_report_payload(run_dir))
         assert "each side judged against the entry" in html
+
+
+# ---------------------------------------------------------------------------
+# Top regressions — every real regression, one card per example
+# ---------------------------------------------------------------------------
+
+
+class TestTopRegressionsListEveryRealRegression:
+    """Regressions the analysis counts, grouped by example, not the five worst rows."""
+
+    @staticmethod
+    def _record(
+        example_id: str,
+        delta: float,
+        *,
+        evaluator_name: str = "structural.length",
+        kind: str = "",
+        metadata: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "run_id": "r_20260601_aaaaaa",
+            "prompt_id": "greet",
+            "example_id": example_id,
+            "evaluator_name": evaluator_name,
+            "kind": kind,
+            "source_score": 1.0 if delta <= 0 else 0.0,
+            "target_score": 1.0 + delta if delta <= 0 else delta,
+            "delta": delta,
+            "metadata": metadata or {},
+            "error": error,
+        }
+
+    @classmethod
+    def _semantic(cls, example_id: str, delta: float, *, beyond_threshold: bool) -> dict[str, Any]:
+        categories = ["SEMANTIC_REGRESSION"] if beyond_threshold else []
+        return cls._record(
+            example_id,
+            delta,
+            evaluator_name="semantic.cosine",
+            kind="semantic",
+            metadata={"failure_categories": categories},
+        )
+
+    @staticmethod
+    def _run(tmp_path: Path, records: list[dict[str, Any]]) -> Path:
+        """The scaffolded run with ``records`` as its only scores."""
+        cwd, run_id = _scaffold_full_run(tmp_path)
+        run_dir = cwd / ".evalshift" / "runs" / run_id
+        (run_dir / SCORES_FILENAME).write_text(
+            "".join(EvalRecord.model_validate(r).model_dump_json() + "\n" for r in records),
+            encoding="utf-8",
+        )
+        return run_dir
+
+    def _threshold_run(self, tmp_path: Path) -> Path:
+        # ex1 drops inside min_similarity (scored as no change); ex2 breaches it.
+        return self._run(
+            tmp_path,
+            [
+                self._semantic("ex1", -0.07, beyond_threshold=False),
+                self._semantic("ex2", -0.2, beyond_threshold=True),
+            ],
+        )
+
+    @staticmethod
+    def _top(html: str) -> str:
+        """The top-regressions block, from its heading to the methodology."""
+        return html.split("<h3>Top regressions</h3>", 1)[1].split('<h2 class="ruled">', 1)[0]
+
+    def _staircase_run(self, tmp_path: Path, count: int) -> Path:
+        # e000 drops 0.01, e001 0.02, ... so the worst is the last one.
+        return self._run(
+            tmp_path, [self._record(f"e{i:03d}", -(i + 1) / 100) for i in range(count)]
+        )
+
+    def test_a_drop_inside_the_evaluators_threshold_is_not_a_regression(
+        self, tmp_path: Path
+    ) -> None:
+        section = build_report_payload(self._threshold_run(tmp_path)).prompt_sections[0]
+        assert [g.example_id for g in section.regressed_examples] == ["ex2"]
+        assert section.regressed_example_count == 1
+        assert {tr.example_id for tr in section.top_regressions} == {"ex2"}
+        assert [g.example_id for g in section.within_threshold_examples] == ["ex1"]
+        assert section.within_threshold_example_count == 1
+
+    def test_one_card_lists_every_evaluator_that_dropped_worst_first(self, tmp_path: Path) -> None:
+        run_dir = self._run(
+            tmp_path,
+            [
+                self._record("ex1", -0.5),
+                self._record(
+                    "ex1", -1.0, evaluator_name="routing", kind="tool_selection.divergence"
+                ),
+                # Inside the threshold: no change, so not on the card.
+                self._semantic("ex1", -0.05, beyond_threshold=False),
+                # A gain and an errored row are not drops.
+                self._record("ex1", 1.0, evaluator_name="llm_judge.equivalence", kind="llm_judge"),
+                self._record("ex1", -1.0, evaluator_name="agent_contract", error="judge failed"),
+            ],
+        )
+        section = build_report_payload(run_dir).prompt_sections[0]
+        [card] = section.regressed_examples
+        assert [(tr.evaluator_name, tr.kind, tr.delta) for tr in card.regressions] == [
+            ("routing", "tool_selection.divergence", -1.0),
+            ("structural.length", "", -0.5),
+        ]
+        assert section.within_threshold_examples == []
+
+    def test_every_regressed_example_is_listed_worst_first(self, tmp_path: Path) -> None:
+        deltas = [-0.3, -0.7, -0.1, -0.6, -0.2, -0.5, -0.4]
+        run_dir = self._run(tmp_path, [self._record(f"e{i}", d) for i, d in enumerate(deltas)])
+        section = build_report_payload(run_dir).prompt_sections[0]
+        assert [g.regressions[0].delta for g in section.regressed_examples] == sorted(deltas)
+        assert section.regressed_example_count == len(deltas)
+
+    def test_cards_stop_at_the_cap_and_the_count_does_not(self, tmp_path: Path) -> None:
+        from evalshift_cli.reports.json import MAX_REGRESSION_CARDS
+
+        total = MAX_REGRESSION_CARDS + 2
+        section = build_report_payload(self._staircase_run(tmp_path, total)).prompt_sections[0]
+        assert len(section.regressed_examples) == MAX_REGRESSION_CARDS
+        assert section.regressed_example_count == total
+        # The cut keeps the worst: the last example leads, the two mildest go.
+        assert section.regressed_examples[0].example_id == f"e{total - 1:03d}"
+        assert {"e000", "e001"}.isdisjoint(g.example_id for g in section.regressed_examples)
+
+    def test_header_counts_examples_not_rows(self, tmp_path: Path) -> None:
+        html = render_html(build_report_payload(self._threshold_run(tmp_path)))
+        assert '<span class="mono muted count-note">1 of 2 examples regressed</span>' in html
+
+    def test_drops_inside_the_threshold_sit_in_a_closed_list(self, tmp_path: Path) -> None:
+        html = render_html(build_report_payload(self._threshold_run(tmp_path)))
+        top = self._top(html)
+        line = "1 more example dropped within the evaluator's threshold (scored as no change)"
+        assert line in top
+        before, within = top.split('<details class="within-threshold">', 1)
+        assert '<span class="reg-id">ex1</span>' in within
+        assert '<span class="reg-id">ex1</span>' not in before
+
+    def test_a_card_shows_each_evaluators_finding_once(self, tmp_path: Path) -> None:
+        run_dir = self._run(
+            tmp_path,
+            [
+                self._record("ex1", -0.5),
+                self._record(
+                    "ex1", -1.0, evaluator_name="routing", kind="tool_selection.divergence"
+                ),
+            ],
+        )
+        html = render_html(build_report_payload(run_dir))
+        top = self._top(html)
+        assert top.count('<span class="reg-id">ex1</span>') == 1
+        assert top.count("Why flagged") == 2
+        # The example's own outputs show once, not once per evaluator.
+        assert top.count("<pre>Hello there!</pre>") == 1
+
+    def test_the_cap_names_where_the_rest_are(self, tmp_path: Path) -> None:
+        from evalshift_cli.reports.json import MAX_REGRESSION_CARDS
+
+        html = render_html(build_report_payload(self._staircase_run(tmp_path, 60)))
+        note = f"showing the worst {MAX_REGRESSION_CARDS}"
+        assert note in html
+        assert "Per-example breakdown" in html.split(note, 1)[1].split("</span>", 1)[0]
+
+    def test_report_json_carries_the_counts_and_the_within_threshold_rows(
+        self, tmp_path: Path
+    ) -> None:
+        run_dir = self._threshold_run(tmp_path)
+        write_report_json(build_report_payload(run_dir), run_dir)
+        report = json.loads((run_dir / REPORT_JSON_FILENAME).read_text(encoding="utf-8"))
+        section = report["prompt_sections"][0]
+        assert section["regressed_example_count"] == 1
+        assert section["within_threshold_example_count"] == 1
+        assert [r["example_id"] for r in section["top_regressions"]] == ["ex2"]
+        assert [r["example_id"] for r in section["within_threshold_regressions"]] == ["ex1"]
+        # The same per-row shape as top_regressions.
+        assert set(section["within_threshold_regressions"][0]) == set(section["top_regressions"][0])

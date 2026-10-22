@@ -34,6 +34,178 @@
   {%- endif -%}
 {%- endmacro -%}
 
+{#- One regressed example: why each evaluator flagged it, then the pair's
+    outputs and context once. The outputs are the same whichever evaluator
+    scored them, so a card per evaluator repeated them and let one example
+    fill the list. -#}
+{%- macro regression_card(card, opened=False) -%}
+{%- set first = card.regressions[0] -%}
+{%- set single = card.regressions|length == 1 -%}
+<details class="panel regression"{% if opened %} open{% endif %}>
+  <summary class="reg-head">
+    <span class="caret"></span>
+    <span class="reg-id">{{ card.example_id }}</span>
+    {% if first.turn_index is not none %}<span class="badge">turn {{ first.turn_index }}</span>{% endif %}
+    <span class="reg-what">{% for tr in card.regressions %}{{ evaluator_label(tr.evaluator_name, tr.kind) }}{% if not loop.last %} · {% endif %}{% endfor %}</span>
+    {% if first.truncated %}<span class="badge badge-warn trunc-flag">truncated (token cap)</span>{% endif %}
+    {% if first.target_empty_output %}<span class="badge badge-warn empty-output-flag" title="The model returned no visible text despite spending tokens (often thinking-only responses).">empty output</span>{% endif %}
+    <span class="delta">{{ "%+.3f"|format(first.delta) }}</span>
+    <span class="reg-toggle" aria-hidden="true"></span>
+  </summary>
+  <div class="reg-body">
+    {% for tr in card.regressions %}
+    {% set reason = regression_reason(tr) %}
+    <div class="notice notice-bad reg-why">
+      <div class="reg-why-line">
+        <span class="eyebrow">Why flagged</span>
+        {% if not single %}<span class="reg-why-evaluator">{{ evaluator_label(tr.evaluator_name, tr.kind) }}</span>{% endif %}
+        <span class="reg-scores">source {{ "%.2f"|format(tr.source_score) }} → target {{ "%.2f"|format(tr.target_score) }} (0–1)</span>
+        {#- The evaluator's own failure category when it wrote one: it names
+            what went wrong, where the axis slug only names what was scored. -#}
+        {%- set categories = tr.metadata.get("failure_categories") or [] %}
+        {% for category in categories %}<span class="badge badge-bad">{{ category_label(category) }}</span>{% endfor %}
+        {% if not categories and tr.kind %}<span class="badge badge-bad">{{ kind_label(tr.kind) }}</span>{% endif %}
+        {% if not single %}<span class="reg-why-delta">{{ "%+.3f"|format(tr.delta) }}</span>{% endif %}
+      </div>
+      {% if reason %}<p>{{ reason }}</p>{% endif %}
+    </div>
+    {% if tr.tool_change %}
+    <div class="tool-change">
+      <span class="eyebrow">Tools called</span>
+      {{ tool_change_arrows(tr.tool_change) }}
+    </div>
+    {% endif %}
+    {% endfor %}
+
+    {#- Each column head quotes a score only when one evaluator flagged the
+        card; with several, the scores are in their findings above. -#}
+    {% if first.source_agent_trace or first.target_agent_trace %}
+    <div class="reg-grid">
+      <div class="reg-col">
+        <div class="reg-col-head"><span class="eyebrow">Source agent trace</span>{% if single %}<span class="reg-col-score ok">score {{ "%.3f"|format(first.source_score) }}</span>{% endif %}</div>
+        {% if first.source_agent_trace and first.source_agent_trace.tool_calls %}
+        <ol class="trace-list">
+          {% for c in first.source_agent_trace.tool_calls %}
+          <li class="trace-call">{{ c.name }} <span class="trace-args">({{ c.arguments|tojson }})</span></li>
+          {% endfor %}
+        </ol>
+        {% else %}
+        <p class="trace-empty">(no tool calls)</p>
+        {% endif %}
+      </div>
+      <div class="reg-col">
+        <div class="reg-col-head"><span class="eyebrow">Target agent trace</span>{% if single %}<span class="reg-col-score bad">score {{ "%.3f"|format(first.target_score) }}</span>{% endif %}</div>
+        {% if first.target_agent_trace and first.target_agent_trace.tool_calls %}
+        {% set source_names = (first.source_agent_trace.tool_calls if first.source_agent_trace else []) | map(attribute='name') | list %}
+        <ol class="trace-list trace-target">
+          {% for c in first.target_agent_trace.tool_calls %}
+          <li class="trace-call {{ "" if c.name in source_names else "trace-extra" }}">{{ c.name }} <span class="trace-args">({{ c.arguments|tojson }})</span></li>
+          {% endfor %}
+        </ol>
+        {% else %}
+        <p class="trace-empty trace-missing">(no tool calls)</p>
+        {% endif %}
+      </div>
+    </div>
+    {% if first.trace_diff and first.trace_diff.items %}
+    <div class="reg-col">
+      <span class="eyebrow">Tool diffs</span>
+      <ul class="tool-diffs">
+        {% for diff in first.trace_diff.items %}
+        <li><strong>{{ category_label(diff.category) }}</strong>: {{ diff.kind|replace("_", " ") }}
+          {% if diff.field %} · {{ diff.field }}: {{ diff.source_value|tojson }} → {{ diff.target_value|tojson }}{% endif %}
+          {% if diff.source_name or diff.target_name %} · {{ diff.source_name or "-" }} → {{ diff.target_name or "-" }}{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% elif first.source_trace or first.target_trace %}
+    {# v0.2 — tool regression: render the trace diff in place of text. #}
+    <div class="reg-grid">
+      <div class="reg-col">
+        <div class="reg-col-head"><span class="eyebrow">Source trace</span>{% if single %}<span class="reg-col-score ok">score {{ "%.3f"|format(first.source_score) }}</span>{% endif %}</div>
+        {% if first.source_trace and first.source_trace.calls %}
+        <ol class="trace-list">
+          {% for round_index, calls in first.source_trace.calls|groupby("round_index") %}
+          {% if first.source_trace.round_count > 1 %}<li class="trace-round-label" value="0">round {{ round_index + 1 }}</li>{% endif %}
+          {% for c in calls %}
+          <li class="trace-call">{{ c.tool_name }} <span class="trace-args">({{ c.arguments|tojson }})</span></li>
+          {% endfor %}
+          {% endfor %}
+        </ol>
+        {% else %}
+        <p class="trace-empty">(no tool calls)</p>
+        {% endif %}
+        {% if first.source_trace and first.source_trace.final_text %}
+        <p class="trace-final"><em>final text:</em> {{ first.source_trace.final_text }}</p>
+        {% endif %}
+      </div>
+      <div class="reg-col">
+        <div class="reg-col-head"><span class="eyebrow">Target trace</span>{% if single %}<span class="reg-col-score bad">score {{ "%.3f"|format(first.target_score) }}</span>{% endif %}</div>
+        {% if first.target_trace and first.target_trace.calls %}
+        {% set source_names = (first.source_trace.calls if first.source_trace else []) | map(attribute='tool_name') | list %}
+        <ol class="trace-list trace-target">
+          {% for round_index, calls in first.target_trace.calls|groupby("round_index") %}
+          {% if first.target_trace.round_count > 1 %}<li class="trace-round-label" value="0">round {{ round_index + 1 }}</li>{% endif %}
+          {% for c in calls %}
+          <li class="trace-call {{ "" if c.tool_name in source_names else "trace-extra" }}">{{ c.tool_name }} <span class="trace-args">({{ c.arguments|tojson }})</span></li>
+          {% endfor %}
+          {% endfor %}
+        </ol>
+        {% else %}
+        <p class="trace-empty trace-missing">(no tool calls)</p>
+        {% endif %}
+        {% if first.target_trace and first.target_trace.final_text %}
+        <p class="trace-final"><em>final text:</em> {{ first.target_trace.final_text }}</p>
+        {% endif %}
+      </div>
+    </div>
+    {% if first.tool_diffs %}
+    <div class="reg-col">
+      <span class="eyebrow">Tool diffs</span>
+      <ul class="tool-diffs">
+        {% for diff in first.tool_diffs %}
+        <li><strong>{{ diff.kind|replace("_", " ") }}</strong>: {{ diff.message }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% else %}
+    <div class="reg-grid">
+      <div class="reg-col">
+        <div class="reg-col-head"><span class="eyebrow">Source</span>{% if single %}<span class="reg-col-score ok">score {{ "%.3f"|format(first.source_score) }}</span>{% endif %}</div>
+        <pre>{{ first.source_text }}</pre>
+      </div>
+      <div class="reg-col">
+        <div class="reg-col-head"><span class="eyebrow">Target</span>{% if single %}<span class="reg-col-score bad">score {{ "%.3f"|format(first.target_score) }}</span>{% endif %}</div>
+        <pre>{{ first.target_text }}</pre>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if first.history %}
+    <details class="transcript">
+      <summary><span class="caret"></span>Conversation context ({{ first.history|length }} messages)</summary>
+      <ol class="transcript-body">
+        {% for msg in first.history %}
+        <li class="transcript-turn"><span class="transcript-role">[{{ msg.role }}]</span> {{ msg.content }}{% for call in msg.tool_calls or [] %} <span class="transcript-tool-call">→ {{ call.name }}({{ call.arguments | tojson }})</span>{% endfor %}</li>
+        {% endfor %}
+      </ol>
+    </details>
+    {% endif %}
+    {% if first.input_text %}
+    <details class="reg-input">
+      <summary><span class="caret"></span>Input ({{ first.input_text|length }} chars)</summary>
+      <pre class="reg-input-body">{{ first.input_text }}</pre>
+    </details>
+    {% endif %}
+  </div>
+</details>
+{%- endmacro -%}
+
 {%- set decision = migration_decision -%}
 {%- set budgets = decision.budget_results if decision else [] -%}
 {%- set rates = (decision.overall if decision and decision.overall.n_records > 0
@@ -637,175 +809,32 @@
     </div>
 
     <div class="block">
-      <div style="display:flex;align-items:baseline;gap:10px">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
         <h3>Top regressions</h3>
-        {% if section.top_regressions %}<span class="mono muted count-note">{{ section.top_regressions|length }} of {{ section.example_rows|length }} examples</span>{% endif %}
+        {% if section.regressed_example_count or section.within_threshold_example_count %}<span class="mono muted count-note">{{ section.regressed_example_count }} of {{ section.example_rows|length }} examples regressed</span>{% endif %}
+        {% if section.regressed_example_count > section.regressed_examples|length %}<span class="mono muted count-note">· showing the worst {{ section.regressed_examples|length }}; every example is in the Per-example breakdown above</span>{% endif %}
       </div>
-      {% if section.top_regressions %}
-      {% for tr in section.top_regressions %}
-      {% set reason = regression_reason(tr) %}
+      {% if section.regressed_examples %}
       {#- The worst regression starts open: seeing one expanded is what tells
           the reader the rest expand too. -#}
-      <details class="panel regression"{% if loop.first %} open{% endif %}>
-        <summary class="reg-head">
-          <span class="caret"></span>
-          <span class="reg-id">{{ tr.example_id }}</span>
-          {% if tr.turn_index is not none %}<span class="badge">turn {{ tr.turn_index }}</span>{% endif %}
-          <span class="reg-what">{{ evaluator_label(tr.evaluator_name, tr.kind) }}</span>
-          {% if tr.truncated %}<span class="badge badge-warn trunc-flag">truncated (token cap)</span>{% endif %}
-          {% if tr.target_empty_output %}<span class="badge badge-warn empty-output-flag" title="The model returned no visible text despite spending tokens (often thinking-only responses).">empty output</span>{% endif %}
-          <span class="delta">{{ "%+.3f"|format(tr.delta) }}</span>
-          <span class="reg-toggle" aria-hidden="true"></span>
-        </summary>
-        <div class="reg-body">
-          <div class="notice notice-bad reg-why">
-            <div class="reg-why-line">
-              <span class="eyebrow">Why flagged</span>
-              <span class="reg-scores">source {{ "%.2f"|format(tr.source_score) }} → target {{ "%.2f"|format(tr.target_score) }} (0–1)</span>
-              {#- The evaluator's own failure category when it wrote one: it names
-                  what went wrong, where the axis slug only names what was scored. -#}
-              {%- set categories = tr.metadata.get("failure_categories") or [] %}
-              {% for category in categories %}<span class="badge badge-bad">{{ category_label(category) }}</span>{% endfor %}
-              {% if not categories and tr.kind %}<span class="badge badge-bad">{{ kind_label(tr.kind) }}</span>{% endif %}
-            </div>
-            {% if reason %}<p>{{ reason }}</p>{% endif %}
-          </div>
-
-          {% if tr.tool_change %}
-          <div class="tool-change">
-            <span class="eyebrow">Tools called</span>
-            {{ tool_change_arrows(tr.tool_change) }}
-          </div>
-          {% endif %}
-
-          {% if tr.source_agent_trace or tr.target_agent_trace %}
-          <div class="reg-grid">
-            <div class="reg-col">
-              <div class="reg-col-head"><span class="eyebrow">Source agent trace</span><span class="reg-col-score ok">score {{ "%.3f"|format(tr.source_score) }}</span></div>
-              {% if tr.source_agent_trace and tr.source_agent_trace.tool_calls %}
-              <ol class="trace-list">
-                {% for c in tr.source_agent_trace.tool_calls %}
-                <li class="trace-call">{{ c.name }} <span class="trace-args">({{ c.arguments|tojson }})</span></li>
-                {% endfor %}
-              </ol>
-              {% else %}
-              <p class="trace-empty">(no tool calls)</p>
-              {% endif %}
-            </div>
-            <div class="reg-col">
-              <div class="reg-col-head"><span class="eyebrow">Target agent trace</span><span class="reg-col-score bad">score {{ "%.3f"|format(tr.target_score) }}</span></div>
-              {% if tr.target_agent_trace and tr.target_agent_trace.tool_calls %}
-              {% set source_names = (tr.source_agent_trace.tool_calls if tr.source_agent_trace else []) | map(attribute='name') | list %}
-              <ol class="trace-list trace-target">
-                {% for c in tr.target_agent_trace.tool_calls %}
-                <li class="trace-call {{ "" if c.name in source_names else "trace-extra" }}">{{ c.name }} <span class="trace-args">({{ c.arguments|tojson }})</span></li>
-                {% endfor %}
-              </ol>
-              {% else %}
-              <p class="trace-empty trace-missing">(no tool calls)</p>
-              {% endif %}
-            </div>
-          </div>
-          {% if tr.trace_diff and tr.trace_diff.items %}
-          <div class="reg-col">
-            <span class="eyebrow">Tool diffs</span>
-            <ul class="tool-diffs">
-              {% for diff in tr.trace_diff.items %}
-              <li><strong>{{ category_label(diff.category) }}</strong>: {{ diff.kind|replace("_", " ") }}
-                {% if diff.field %} · {{ diff.field }}: {{ diff.source_value|tojson }} → {{ diff.target_value|tojson }}{% endif %}
-                {% if diff.source_name or diff.target_name %} · {{ diff.source_name or "-" }} → {{ diff.target_name or "-" }}{% endif %}
-              </li>
-              {% endfor %}
-            </ul>
-          </div>
-          {% endif %}
-
-          {% elif tr.source_trace or tr.target_trace %}
-          {# v0.2 — tool regression: render the trace diff in place of text. #}
-          <div class="reg-grid">
-            <div class="reg-col">
-              <div class="reg-col-head"><span class="eyebrow">Source trace</span><span class="reg-col-score ok">score {{ "%.3f"|format(tr.source_score) }}</span></div>
-              {% if tr.source_trace and tr.source_trace.calls %}
-              <ol class="trace-list">
-                {% for round_index, calls in tr.source_trace.calls|groupby("round_index") %}
-                {% if tr.source_trace.round_count > 1 %}<li class="trace-round-label" value="0">round {{ round_index + 1 }}</li>{% endif %}
-                {% for c in calls %}
-                <li class="trace-call">{{ c.tool_name }} <span class="trace-args">({{ c.arguments|tojson }})</span></li>
-                {% endfor %}
-                {% endfor %}
-              </ol>
-              {% else %}
-              <p class="trace-empty">(no tool calls)</p>
-              {% endif %}
-              {% if tr.source_trace and tr.source_trace.final_text %}
-              <p class="trace-final"><em>final text:</em> {{ tr.source_trace.final_text }}</p>
-              {% endif %}
-            </div>
-            <div class="reg-col">
-              <div class="reg-col-head"><span class="eyebrow">Target trace</span><span class="reg-col-score bad">score {{ "%.3f"|format(tr.target_score) }}</span></div>
-              {% if tr.target_trace and tr.target_trace.calls %}
-              {% set source_names = (tr.source_trace.calls if tr.source_trace else []) | map(attribute='tool_name') | list %}
-              <ol class="trace-list trace-target">
-                {% for round_index, calls in tr.target_trace.calls|groupby("round_index") %}
-                {% if tr.target_trace.round_count > 1 %}<li class="trace-round-label" value="0">round {{ round_index + 1 }}</li>{% endif %}
-                {% for c in calls %}
-                <li class="trace-call {{ "" if c.tool_name in source_names else "trace-extra" }}">{{ c.tool_name }} <span class="trace-args">({{ c.arguments|tojson }})</span></li>
-                {% endfor %}
-                {% endfor %}
-              </ol>
-              {% else %}
-              <p class="trace-empty trace-missing">(no tool calls)</p>
-              {% endif %}
-              {% if tr.target_trace and tr.target_trace.final_text %}
-              <p class="trace-final"><em>final text:</em> {{ tr.target_trace.final_text }}</p>
-              {% endif %}
-            </div>
-          </div>
-          {% if tr.tool_diffs %}
-          <div class="reg-col">
-            <span class="eyebrow">Tool diffs</span>
-            <ul class="tool-diffs">
-              {% for diff in tr.tool_diffs %}
-              <li><strong>{{ diff.kind|replace("_", " ") }}</strong>: {{ diff.message }}</li>
-              {% endfor %}
-            </ul>
-          </div>
-          {% endif %}
-
-          {% else %}
-          <div class="reg-grid">
-            <div class="reg-col">
-              <div class="reg-col-head"><span class="eyebrow">Source</span><span class="reg-col-score ok">score {{ "%.3f"|format(tr.source_score) }}</span></div>
-              <pre>{{ tr.source_text }}</pre>
-            </div>
-            <div class="reg-col">
-              <div class="reg-col-head"><span class="eyebrow">Target</span><span class="reg-col-score bad">score {{ "%.3f"|format(tr.target_score) }}</span></div>
-              <pre>{{ tr.target_text }}</pre>
-            </div>
-          </div>
-          {% endif %}
-
-          {% if tr.history %}
-          <details class="transcript">
-            <summary><span class="caret"></span>Conversation context ({{ tr.history|length }} messages)</summary>
-            <ol class="transcript-body">
-              {% for msg in tr.history %}
-              <li class="transcript-turn"><span class="transcript-role">[{{ msg.role }}]</span> {{ msg.content }}{% for call in msg.tool_calls or [] %} <span class="transcript-tool-call">→ {{ call.name }}({{ call.arguments | tojson }})</span>{% endfor %}</li>
-              {% endfor %}
-            </ol>
-          </details>
-          {% endif %}
-          {% if tr.input_text %}
-          <details class="reg-input">
-            <summary><span class="caret"></span>Input ({{ tr.input_text|length }} chars)</summary>
-            <pre class="reg-input-body">{{ tr.input_text }}</pre>
-          </details>
-          {% endif %}
-        </div>
-      </details>
+      {% for card in section.regressed_examples %}
+      {{ regression_card(card, opened=loop.first) }}
       {% endfor %}
       {% else %}
       <div class="panel"><p class="empty">No specific regressions to surface.</p></div>
+      {% endif %}
+      {#- Drops the analysis tests as no change: listed, closed, and named for
+          what they are, so the list above holds only regressions. -#}
+      {% if section.within_threshold_examples %}
+      {% set within_count = section.within_threshold_example_count %}
+      <details class="within-threshold">
+        <summary><span class="caret"></span>{{ within_count }} {% if section.regressed_example_count %}more {% endif %}example{{ "s" if within_count != 1 }} dropped within the evaluator's threshold (scored as no change){% if within_count > section.within_threshold_examples|length %} · showing the largest {{ section.within_threshold_examples|length }}{% endif %}</summary>
+        <div class="within-threshold-body">
+          {% for card in section.within_threshold_examples %}
+          {{ regression_card(card) }}
+          {% endfor %}
+        </div>
+      </details>
       {% endif %}
     </div>
   </section>

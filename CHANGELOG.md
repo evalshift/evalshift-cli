@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The report's Top regressions lists every example that regressed, one card
+  per example.** It showed the five most negative scored rows, one per example
+  and evaluator. On a real planner run four of the five went to one example
+  that four evaluators each scored −1, so of the ten examples with a drop of
+  0.5 or more it showed two. It now shows every regressed example, worst
+  first, up to 50 per prompt (the per-example breakdown lists all). Each card
+  names every evaluator that dropped the example, gives each one's finding,
+  and shows the outputs, traces and context once. The header counts examples
+  ("15 of 21 examples regressed"), not rows.
+- A drop inside an evaluator's own threshold is no longer listed as a
+  regression. The analysis already tests a `semantic` row above
+  `min_similarity` as no change, yet a 0.93 similarity under a 0.9 threshold
+  sat in the list. Those examples now sit in a closed "N more examples dropped
+  within the evaluator's threshold (scored as no change)" line under the
+  cards. `report.json` keeps `top_regressions`, one row per example and
+  evaluator for the examples shown, and adds `regressed_example_count`,
+  `within_threshold_regressions` and `within_threshold_example_count`.
+- The report has more room between its sections, between the blocks of a
+  prompt's section, and between each heading and its table.
+
 ## [1.6.0] - 2026-10-22
 
 ### Added

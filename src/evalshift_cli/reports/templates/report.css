@@ -70,7 +70,7 @@ body {
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 30px;
+  gap: 56px;
 }
 
 a { color: var(--accent); text-underline-offset: 4px; }
@@ -203,7 +203,7 @@ h1 {
 
 /* --- Section scaffolding ------------------------------------------------ */
 
-section { display: flex; flex-direction: column; gap: 12px; }
+section { display: flex; flex-direction: column; gap: 16px; }
 /* Section heads rule above and below, like the landing's SectionHeader. */
 .section-head {
   display: flex;
@@ -260,7 +260,10 @@ h4 {
   max-width: 820px;
   text-wrap: pretty;
 }
-.block { display: flex; flex-direction: column; gap: 10px; }
+.block { display: flex; flex-direction: column; gap: 14px; }
+/* Blocks inside one section are separate findings: give each its own room
+   rather than butting a heading against the table above it. */
+.block + .block { margin-top: 20px; }
 p.empty {
   margin: 0;
   padding: 22px;
@@ -616,6 +619,15 @@ details[open] > summary .caret::after { content: "\25BE"; }
 }
 .reg-why { display: flex; flex-direction: column; gap: 8px; }
 .reg-why-line { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+/* A card several evaluators flagged names each finding and its own delta. */
+.reg-why-evaluator { font-size: 14px; font-weight: 600; color: var(--fg); }
+.reg-why-delta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bad);
+}
 .reg-scores { font-family: var(--font-mono); font-size: 13px; color: var(--fg); }
 .reg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .reg-col { display: flex; flex-direction: column; gap: 8px; }
@@ -665,12 +677,12 @@ details[open] > summary .caret::after { content: "\25BE"; }
 }
 .tool-diffs strong { color: var(--fg); }
 
-.transcript, .reg-input {
+.transcript, .reg-input, .within-threshold {
   margin: 0;
   background: var(--well);
   border: 1px solid var(--stroke);
 }
-.transcript > summary, .reg-input > summary {
+.transcript > summary, .reg-input > summary, .within-threshold > summary {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -678,6 +690,14 @@ details[open] > summary .caret::after { content: "\25BE"; }
   font-family: var(--font-mono);
   font-size: 13px;
   color: var(--accent);
+}
+/* Drops the analysis scored as no change: secondary, so muted, not accent. */
+.within-threshold > summary { color: var(--dim); }
+.within-threshold-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 14px 14px;
 }
 .transcript-body {
   margin: 0;
@@ -780,7 +800,8 @@ footer p { margin: 0; }
 
 @media (max-width: 600px) {
   body { padding: 20px 12px 48px; }
-  .page { gap: 24px; }
+  .page { gap: 36px; }
+  .block + .block { margin-top: 8px; }
   h1 { font-size: 26px; }
   .hero-value .big { font-size: 24px; }
   .strip-value { font-size: 17px; }
