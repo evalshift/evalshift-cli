@@ -36,6 +36,10 @@ from evalshift_cli.reports.json import (
 
 REPORT_HTML_FILENAME: str = "report.html"
 
+#: Rows a long table (the per-example breakdown, the trace rules broken) shows
+#: before its "Show N more" toggle. The rest are in the page, folded, not cut.
+TABLE_ROWS_SHOWN: int = 10
+
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 # Icon per ``InsightFinding.kind``. Matches the hosted design's ✓ / ✕ / !.
@@ -599,6 +603,7 @@ def render_html(report: ReportData, *, insight: Insight | None = None) -> str:
     env.globals["confidence_label"] = _confidence_label
     env.globals["effect_magnitude"] = _effect_magnitude
     env.globals["small_sample_threshold"] = _SMALL_SAMPLE_THRESHOLD
+    env.globals["rows_shown"] = TABLE_ROWS_SHOWN
     env.globals["latency"] = _latency
     env.globals["evaluator_label"] = _evaluator_label
     env.globals["axis_of"] = _axis_of
@@ -666,4 +671,4 @@ def write_html(report: ReportData, run_dir: Path, *, insight: Insight | None = N
     return out_path
 
 
-__all__ = ["REPORT_HTML_FILENAME", "render_html", "write_html"]
+__all__ = ["REPORT_HTML_FILENAME", "TABLE_ROWS_SHOWN", "render_html", "write_html"]

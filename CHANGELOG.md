@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   red only when the source did call tools. A card flagged for its wording
   alone showed both sides making the same call with the target's in a red
   box, which read as a tool failure.
+- The per-example breakdown and the Trace rules broken table show their
+  first 10 rows; the rest unfold under a "Show N more examples" / "Show N
+  more broken rules" label, in the same table so the columns stay aligned.
+  No script: a checkbox drives it, so it works offline and from an email
+  attachment, and a printed report shows every row.
 - The report has more room between its sections, between the blocks of a
   prompt's section, and between each heading and its table.
 

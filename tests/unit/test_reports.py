@@ -3247,3 +3247,137 @@ class TestTopRegressionsListEveryRealRegression:
         assert [r["example_id"] for r in section["within_threshold_regressions"]] == ["ex1"]
         # The same per-row shape as top_regressions.
         assert set(section["within_threshold_regressions"][0]) == set(section["top_regressions"][0])
+
+
+# ---------------------------------------------------------------------------
+# Long tables show their first rows and a "show more" toggle
+# ---------------------------------------------------------------------------
+
+
+class TestLongTablesShowTheirFirstRows:
+    """The per-example and trace-rule tables fold rows past ``TABLE_ROWS_SHOWN``."""
+
+    @staticmethod
+    def _examples_run(tmp_path: Path, count: int) -> Path:
+        """A run with ``count`` scored source/target pairs."""
+        cwd, run_id = _scaffold_full_run(tmp_path)
+        run_dir = cwd / ".evalshift" / "runs" / run_id
+        (run_dir / "raw.jsonl").unlink()
+        records = []
+        for i in range(count):
+            example_id = f"e{i:03d}"
+            for role in ("source", "target"):
+                append_call(
+                    run_dir,
+                    Call(
+                        run_id=run_id,
+                        prompt_id="greet",
+                        example_id=example_id,
+                        model_id=f"model-{role}",
+                        role=role,
+                        text="hi",
+                        cost_usd=0.0001,
+                        latency_ms=100,
+                        input_tokens=10,
+                        output_tokens=5,
+                    ),
+                )
+            records.append(
+                EvalRecord(
+                    run_id=run_id,
+                    prompt_id="greet",
+                    example_id=example_id,
+                    evaluator_name="structural.length",
+                    source_score=1.0,
+                    target_score=0.9,
+                    delta=-0.1,
+                )
+            )
+        (run_dir / SCORES_FILENAME).write_text(
+            "".join(r.model_dump_json() + "\n" for r in records), encoding="utf-8"
+        )
+        return run_dir
+
+    @staticmethod
+    def _violations_run(tmp_path: Path, count: int) -> Path:
+        violation = {
+            "rule_id": "no-v1",
+            "rule_type": "forbidden",
+            "tool": "refund_v1",
+            "round_index": 0,
+            "detail": "called forbidden tool 'refund_v1'",
+        }
+        return _run_dir_with_scores(
+            tmp_path,
+            [
+                {
+                    "run_id": "r1",
+                    "prompt_id": "p",
+                    "example_id": f"v{i:03d}",
+                    "evaluator_name": "payments",
+                    "kind": "trace_invariants",
+                    "source_score": 1.0,
+                    "target_score": 0.0,
+                    "delta": -1.0,
+                    "metadata": {
+                        "rules_checked": ["no-v1"],
+                        "source_violations": [],
+                        "target_violations": [violation],
+                    },
+                }
+                for i in range(count)
+            ],
+        )
+
+    @staticmethod
+    def _block(html: str, heading: str) -> str:
+        """From ``heading`` to the next block's heading."""
+        return html.split(heading, 1)[1].split("<h3>", 1)[0]
+
+    def test_rows_past_the_first_ten_are_folded(self, tmp_path: Path) -> None:
+        from evalshift_cli.reports.html import TABLE_ROWS_SHOWN
+
+        run_dir = self._examples_run(tmp_path, TABLE_ROWS_SHOWN + 2)
+        block = self._block(
+            render_html(build_report_payload(run_dir)), "<h3>Per-example breakdown</h3>"
+        )
+        assert block.count("row-more") == 2
+        assert 'type="checkbox"' in block
+        assert "Show 2 more examples" in block
+        assert "Show fewer" in block
+
+    def test_one_hidden_row_is_named_in_the_singular(self, tmp_path: Path) -> None:
+        from evalshift_cli.reports.html import TABLE_ROWS_SHOWN
+
+        run_dir = self._examples_run(tmp_path, TABLE_ROWS_SHOWN + 1)
+        block = self._block(
+            render_html(build_report_payload(run_dir)), "<h3>Per-example breakdown</h3>"
+        )
+        assert block.count("row-more") == 1
+        assert "Show 1 more example<" in block
+
+    def test_a_short_table_has_no_toggle(self, tmp_path: Path) -> None:
+        from evalshift_cli.reports.html import TABLE_ROWS_SHOWN
+
+        run_dir = self._examples_run(tmp_path, TABLE_ROWS_SHOWN)
+        block = self._block(
+            render_html(build_report_payload(run_dir)), "<h3>Per-example breakdown</h3>"
+        )
+        assert "row-more" not in block
+        assert 'type="checkbox"' not in block
+
+    def test_the_trace_rules_table_folds_the_same_way(self, tmp_path: Path) -> None:
+        from evalshift_cli.reports.html import TABLE_ROWS_SHOWN
+
+        run_dir = self._violations_run(tmp_path, TABLE_ROWS_SHOWN + 3)
+        block = self._block(
+            render_html(build_report_payload(run_dir)), "<h3>Trace rules broken</h3>"
+        )
+        assert block.count("row-more") == 3
+        assert "Show 3 more broken rules" in block
+
+    def test_printing_shows_every_row(self, tmp_path: Path) -> None:
+        cwd, run_id = _scaffold_full_run(tmp_path)
+        html = render_html(build_report_payload(cwd / ".evalshift" / "runs" / run_id))
+        print_rules = html.split("@media print", 1)[1].split("\n}\n", 1)[0]
+        assert ".row-more" in print_rules

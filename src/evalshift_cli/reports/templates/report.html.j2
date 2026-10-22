@@ -34,6 +34,20 @@
   {%- endif -%}
 {%- endmacro -%}
 
+{#- A long table shows its first ``rows_shown`` rows; the rest unfold under a
+    "Show N more" label. A checkbox and a label rather than a script, since
+    the report runs no JS, and one table rather than two, so the columns stay
+    aligned. The checkbox goes before the table's panel, the label after it. -#}
+{%- macro more_toggle(id, total) -%}
+  {%- if total > rows_shown %}<input type="checkbox" class="more-toggle" id="{{ id }}">{% endif -%}
+{%- endmacro -%}
+{%- macro more_label(id, total, noun, plural) -%}
+  {%- if total > rows_shown -%}
+  {%- set hidden = total - rows_shown -%}
+  <label class="more-label" for="{{ id }}"><span class="caret"></span><span class="more-show">Show {{ hidden }} more {{ noun if hidden == 1 else plural }}</span><span class="more-hide">Show fewer</span></label>
+  {%- endif -%}
+{%- endmacro -%}
+
 {#- One regressed example: why each evaluator flagged it, then the pair's
     outputs and context once. The outputs are the same whichever evaluator
     scored them, so a card per evaluator repeated them and let one example
@@ -595,12 +609,13 @@
         <span class="mono muted count-note">{{ invariant_violations|length }} by the target</span>
       </div>
       <p class="sub">Every rule the target broke, whatever the score change. A rule both models broke scores no change, so it never shows among the regressions below.</p>
+      {{ more_toggle("more-violations", invariant_violations|length) }}
       <div class="panel scroll">
         <table>
           <thead><tr><th>Example</th><th>Rule</th><th>Owner</th><th>What happened</th><th>Source too?</th></tr></thead>
           <tbody>
           {% for v in invariant_violations %}
-            <tr>
+            <tr{% if loop.index > rows_shown %} class="row-more"{% endif %}>
               <td class="mono">{{ v.prompt_id }} · {{ v.example_id }}{% if v.round_index %} · round {{ v.round_index + 1 }}{% endif %}{% if v.sample is not none %} · sample {{ v.sample + 1 }}{% endif %}</td>
               <td><span class="badge badge-bad">{{ v.rule_id }}</span> <span class="muted">{{ v.rule_type }}</span>{% if not v.blocking %} <span class="badge advisory-tag" title="blocking: false in evalshift.yaml — reported, never gates">advisory</span>{% endif %}</td>
               <td>{{ v.owner or "—" }}</td>
@@ -611,6 +626,7 @@
           </tbody>
         </table>
       </div>
+      {{ more_label("more-violations", invariant_violations|length, "broken rule", "broken rules") }}
     </div>
   </section>
 {% endif %}
@@ -668,6 +684,8 @@
       {% if section.example_rows %}
       {% set worst = section.example_rows|map(attribute="worst_delta_score")|reject("none")|map("abs")|list %}
       {% set scale = worst|max if worst else 0 %}
+      {% set more_id = "more-examples-" ~ loop.index %}
+      {{ more_toggle(more_id, section.example_rows|length) }}
       <div class="panel scroll">
         <table class="examples">
           <thead><tr>
@@ -681,7 +699,7 @@
           </tr></thead>
           <tbody>
           {% for row in section.example_rows %}
-            <tr class="{% if row.regressed %}ex-regression{% elif row.worst_delta_score is not none and row.worst_delta_score > 0 %}ex-improved{% endif %}">
+            <tr class="{% if row.regressed %}ex-regression{% elif row.worst_delta_score is not none and row.worst_delta_score > 0 %}ex-improved{% endif %}{% if loop.index > rows_shown %} row-more{% endif %}">
               <td class="num" style="text-align:left"><code>{{ row.example_id }}</code>{% if row.turn_index is not none %}<span class="turn-badge">turn {{ row.turn_index }}</span>{% endif %}</td>
               {# One dot-separated line, not a chip per tag: a stack of chips in a
                  narrow column pushes every other row taller. #}
@@ -710,6 +728,7 @@
           </tbody>
         </table>
       </div>
+      {{ more_label(more_id, section.example_rows|length, "example", "examples") }}
       {% else %}
       <div class="panel"><p class="empty">No examples available.</p></div>
       {% endif %}

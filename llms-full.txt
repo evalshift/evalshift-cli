@@ -258,7 +258,8 @@ evalshift report RUN_ID [-c CONFIG] [--open] [--insights/--no-insights (default 
   prompt (the per-example table lists all); a drop inside an evaluator's own threshold
   (semantic min_similarity) is tested as no change, so it sits in a closed line below the
   cards ("Within threshold", neutral tone), not among them; the per-example table tints
-  only regressed rows and shows a forgiven drop muted. Dark-only, no external assets, no
+  only regressed rows and shows a forgiven drop muted. The per-example and trace-rules
+  tables show 10 rows and fold the rest under "Show N more" (CSS only; print shows all). Dark-only, no external assets, no
   JS. Rendered surfaces show
   display names, never internal identifiers: failure categories as plain language
   (TOOL_SELECTION_DRIFT -> "Different tools chosen"; map in evaluators/failures.py), budgets

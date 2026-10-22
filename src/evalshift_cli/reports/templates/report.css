@@ -266,6 +266,27 @@ h4 {
 /* Blocks inside one section are separate findings: give each its own room
    rather than butting a heading against the table above it. */
 .block + .block { margin-top: 20px; }
+
+/* A long table folds its rows past the first ten under a label wired to a
+   visually hidden checkbox: no script, and the checkbox keeps keyboard focus. */
+.more-toggle { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.more-toggle:not(:checked) ~ .panel .row-more { display: none; }
+.more-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  align-self: flex-start;
+  padding: 4px 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.more-label:hover { color: var(--fg); }
+.more-toggle:focus-visible ~ .more-label { outline: 2px solid var(--accent); outline-offset: 2px; }
+.more-toggle:checked ~ .more-label .caret::after { content: "\25BE"; }
+.more-toggle:checked ~ .more-label .more-show,
+.more-toggle:not(:checked) ~ .more-label .more-hide { display: none; }
 p.empty {
   margin: 0;
   padding: 22px;
@@ -833,6 +854,9 @@ footer p { margin: 0; }
      engines with ::details-content (Chromium 131+) honour it. */
   .regression::details-content { content-visibility: visible; }
   .reg-toggle { display: none; }
+  /* Folded table rows print too: a printed report must not lose examples. */
+  .row-more { display: table-row !important; }
+  .more-label { display: none; }
 }
 
 /* --- Tone utilities ------------------------------------------------------ */
