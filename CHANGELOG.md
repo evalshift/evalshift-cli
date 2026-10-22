@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quotes its worst drop beyond a threshold (the delta its card leads with),
   and a forgiven drop shows muted. Each `example_rows` row in `report.json`
   carries `regressed`.
+- A regression card outlines the target's trace in red only when its tool
+  calls differ from the source's, and reads a target's "(no tool calls)" in
+  red only when the source did call tools. A card flagged for its wording
+  alone showed both sides making the same call with the target's in a red
+  box, which read as a tool failure.
 - The report has more room between its sections, between the blocks of a
   prompt's section, and between each heading and its table.
 

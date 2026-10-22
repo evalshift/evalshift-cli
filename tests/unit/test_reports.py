@@ -3180,6 +3180,60 @@ class TestTopRegressionsListEveryRealRegression:
         assert (row.regressed, row.worst_delta_score) == (True, -0.05)
         assert section.regressed_examples[0].regressions[0].delta == -0.05
 
+    def _traced_run(
+        self, tmp_path: Path, *, source_tools: list[str], target_tools: list[str]
+    ) -> Path:
+        """ex1 regressed on semantic, with each side's recorded tool calls."""
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        run_dir = self._run(tmp_path, [self._semantic("ex1", -0.2, beyond_threshold=True)])
+        (run_dir / "raw.jsonl").unlink()
+        for role, tools in (("source", source_tools), ("target", target_tools)):
+            calls = [
+                ToolCall(tool_name=name, arguments={"value": 5}, sequence_index=i)
+                for i, name in enumerate(tools)
+            ]
+            append_call(
+                run_dir,
+                Call(
+                    run_id="r_20260601_aaaaaa",
+                    prompt_id="greet",
+                    example_id="ex1",
+                    model_id=f"model-{role}",
+                    role=role,
+                    text="5 kg is 11.02 lb.",
+                    cost_usd=0.0001,
+                    latency_ms=100,
+                    input_tokens=10,
+                    output_tokens=5,
+                    trace=ToolTrace(calls=calls),
+                ),
+            )
+        return run_dir
+
+    def test_the_target_trace_is_red_only_when_its_calls_differ(self, tmp_path: Path) -> None:
+        same = self._traced_run(
+            tmp_path / "same", source_tools=["convert_units"], target_tools=["convert_units"]
+        )
+        differ = self._traced_run(
+            tmp_path / "differ", source_tools=["convert_units"], target_tools=["convert_currency"]
+        )
+        assert "trace-target" not in self._top(render_html(build_report_payload(same)))
+        assert "trace-target" in self._top(render_html(build_report_payload(differ)))
+
+    def test_no_tool_calls_on_both_sides_is_not_flagged_missing(self, tmp_path: Path) -> None:
+        neither = self._traced_run(tmp_path / "neither", source_tools=[], target_tools=[])
+        dropped = self._traced_run(
+            tmp_path / "dropped", source_tools=["convert_units"], target_tools=[]
+        )
+        assert "trace-missing" not in self._top(render_html(build_report_payload(neither)))
+        assert "trace-missing" in self._top(render_html(build_report_payload(dropped)))
+
+    def test_a_within_threshold_finding_is_not_tinted(self, tmp_path: Path) -> None:
+        html = render_html(build_report_payload(self._threshold_run(tmp_path)))
+        before, within = self._top(html).split('<details class="within-threshold">', 1)
+        assert '<div class="notice notice-neutral reg-why">' in within
+        assert "notice-neutral" not in before
+
     def test_report_json_carries_the_counts_and_the_within_threshold_rows(
         self, tmp_path: Path
     ) -> None:
