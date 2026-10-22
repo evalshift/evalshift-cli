@@ -14,16 +14,25 @@ dense LLM reference at <https://www.evalshift.dev/sdk-llms-full.txt>.
 
 ```
 your agent (evalshift-sdk)  →  .evalshift/captures/<suite>/cap_<hex>.json
+                            →  a capture.agent_session conversation's turns: .evalshift/captures/<suite>/conv_<16 hex>/cap_<hex>.json (SDK 0.7.0+)
                             →  or, EVALSHIFT_CAPTURE_STORE=s3://… : <prefix>/captures/<suite>/cap_<hex>.json
+                                   and <prefix>/captures/<suite>/conv_<16 hex>/cap_<hex>.json (SDK 0.7.0+)
                             →  evalshift capture sync       (fetches from captures.store first)
                             →  .evalshift/suites/<suite>/golden.jsonl + evalshift.yaml
 ```
 
 - **The layout is the interface.** The SDK never imports or calls the CLI, and the CLI reads
   captures from disk without calling SDK code (`doctor` only checks which package the
-  `evalshift` import name resolves to). The same layout — `captures/<suite>/cap_<hex>.json`
-  plus `toolsets/<hex>.json` — is what the SDK writes to local disk *or* under a prefix in an
-  object store you own; the CLI mirrors the latter into `.evalshift/` and reads it unchanged.
+  `evalshift` import name resolves to). The same layout — `captures/<suite>/cap_<hex>.json`,
+  `captures/<suite>/conv_<16 hex>/cap_<hex>.json` for a `capture.agent_session` conversation's
+  turns (SDK 0.7.0+), plus
+  `toolsets/<hex>.json` — is what the SDK writes to local disk *or* under a prefix in an object
+  store you own; the CLI mirrors the latter into `.evalshift/` and reads it unchanged. The CLI
+  reads both layouts side by side; evalshift-sdk 0.7.0 needs evalshift CLI 1.6.0 or later.
+  If an evalshift CLI older than 1.6 is installed in the same environment, evalshift-sdk 0.7.0
+  writes flat and logs a warning (`EVALSHIFT_CAPTURE_LAYOUT=conversation` overrides it); an
+  older CLI in a different environment (e.g. CI pinned to 1.5) can't be detected, so upgrade
+  it first.
 - **One environment or two.** The CLI imports as `evalshift_cli` and depends on
   the SDK, so `pip install evalshift` gives you both and `import evalshift` is
   always the SDK. A production agent that only records captures installs
@@ -104,9 +113,24 @@ EVALSHIFT_CAPTURE=1 python your_agent.py
 ```
 
 Each sampled invocation writes one file to
-`.evalshift/captures/<suite>/cap_<hex>.json`. The directory stays bounded on its
-own — identical-input runs are de-duplicated and each suite dir keeps the 200
-newest captures. `EVALSHIFT_MAX_CAPTURES`, `EVALSHIFT_DEDUP`,
+`.evalshift/captures/<suite>/cap_<hex>.json`; from SDK 0.7.0 the SDK writes a
+`capture.agent_session` conversation's turns in one folder,
+`.evalshift/captures/<suite>/conv_<16 hex>/` (`EVALSHIFT_CAPTURE_LAYOUT=flat`
+restores the old flat layout, and the `@capture.agent` decorator's captures stay
+flat). The directory stays bounded on its own — identical-input runs are
+de-duplicated (a conversation's distinct turns never are) and each suite dir
+keeps the 200 newest captures (`max_captures`). From evalshift-sdk 0.7.0, in
+the folder layout, `capture_ttl` first evicts every capture older than it;
+`max_captures` then counts the captures the TTL leaves, newest unit first (a
+unit is a flat capture or a whole `conv_*` folder): the newest conversations
+are kept whole while they fit, the one at the boundary keeps its newest turns,
+and older ones are evicted whole. So one newer capture evicts at most one older
+capture, not a whole live conversation, and a conversation that never ends (a
+user id passed as `conversation_id`) keeps its newest `max_captures` turns.
+Folders left empty are removed; suites with only flat captures behave as
+before. From 0.7.0,
+`EVALSHIFT_SAMPLE_RATE` keeps or drops a conversation run through
+`capture.agent_session` whole. `EVALSHIFT_MAX_CAPTURES`, `EVALSHIFT_DEDUP`,
 `EVALSHIFT_CAPTURE_TTL` and `EVALSHIFT_SAMPLE_RATE` tune that; they are read by
 the SDK, in your agent's process.
 

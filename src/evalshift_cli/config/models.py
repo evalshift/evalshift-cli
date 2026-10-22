@@ -842,11 +842,13 @@ def _duration_from_yaml(value: object) -> object:
 class CapturesConfig(_StrictModel):
     """Where the capture SDK's recordings live, beyond the local ``.evalshift/`` directory.
 
-    By default captures are read from ``<base>/captures/`` on this machine and nothing here
-    is needed. Production hosts whose disk does not outlive them (Fargate, Lambda, pods) can
-    ship captures to an object store instead (``EVALSHIFT_CAPTURE_STORE`` on the SDK side); naming the
-    same store here makes ``capture sync`` and ``capture list`` mirror new captures into the
-    local directory first, with no flags.
+    By default captures are read from ``<base>/captures/`` on this machine -- flat as
+    ``<suite>/<capture_id>.json``, or a conversation's turns in ``<suite>/conv_<16 hex>/`` (the
+    layout evalshift-sdk 0.7.0 writes) -- and nothing here is needed. Production hosts whose
+    disk does not outlive them (Fargate, Lambda, pods) can ship captures to an object store
+    instead (``EVALSHIFT_CAPTURE_STORE`` on the SDK side); naming the same store here makes
+    ``capture sync`` and ``capture list`` mirror new captures into the local directory first,
+    with no flags.
 
     Attributes:
         store: ``s3://<bucket>/<prefix>``, ``gs://<bucket>/<prefix>`` or
