@@ -18,13 +18,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal
 
 import typer
 from rich.console import Console
@@ -34,6 +35,7 @@ from rich.table import Table
 from evalshift_cli import __version__
 from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
 from evalshift_cli.captures.promote import (
+    BuiltExample,
     PromoteOptions,
     build_conversation_examples,
     build_example_from_capture,
@@ -598,6 +600,8 @@ class _SyncLimits:
     max_age: timedelta | None = None
     max_cases: int | None = None
     source_model: str | None = None
+    #: ``captures.rounds``: not a limit, read here because sync reads its config here.
+    rounds: Literal["first", "all"] = "first"
 
     @property
     def active(self) -> bool:
@@ -635,11 +639,13 @@ def _sync_limits(config_path: Path, *, console: Console, warn: bool) -> _SyncLim
             max_age=cfg.captures.max_age,
             max_cases=cfg.captures.max_cases,
             source_model=cfg.defaults.source_model,
+            rounds=cfg.captures.rounds,
         )
     if warn and _mentions_captures(config_path):
         console.print(
             f"[yellow]⚠[/yellow] could not read {escape(str(config_path))} ({escape(reason)}); "
-            "syncing without captures.max_age / captures.max_cases.",
+            "syncing without captures.max_age / captures.max_cases / captures.rounds "
+            "(replaying the first round only).",
         )
     return _SyncLimits()
 
@@ -843,6 +849,30 @@ def capture_fetch(
         )
         raise typer.Exit(code=1)
     _fetch_into_base(store, base=base, suite=suite, since=_resolve_since(since), console=console)
+
+
+def _replays_fewer_rounds(
+    existing: tuple[Path, PromotedCase] | None,
+    built: BuiltExample,
+    stale_by_path: Mapping[Path, StaleReason | None],
+) -> bool:
+    """Whether sync just declined to rewrite ``existing``, a case ``built`` would replay further.
+
+    Called only where sync skips an already-promoted case. Counted only when ``--force``
+    would rewrite it to replay every round: not a case marked ``provenance: reviewed``
+    (``--force`` would drop the mark) and not a stale one (the planner may retire it this
+    very run).
+    """
+    if existing is None:
+        return False
+    path, case = existing
+    return (
+        built.blocked is None
+        and bool(built.example.tool_result_fixtures)
+        and not case.example.tool_result_fixtures
+        and not is_reviewed(case.example)
+        and stale_by_path.get(path) is None
+    )
 
 
 def _check_rounds(rounds: str) -> None:
@@ -1384,16 +1414,17 @@ def capture_sync(
         typer.Option("--tool-count", help="Also pin the expected tool-call count."),
     ] = False,
     rounds: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--rounds",
             help=(
-                "How many recorded agent rounds to replay: 'first' (default, single-shot, "
-                "scored against round 1) or 'all' (teacher-forced — every round is replayed "
-                "with the recorded tool results fed back, scored round by round)."
+                "How many recorded agent rounds to replay: 'first' (single-shot, scored "
+                "against round 1) or 'all' (teacher-forced — every round is replayed with the "
+                "recorded tool results fed back, scored round by round). Default: "
+                "captures.rounds in evalshift.yaml, else 'first'."
             ),
         ),
-    ] = "first",
+    ] = None,
     allow_errored: Annotated[
         bool,
         typer.Option(
@@ -1457,8 +1488,12 @@ def capture_sync(
     at most 3x max_cases per suite, a conversation at a time, newest first.
     """
     console = Console()
-    _check_rounds(rounds)
+    if rounds is not None:
+        _check_rounds(rounds)
     limits = _sync_limits(config_path, console=console, warn=True)
+    replay_rounds: Literal["first", "all"] = (
+        limits.rounds if rounds is None else ("all" if rounds == "all" else "first")
+    )
     now = _now()
     selection = _repair_selection(base=base, suite=suite, console=console)
     _maybe_fetch(
@@ -1494,13 +1529,16 @@ def capture_sync(
         names_only=names_only,
         tool_count=tool_count,
         allow_errored=allow_errored,
-        rounds="all" if rounds == "all" else "first",
+        rounds=replay_rounds,
         tool_properties=_declared_tool_properties([r.envelope for r in records], base=base),
     )
 
     promoted = 0
     wired_generation = 0
     skipped_existing = 0
+    # Promoted single-shot although captures.rounds is all and the capture now builds a
+    # teacher-forced case: sync never rewrites a promoted case unasked, so it says so.
+    single_shot = 0
     skipped_empty = 0
     skipped_duplicates = 0
     skipped_errored = 0
@@ -1609,6 +1647,9 @@ def capture_sync(
         pending: list[PromotedCase] = []
         pending_warnings: dict[str, list[str]] = {}
         built_pairs = build_conversation_examples(suite_records, opts, base=base)
+        # Sync writes a case under its capture id, so that is the case `--force` would
+        # rewrite: a custom `promote --as` name is never reached (dedup gives it the content).
+        kept_by_name = {c.name: (path, c) for path, c in kept}
         local_ids = {r.envelope.capture_id for r in suite_records}
         local_turns: dict[str, set[int]] = {}
         for r in suite_records:
@@ -1751,6 +1792,9 @@ def capture_sync(
                     continue
             if limits.max_cases is not None and envelope.capture_id in kept_from and not force:
                 skipped_existing += 1
+                single_shot += _replays_fewer_rounds(
+                    kept_by_name.get(envelope.capture_id), built, stale_by_path
+                )
                 continue
             content_key = (suite_name, example_content_key(built.example))
             owner = seen_examples.get(content_key)
@@ -1801,6 +1845,9 @@ def capture_sync(
                     wired_generation += 1
             except FileExistsError:
                 skipped_existing += 1
+                single_shot += _replays_fewer_rounds(
+                    kept_by_name.get(case.name), built, stale_by_path
+                )
         if repaired_here:
             repaired += len(repaired_here)
             _warn_repaired_duplicates(suite_name, repaired_here, base=base, console=console)
@@ -1954,6 +2001,22 @@ def capture_sync(
     console.print(summary + ".")
     for line in plan_lines:
         console.print(escape(line), soft_wrap=True)
+    if single_shot:
+        # Named as this run was asked: a bare `--force` resolves rounds from the config
+        # (maybe `first`) and overwrites every suite, not just the one counted.
+        command = "evalshift capture sync --force"
+        if rounds is not None:
+            command += " --rounds all"
+        if suite is not None:
+            command += f" --suite {shlex.quote(suite)}"
+        console.print(
+            f"[yellow]⚠[/yellow] {single_shot} promoted case(s) replay only their first round, "
+            "although their captures carry the recorded tool results to replay every round. "
+            f"Sync never rewrites a promoted case unasked: [bold]{escape(command)}[/bold] once "
+            "re-promotes each case whose capture is still local, which drops hand edits and "
+            "provenance: reviewed marks (reviewed cases are not counted here).",
+            soft_wrap=True,
+        )
 
     if not suite_paths:
         return

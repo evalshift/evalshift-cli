@@ -861,11 +861,19 @@ class CapturesConfig(_StrictModel):
             the fetch window. ``None`` (the default): no age limit.
         max_cases: The most cases ``capture sync`` keeps in each captured suite. ``None`` (the
             default): suites grow with every sync. Setting either limit turns bounded suites on.
+        rounds: How many recorded agent rounds a case ``capture sync`` promotes is replayed
+            over: ``first`` (the default) replays round 1 single-shot, so a turn that answers
+            after a tool call is scored on the call alone; ``all`` replays every recorded round
+            teacher-forced, with the recorded tool results fed back, through the answer round.
+            ``capture sync --rounds`` overrides it for one sync. It applies to cases promoted
+            from then on: ``capture sync --force`` rebuilds the existing ones whose capture is
+            local, dropping hand edits and ``provenance: reviewed`` marks.
     """
 
     store: str | None = None
     max_age: Annotated[timedelta | None, BeforeValidator(_duration_from_yaml)] = None
     max_cases: int | None = Field(default=None, ge=1)
+    rounds: Literal["first", "all"] = "first"
 
     @field_validator("max_age")
     @classmethod

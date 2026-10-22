@@ -134,6 +134,20 @@ def test_max_age_accepts_a_hundred_years() -> None:
     assert cfg.captures.max_age == timedelta(days=36500)
 
 
+def test_rounds_defaults_to_first() -> None:
+    assert EvalShiftConfig(prompts=[_PROMPT]).captures.rounds == "first"
+
+
+def test_rounds_accepts_all() -> None:
+    cfg = EvalShiftConfig(prompts=[_PROMPT], captures={"rounds": "all"})
+    assert cfg.captures.rounds == "all"
+
+
+def test_rounds_rejects_anything_else() -> None:
+    with pytest.raises(ValidationError, match="rounds"):
+        EvalShiftConfig(prompts=[_PROMPT], captures={"rounds": "some"})
+
+
 @pytest.mark.parametrize("value", [0, -5])
 def test_max_cases_must_be_positive(value: int) -> None:
     with pytest.raises(ValidationError, match="max_cases"):

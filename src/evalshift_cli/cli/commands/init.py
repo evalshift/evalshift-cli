@@ -179,11 +179,14 @@ CAPTURES_SCAFFOLD: Final = """\
 # from the last max_age, recorded on defaults.source_model: `capture sync`
 # swaps stale cases for fresh captures as they arrive. Does the SDK ship
 # captures to a bucket (EVALSHIFT_CAPTURE_STORE on the agent)? Uncomment
-# store: and name the same bucket.
+# store: and name the same bucket. Does the agent answer after calling a
+# tool? rounds: all replays each recorded round, so that answer is scored too
+# (about twice the calls); the default replays the first model call only.
 captures:
   max_age: 14d
   max_cases: 200
   # store: s3://<bucket>/<prefix>
+  # rounds: all
 """
 
 

@@ -1082,6 +1082,7 @@ captures:
   store: s3://acme-evals/support-agent
   max_age: 14d       # optional: see Bounded suites below
   max_cases: 200     # optional, per suite
+  rounds: all        # optional: replay every recorded round, not just the first call
 ```
 
 | Field       | Type                              | Default | Description |
@@ -1089,6 +1090,18 @@ captures:
 | `store`     | string (URI)                      | (none)  | Object store the SDK writes to. `capture sync` and `capture list` fetch new captures and toolset sidecars from it into the local directory first; `capture fetch` does only that step. |
 | `max_age`   | duration (`30m`, `24h`, `14d`; > 0, ≤ `36500d`) | (none)  | Captures recorded longer ago than this never enter a suite through `capture sync` (`capture promote` ignores the limits), and promoted cases that old are stale: with `max_cases` also set, `capture sync` replaces them as fresh captures arrive. Also the window `capture sync` and `capture list` fetch from `store`. Omit for no age limit. |
 | `max_cases` | int (≥ 1)                         | (none)  | The most cases `capture sync` keeps in each captured suite. Also caps what `capture sync` and `capture list` download from `store`: at most `3 × max_cases` captures per suite per run, a conversation at a time. Omit and suites grow with every sync. |
+| `rounds`    | `first` \| `all`                  | `first` | How many recorded agent rounds a case `capture sync` promotes is replayed over. `first` replays the first model call single-shot: a turn that answers after a tool call is scored on that call alone, so `semantic` and `llm_judge` see no answer text. `all` replays every recorded round [teacher-forced](agents.md#agent-rounds-and-what-a-replay-can-reproduce), feeding back the recorded tool results, through the answer round; it costs about one call per round. `capture sync --rounds` overrides it for one run; `capture promote` takes only the flag. |
+
+`rounds` applies to the cases `capture sync` promotes from then on: sync never rewrites a promoted
+case unasked. When `rounds` is `all` and promoted cases still replay one round although their
+captures carry the tool results `all` needs, sync says how many and names the command that would
+upgrade them (`evalshift capture sync --force`, plus `--rounds all` or `--suite <S>` when this run
+used them). Take it knowingly: `--force` rebuilds every promoted case whose capture is still local
+(not after `capture clean` or on a fresh checkout, where promoted captures are not fetched) from
+its capture, which drops hand edits and `provenance: reviewed` marks. Reviewed cases, stale ones
+and ones promoted under another name (`capture promote --as`) are left out of the count. An
+evalshift older than the release that added `rounds` rejects the key, so update a CI pin
+(`evalshift-version:`) before adding it.
 
 Setting either `max_age` or `max_cases` turns [bounded suites](#bounded-suites) on. Both work
 without `store`: they govern how captures become suites, whether the captures came from disk or
@@ -1436,9 +1449,10 @@ a capture no valid case can be built from, and
 blocks. Useful flags: `--input-var`
 (default `input`), `--suite <name>` to filter to one suite, `--tag`,
 `--names-only`, `--tool-count`, `--strict-args`, `--rounds first|all`
-(`first`, the default, scores single-shot replay against round 1; `all`
-carries the recorded tool results so `run` replays every round teacher-forced
-— see [Agent rounds](agents.md#agent-rounds-and-what-a-replay-can-reproduce)),
+(`first` scores single-shot replay against round 1; `all` carries the recorded
+tool results so `run` replays every round teacher-forced — see
+[Agent rounds](agents.md#agent-rounds-and-what-a-replay-can-reproduce); the
+default is [`captures.rounds`](#captures), else `first`),
 `--force`/`-f` to overwrite
 existing suite files, and `--print` to preview the wiring without writing
 (`--write` is the default). After syncing, run the whole pipeline against a

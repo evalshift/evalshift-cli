@@ -478,9 +478,10 @@ def test_offline_sync_says_it_ignores_limits_it_cannot_read(tmp_path: Path) -> N
     config.write_text("captures:\n  max_age: 2w\n", encoding="utf-8")
     result = _invoke(["sync", "--offline", "--config", str(config)], tmp_path)
     assert result.exit_code == 0, result.stdout
-    assert "syncing without captures.max_age / captures.max_cases" in " ".join(
-        result.stdout.split()
-    )
+    assert (
+        "syncing without captures.max_age / captures.max_cases / captures.rounds "
+        "(replaying the first round only)"
+    ) in " ".join(result.stdout.split())
 
 
 def test_online_sync_says_it_ignores_limits_it_cannot_read(
@@ -498,7 +499,8 @@ def test_online_sync_says_it_ignores_limits_it_cannot_read(
     flat = " ".join(result.stdout.split())
     assert (
         f"could not read {config} (1 schema problem found); "
-        "syncing without captures.max_age / captures.max_cases."
+        "syncing without captures.max_age / captures.max_cases / captures.rounds "
+        "(replaying the first round only)."
     ) in flat
     assert "skipping captures.store" in flat
     assert remote.gets == []

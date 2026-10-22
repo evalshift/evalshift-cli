@@ -161,7 +161,7 @@ evalshift init [-f/--force] [-d/--directory DIR] [--ci] [--wire-agents/--no-wire
   Without --ci, warns after writing when an existing .github/workflows/*.yml pins an older or
   newer evalshift-version than this CLI, or none (advisory, exit 0; see CI pin drift). --ci writes
   the pin itself and does not warn about the file it just wrote.
-  Also scaffolds `captures: {max_age: 14d, max_cases: 200}` (store: commented out) between
+  Also scaffolds `captures: {max_age: 14d, max_cases: 200}` (store: and rounds: all commented out) between
   migration_policy and the managed region, so new projects get bounded suites (see capture
   sync). Existing configs are never rewritten; doctor's `captures limits` row nudges them.
   PROFILE budgets (regression/critical/equivalence/arg-drift/tool-divergence/
@@ -399,9 +399,16 @@ evalshift capture promote CAPTURE_ID [--as CASE_ID] [--suite S] [--input-var NAM
   (no cross-capture reconstruction; warns if unpromoted sibling turns exist -> use sync).
   EXITS 1 if the capture's trace carries an error event; --allow-errored promotes anyway.
 evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--strict-args]
-    [--names-only] [--tool-count] [--rounds first(default)|all] [--allow-errored] [-c CONFIG] [-f]
+    [--names-only] [--tool-count] [--rounds first|all (default captures.rounds, else first)]
+    [--allow-errored] [-c CONFIG] [-f]
     [--write/--print (default write)] [--keep-duplicates] [--since 30m|24h|7d|ISO] [--offline]
     [--repair]
+  captures.rounds: first|all in evalshift.yaml sets the sync default (promote takes only the
+  flag). It applies to cases promoted from then on; with rounds all, sync warns "N promoted
+  case(s) replay only their first round ..." naming `capture sync --force` (+ --rounds all /
+  --suite S as this run used them). --force rebuilds every case whose capture is local from
+  it, dropping hand edits and provenance: reviewed; reviewed, stale and promote --as cases are
+  not counted. Older CLIs reject the key.
   With captures.store set, sync runs fetch first (same summary line) unless --offline; a fetch
   failure or missing extra exits 1 before anything is promoted. --since without a store (or
   with --offline) exits 1. An unreadable or invalid evalshift.yaml skips the fetch (warning
@@ -457,7 +464,8 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   unchanged.
     Config: sync loads evalshift.yaml under --offline too. Unreadable/invalid -> no limits; when
     the file has a top-level captures: key it prints (online AND offline) "could not read <path>
-    (<reason>); syncing without captures.max_age / captures.max_cases."
+    (<reason>); syncing without captures.max_age / captures.max_cases / captures.rounds
+    (replaying the first round only)."
     Staleness (one `now` per sync): too old / age-stale = recorded before now - max_age (case:
     captured_at, else promoted_at -- an upper bound, so a legacy case is retired later, never
     earlier; neither parseable -> never too old). Other model / model-stale = recorded model
@@ -977,14 +985,17 @@ captures:
   #   sync (capture promote ignores the limits); promoted cases that old are stale. Also sync's
   #   fetch window.
   max_cases: int>=1|null = null   # most cases capture sync keeps in EACH captured suite
-  # Setting either turns bounded suites on (see capture sync): max_age filters what enters a
+  rounds: first|all = first   # rounds capture sync promotes with (--rounds overrides; promote
+  #   takes the flag only). all = teacher-forced through the answer round, so semantic and
+  #   llm_judge score an agent's answer after a tool call. Applies to newly promoted cases.
+  # Setting max_age or max_cases turns bounded suites on (see capture sync): max_age filters what enters a
   # suite and marks old cases stale; max_cases caps and route-balances each suite; with either
   # set, captures/cases on another model than defaults.source_model are filtered/stale too.
   # max_age alone caps nothing. Both valid without store. No
   # per-suite override. Not in defaults on purpose: the hosted eval_config_hash hashes defaults
   # and does not hash captures. compute_config_hash (resume) covers the whole config, so a
   # --resume across the upgrade that added these fields reports a mismatch. Older CLIs reject
-  # both keys AND case files carrying captured_at/source_model: bump the CLI everywhere capture
+  # these keys AND case files carrying captured_at/source_model: bump the CLI everywhere capture
   # commands run, and the CI action's evalshift-version; CI compare reads golden.jsonl only.
 
 Model ids: built-in registry provides aliases/metadata but NEVER gates — LiteLLM is the
