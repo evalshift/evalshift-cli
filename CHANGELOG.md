@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-22
+
 ### Added
 
 - **`captures.rounds` in `evalshift.yaml`.** `first` (the default) or `all` sets

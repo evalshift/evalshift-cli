@@ -1100,8 +1100,8 @@ used them). Take it knowingly: `--force` rebuilds every promoted case whose capt
 (not after `capture clean` or on a fresh checkout, where promoted captures are not fetched) from
 its capture, which drops hand edits and `provenance: reviewed` marks. Reviewed cases, stale ones
 and ones promoted under another name (`capture promote --as`) are left out of the count. An
-evalshift older than the release that added `rounds` rejects the key, so update a CI pin
-(`evalshift-version:`) before adding it.
+evalshift older than 1.6.0 rejects the key, so update a CI pin (`evalshift-version:`) before
+adding it.
 
 Setting either `max_age` or `max_cases` turns [bounded suites](#bounded-suites) on. Both work
 without `store`: they govern how captures become suites, whether the captures came from disk or
@@ -1112,7 +1112,7 @@ because it would silently mean seconds. So is a `max_age` above 100 years, which
 "no limit": `captures.max_age: Value error, must be at most 36500d (100 years); omit
 captures.max_age for no age limit`.
 
-CLI versions before 1.3.0 reject the `captures:` key, and versions before this release reject
+CLI versions before 1.3.0 reject the `captures:` key, and versions before 1.6.0 reject
 `max_age` and `max_cases` (the config is strict). Bump the CLI, and a pinned GitHub Action's
 `evalshift-version`, before adding them.
 
