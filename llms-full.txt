@@ -1875,6 +1875,9 @@ migration_decision.json as reason/recommendations).
 Failed calls -> recorded in raw.jsonl with error, pair gets an errored 0.5/0.5 row excluded from
 the statistics; fresh run
 retries them (cache serves the successes; for a multi-round tool example, the rounds before the failed one).
+Every tool-calling call fails, "No module named 'mcp'" -> LiteLLM >= 1.106.0, which imports its MCP
+proxy module (needs the proxy-only `mcp` package) on every completion with tools. This release
+pins litellm<1.106: upgrade the CLI, or on an older pinned CLI install litellm<1.106 beside it.
 Config rejected -> extra="forbid": check for typo'd keys; error names the exact path.
 "`thresholds` was removed" -> the key is gone from evalshift.yaml; delete it. It gated nothing;
 migration_policy is the single source of truth. Nothing replaced it.
