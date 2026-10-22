@@ -11,6 +11,7 @@ Pure — no network, no model. That is what makes the generator testable.
 
 from __future__ import annotations
 
+import json
 import re
 import statistics
 from collections.abc import Iterable, Sequence
@@ -26,13 +27,14 @@ from evalshift_cli.analysis.policy import (
 from evalshift_cli.analysis.slicing import ALL_SLICE
 from evalshift_cli.analysis.statistics import ComparisonResult
 from evalshift_cli.evaluators.base import EvalRecord
+from evalshift_cli.evaluators.tool_models import ToolCall
 from evalshift_cli.insights.models import (
     MAX_REGRESSION_SAMPLES,
     MAX_SAMPLE_TEXT_CHARS,
     NUMERIC_TOKEN_RE,
 )
 from evalshift_cli.reports.economics import PromptEconomics
-from evalshift_cli.runner.models import RunState
+from evalshift_cli.runner.models import Call, RunState
 
 #: Below this, a p-value is printed as an inequality. ``0.0000`` is wrong in a
 #: way a reader cannot detect.
@@ -78,6 +80,22 @@ _COVERAGE_BASIS_UNMEASURED: str = (
     "on the strength of a gate that measured nothing. Name the blind gates and "
     "call their silence unknown."
 )
+
+#: How a regression sample shows a reply that is not plain text. A replay of
+#: an agent's first round ends at the tool call, so its ``text`` is empty, and
+#: shown as a blank the narrative model reported "empty outputs" for replies
+#: that each called a tool. The generator's instruction names these markers.
+TOOL_CALLS_MARKER = "[tool calls]"
+TEXT_MARKER = "[text]"
+EMPTY_REPLY = "[empty reply: no text and no tool calls]"
+FAILED_REPLY = "[the call failed]"
+#: Arguments the provider sent that did not parse as JSON.
+MALFORMED_ARGUMENTS = "<malformed arguments>"
+#: Per-call bound on a sample's argument JSON; see :func:`_shown_arguments`.
+MAX_SHOWN_ARGUMENT_CHARS = 200
+#: Calls a sample lists before "+N more call(s)". With the per-call bound this
+#: keeps the calls well inside the sample cap, so the reply's text survives.
+MAX_SHOWN_CALLS = 6
 
 #: The two policy budgets that are ratios of increase rather than rates.
 _INCREASE_BUDGETS: frozenset[str] = frozenset({"max_cost_increase", "max_latency_increase"})
@@ -268,8 +286,11 @@ def build_facts(
         ),
         "n_examples": str(len(examples)),
         "n_calls": str(source.calls + target.calls),
-        "cost_source_usd": _usd(source.total_cost_usd),
-        "cost_target_usd": _usd(target.total_cost_usd),
+        # Each model's whole-run cost. "total" is in the key because the key
+        # is all the model sees: unlabelled, these were narrated as "cost per
+        # call increased from $0.1045 to $0.1056" on a run of 21 calls each.
+        "cost_source_total_usd": _usd(source.total_cost_usd),
+        "cost_target_total_usd": _usd(target.total_cost_usd),
         "cost_delta_pct": _relative_pct(source.total_cost_usd, target.total_cost_usd),
         # Latency averages cover only calls measured fully live on this run
         # (cache hits keep their original latency and are excluded via
@@ -443,6 +464,51 @@ def _worst_comparison(comparisons: Sequence[ComparisonResult]) -> ComparisonResu
     return min(tested, key=lambda c: (c.effect_size, c.p_value_corrected))
 
 
+def describe_reply(call: Call) -> str:
+    """One model reply as a regression sample shows it.
+
+    A reply's ``text`` alone reads empty whenever it called tools instead of
+    answering, so the calls lead, in the order the model made them, followed by
+    any text it wrote. Only a reply with neither is called empty.
+
+    Args:
+        call: One side's call for the example.
+
+    Returns:
+        The text unchanged for a plain-text reply; otherwise the reply behind
+        :data:`TOOL_CALLS_MARKER`, :data:`EMPTY_REPLY` or :data:`FAILED_REPLY`.
+    """
+    if call.error is not None:
+        return FAILED_REPLY
+    calls = call.trace.calls if call.trace is not None else []
+    if not calls:
+        return call.text or EMPTY_REPLY
+    multi_round = any(c.round_index for c in calls)
+    shown = "; ".join(
+        f"{f'r{c.round_index + 1}: ' if multi_round else ''}{c.tool_name}({_shown_arguments(c)})"
+        for c in calls[:MAX_SHOWN_CALLS]
+    )
+    if len(calls) > MAX_SHOWN_CALLS:
+        shown += f"; +{len(calls) - MAX_SHOWN_CALLS} more call(s)"
+    reply = f"{TOOL_CALLS_MARKER} {shown}"
+    return f"{reply} {TEXT_MARKER} {call.text}" if call.text else reply
+
+
+def _shown_arguments(call: ToolCall) -> str:
+    """One call's arguments, bounded so the reply's text survives the sample cap.
+
+    The whole sample is cut at :data:`MAX_SAMPLE_TEXT_CHARS`, calls first, so
+    one long ``create_note`` body would otherwise push ``[text]`` off the end
+    and read as a reply that wrote nothing.
+    """
+    if call.arguments.get("_parse_error"):
+        return MALFORMED_ARGUMENTS
+    shown = json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)
+    if len(shown) <= MAX_SHOWN_ARGUMENT_CHARS:
+        return shown
+    return shown[: MAX_SHOWN_ARGUMENT_CHARS - 1] + "…"
+
+
 def _regression_samples(examples: Sequence[ExampleFact]) -> list[RegressionSample]:
     """The worst regressions, worst first, with their text bounded."""
     regressed = [e for e in examples if e.worst_delta_score is not None and e.worst_delta_score < 0]
@@ -548,12 +614,20 @@ __all__ = [
     "BUDGET_UNCONFIRMED",
     "BUDGET_UNMEASURED",
     "BUDGET_WITHIN",
+    "EMPTY_REPLY",
+    "FAILED_REPLY",
+    "MALFORMED_ARGUMENTS",
+    "MAX_SHOWN_ARGUMENT_CHARS",
+    "MAX_SHOWN_CALLS",
     "NOT_AVAILABLE",
     "NOT_COMPARABLE",
     "NOT_MEASURED",
     "P_VALUE_FLOOR",
+    "TEXT_MARKER",
+    "TOOL_CALLS_MARKER",
     "ExampleFact",
     "Facts",
     "RegressionSample",
     "build_facts",
+    "describe_reply",
 ]

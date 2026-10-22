@@ -466,6 +466,9 @@ td.ci { font-size: 13px; }
 .sev-medium .verdict-head, .sev-low .verdict-head { color: var(--warn); }
 .sev-improved .verdict-head, .sev-none .verdict-head { color: var(--ok); }
 .sev-insufficient .verdict-head { color: var(--warn); }
+/* A `none` row read as an unconfirmed change or a broken suite: not the green
+   that says "equivalent". Declared after the sev- rules so it wins. */
+.tone-warn .verdict-head { color: var(--warn); }
 
 .conf { display: inline-block; }
 .conf-certain { color: var(--ok); background: var(--ok-tint); border-color: var(--ok-edge); }

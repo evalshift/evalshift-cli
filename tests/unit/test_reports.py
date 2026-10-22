@@ -12,7 +12,11 @@ import pytest
 from typer.testing import CliRunner
 
 from evalshift_cli.analysis.policy import evaluate_migration_policy
-from evalshift_cli.analysis.statistics import UNMEASURED_NOTE_PREFIX
+from evalshift_cli.analysis.statistics import (
+    UNIFORM_DROP_NOTE_PREFIX,
+    UNMEASURED_NOTE_PREFIX,
+    ZERO_VARIANCE_NOTE,
+)
 from evalshift_cli.cli.commands.analyze import ANALYSIS_FILENAME
 from evalshift_cli.cli.commands.evaluate import SCORES_FILENAME
 from evalshift_cli.cli.main import app
@@ -579,9 +583,11 @@ class TestHtmlRender:
         # Small samples (n < 10) are flagged so tiny effect sizes aren't
         # mistaken for conclusive evidence.
         assert "small-sample" in html
-        # Raw statistics survive as hover tooltips for power users.
+        # Raw statistics survive as hover tooltips for power users. This
+        # prompt's row ran no test, so its confidence tooltip says that rather
+        # than quoting the placeholder p of 1.000 as a corrected p-value.
         assert "Cohen's |d|" in html
-        assert "Benjamini–Hochberg" in html  # noqa: RUF001 — matches report copy
+        assert "No test ran: too few pairs, or every pair scored the same" in html
 
     def test_per_example_breakdown_is_plain_language(self, tmp_path: Path) -> None:
         cwd, run_id = _scaffold_full_run(tmp_path)
@@ -1694,6 +1700,173 @@ def test_unmeasured_comparison_does_not_render_as_too_few_samples() -> None:
     assert _verdict("insufficient") == ("Not enough data", "Too few samples to judge.")
 
 
+class TestANonSignificantChangeIsNotCalledEquivalent:
+    """``none`` means the corrected p-value missed alpha, whatever the effect size.
+
+    A real run headlined a −17% tool-selection change (Cohen's d −0.51,
+    corrected p 0.15, n = 21) as "✓ Equivalent — No meaningful difference
+    between models", directly under a FAIL verdict.
+    """
+
+    def test_a_non_negligible_drop_is_unconfirmed(self) -> None:
+        from evalshift_cli.reports.html import _verdict, _verdict_glyph, _verdict_tone
+
+        head, blurb = _verdict("none", [], -0.51)
+        assert head == "Unconfirmed drop"
+        assert "medium" in blurb
+        assert "Equivalent" not in head
+        assert _verdict_glyph("none", [], -0.51) == "~"
+        assert _verdict_tone("none", [], -0.51) == "warn"
+
+    def test_a_non_negligible_gain_is_unconfirmed(self) -> None:
+        from evalshift_cli.reports.html import _verdict
+
+        head, blurb = _verdict("none", [], 0.35)
+        assert head == "Unconfirmed gain"
+        assert "small" in blurb
+
+    def test_a_negligible_effect_is_still_equivalent(self) -> None:
+        from evalshift_cli.reports.html import _verdict, _verdict_glyph, _verdict_tone
+
+        assert _verdict("none", [], -0.19)[0] == "Equivalent"
+        assert _verdict("none", [])[0] == "Equivalent"
+        assert _verdict_glyph("none", [], -0.19) == "✓"
+        assert _verdict_tone("none", [], -0.19) == "ok"
+
+    def test_a_uniform_drop_is_not_equivalent(self) -> None:
+        """Zero variance leaves d at a placeholder 0.0; ``analyze`` names the drop."""
+        from evalshift_cli.reports.html import _verdict, _verdict_glyph, _verdict_tone
+
+        notes = ["zero variance — no test", f"{UNIFORM_DROP_NOTE_PREFIX} every pair moved"]
+        head, blurb = _verdict("none", notes, 0.0)
+        assert head == "Uniform drop"
+        assert "no pair disagrees" in blurb
+        assert _verdict_glyph("none", notes, 0.0) == "⚠"
+        assert _verdict_tone("none", notes, 0.0) == "warn"
+        assert _verdict("none", ["zero variance — no test"], 0.0)[0] == "Equivalent"
+
+    def test_the_unconfirmed_drop_renders_in_both_tables(self, tmp_path: Path) -> None:
+        run_dir = self._rewrite_analysis(tmp_path, divergence={"effect_size": -0.51})
+        html = render_html(
+            build_report_payload(run_dir, tool_evaluator_names=frozenset({"routing"}))
+        )
+
+        summary = _section(html, "<h2>Executive summary</h2>")
+        assert "Unconfirmed drop" in summary
+        assert "No meaningful difference between models" not in summary
+        assert '<code class="warn">~</code>' in summary
+        assert "tone-warn" in summary
+        evaluators = _section(html, "Overall, by evaluator")
+        assert "~ Unconfirmed drop" in evaluators
+        assert "tone-warn" in evaluators
+
+    def test_a_shared_miss_chosen_for_the_summary_is_not_a_tick(self, tmp_path: Path) -> None:
+        """The summary rows never got the shared-miss note the evaluator table had.
+
+        With the divergence row a small, non-significant gain, the conformance
+        row (both models missed every recorded call) is the prompt's summary
+        row, and it read "✓ Equivalent" one table above "! Ground truth missed
+        by both".
+        """
+        run_dir = self._rewrite_analysis(
+            tmp_path, divergence={"effect_size": 0.1, "p_value_corrected": 0.4}
+        )
+        html = render_html(
+            build_report_payload(run_dir, tool_evaluator_names=frozenset({"routing"}))
+        )
+
+        summary = _section(html, "<h2>Executive summary</h2>")
+        assert "Ground truth missed by both" in summary
+        assert '<code class="warn">!</code>' in summary
+        assert "No meaningful difference between models" not in summary
+
+    def test_an_untested_row_has_no_confidence_word(self) -> None:
+        """A skipped test's p-value is a placeholder 1.0, not evidence of anything.
+
+        A real converter run showed "Unclear" on four rows where both models made
+        the same tool calls on all 17 pairs: every delta 0, so no test could run.
+        """
+        from evalshift_cli.reports.html import _confidence_label
+
+        assert _confidence_label("none", 1.0, "skipped") == "—"
+        assert _confidence_label("none", 0.15, "wilcoxon") == "Unclear"
+        assert _confidence_label("high", 0.001, "paired_t") == "Certain"
+
+    def test_identical_pairs_say_so(self) -> None:
+        from evalshift_cli.reports.html import _verdict
+
+        assert _verdict("none", [ZERO_VARIANCE_NOTE], 0.0) == (
+            "Equivalent",
+            "Both models scored the same on every pair.",
+        )
+
+    def test_the_evaluator_table_renders_identical_pairs(self, tmp_path: Path) -> None:
+        run_dir, _ = _scaffold_two_axis_run(tmp_path)
+        analysis_path = run_dir / ANALYSIS_FILENAME
+        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+        for comparison in analysis["comparisons"]:
+            comparison.update(
+                severity="none",
+                test="skipped",
+                effect_size=0.0,
+                delta_avg_score=0.0,
+                p_value_corrected=1.0,
+                notes=[*comparison["notes"], ZERO_VARIANCE_NOTE],
+            )
+        analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+        html = render_html(
+            build_report_payload(run_dir, tool_evaluator_names=frozenset({"routing"}))
+        )
+
+        evaluators = _section(html, "Overall, by evaluator")
+        assert "Both models scored the same on every pair." in evaluators
+        assert "Unclear" not in evaluators
+
+    def test_a_uniform_drop_outranks_a_small_tested_dip_for_the_summary(self) -> None:
+        """Ranked on d, a uniform drop's placeholder 0.0 lost to a d of −0.1.
+
+        The summary then read "✓ Equivalent" over a prompt whose evaluator
+        table, one section down, read "⚠ Uniform drop" on every pair.
+        """
+        from evalshift_cli.reports.json import _build_executive_summary
+
+        dip = {
+            "prompt_id": "replay",
+            "evaluator_name": "semantic.cosine",
+            "slice_name": "all",
+            "severity": "none",
+            "effect_size": -0.1,
+            "p_value_corrected": 0.6,
+            "notes": [],
+        }
+        uniform = {
+            **dip,
+            "evaluator_name": "routing",
+            "effect_size": 0.0,
+            "p_value_corrected": 1.0,
+            "delta_avg_score": -1.0,
+            "notes": ["zero variance — no test", f"{UNIFORM_DROP_NOTE_PREFIX} every pair"],
+        }
+        rows = _build_executive_summary({"comparisons": [dip, uniform]}, set())
+        assert [row["evaluator_name"] for row in rows] == ["routing"]
+
+    def _rewrite_analysis(self, tmp_path: Path, *, divergence: dict[str, object]) -> Path:
+        """The two-axis run with both rows non-significant and the divergence row edited."""
+        run_dir, _ = _scaffold_two_axis_run(tmp_path)
+        analysis_path = run_dir / ANALYSIS_FILENAME
+        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+        for comparison in analysis["comparisons"]:
+            comparison.update(severity="none", test="wilcoxon", p_value_corrected=0.15)
+        analysis["comparisons"][1].update({"delta_avg_score": -0.167, **divergence})
+        analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+        return run_dir
+
+
+def _section(html: str, heading: str) -> str:
+    """The first table after ``heading``."""
+    return html.split(heading, 1)[1].split("</table>", 1)[0]
+
+
 # ---------------------------------------------------------------------------
 # S4 — the two tool-selection axes in the report
 # ---------------------------------------------------------------------------
@@ -2101,6 +2274,12 @@ class TestReportShell:
         assert "Equivalent 0.0%" in html
         assert "Regressed 100.0%" in html
         assert "Top regression causes" in html
+
+    def test_the_economics_panel_names_its_costs_totals(self, tmp_path: Path) -> None:
+        """Beside "+1.0% cost", a bare "$0.1045 → $0.1056" was read as a per-call price."""
+        html = self._html(tmp_path, decision=True)
+        panel = html.split('<span class="eyebrow">Economics</span>', 1)[1].split("</p>", 1)[0]
+        assert re.search(r"Total \$\d+\.\d{4} → \$\d+\.\d{4}\.", panel)
 
     def test_budget_tally_ignores_gates_that_measured_nothing(self) -> None:
         """A ``0/0`` budget renders as a clean row and measures nothing.

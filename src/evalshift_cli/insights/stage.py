@@ -36,7 +36,7 @@ from evalshift_cli.cli.commands.analyze import ANALYSIS_FILENAME, MIGRATION_DECI
 from evalshift_cli.cli.commands.evaluate import SCORES_FILENAME
 from evalshift_cli.config.models import EvalShiftConfig
 from evalshift_cli.evaluators.base import EvalRecord
-from evalshift_cli.insights.facts import ExampleFact, Facts, build_facts
+from evalshift_cli.insights.facts import ExampleFact, Facts, build_facts, describe_reply
 from evalshift_cli.insights.generator import generate_insight
 from evalshift_cli.insights.models import (
     Insight,
@@ -359,9 +359,9 @@ def _example_facts(
         for example in suite.examples
     }
     texts: dict[tuple[str, str], dict[str, str]] = {}
-    # Sample 0's text on a repeated-sampling run; the fact is one per example.
+    # Sample 0's reply on a repeated-sampling run; the fact is one per example.
     for call in representative_calls(calls):
-        texts.setdefault((call.prompt_id, call.example_id), {})[call.role] = call.text
+        texts.setdefault((call.prompt_id, call.example_id), {})[call.role] = describe_reply(call)
     worst: dict[tuple[str, str], float] = {}
     for score in scores:
         if score.error is not None:

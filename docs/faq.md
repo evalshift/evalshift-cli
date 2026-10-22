@@ -169,12 +169,22 @@ clean error from the provider when you make the call.
 Two common causes:
 
 1. **Every delta is identical.** When the variance in deltas is near
-   zero, the test is skipped and severity defaults to `none`.
+   zero, the test is skipped and severity defaults to `none`. If every
+   pair moved by the same non-zero amount, `analyze` adds a
+   `uniform drop:` or `uniform gain:` note, and the report shows the row
+   as **⚠ Uniform drop/gain** rather than Equivalent: there is nothing to
+   test, but no pair disagrees.
 2. **Your sample size is too small.** With `n < 5` the test is
    skipped and severity is `insufficient` (not `none`).
 
 If you expected a real signal, double-check your evaluator output
 range — many "all the same" cases are evaluators returning a constant.
+
+A tested `none` with a non-zero d is different: the corrected p-value
+missed 0.05. The report reads it as **✓ Equivalent** only when |d| < 0.2.
+At |d| ≥ 0.2 it shows **~ Unconfirmed drop/gain** with the magnitude,
+since the sample can't tell that change from noise. More examples settle
+it.
 
 ## Why is the migration-policy verdict `inconclusive`?
 

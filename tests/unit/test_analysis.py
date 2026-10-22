@@ -20,6 +20,8 @@ from evalshift_cli.analysis.slicing import (
 from evalshift_cli.analysis.statistics import (
     ADVISORY_NOTE_PREFIX,
     AXIS_NOTE_PREFIX,
+    UNIFORM_DROP_NOTE_PREFIX,
+    UNIFORM_GAIN_NOTE_PREFIX,
     UNMEASURED_NOTE_PREFIX,
     WITHIN_TOLERANCE_REASON,
     ComparisonResult,
@@ -27,6 +29,8 @@ from evalshift_cli.analysis.statistics import (
     _classify_severity,
     _cohens_d_paired,
     analyze,
+    unconfirmed_change,
+    uniform_change,
 )
 from evalshift_cli.evaluators.base import EvalRecord
 from evalshift_cli.evaluators.failures import SEMANTIC_REGRESSION
@@ -439,6 +443,45 @@ class TestAnalyze:
         c = results[0]
         assert c.test == "skipped"
         assert "zero variance" in " ".join(c.notes)
+
+    def test_a_uniform_drop_is_named_since_its_d_is_a_placeholder(self) -> None:
+        """21 pairs that each lose 1.0 test nothing, but every one of them dropped.
+
+        ``effect_size`` is 0.0 and severity ``none`` here, which a report read
+        as "✓ Equivalent" beside "−100%".
+        """
+        dropped = [SlicedScore("p", "e", f"ex{i}", 1.0, 0.0, -1.0) for i in range(21)]
+        c = analyze(sliced_by_slice={"all": dropped})[0]
+        assert (c.severity, c.effect_size, c.delta_avg_score) == ("none", 0.0, -1.0)
+        assert any(note.startswith(UNIFORM_DROP_NOTE_PREFIX) for note in c.notes)
+        assert uniform_change(c.notes) == "drop"
+
+    def test_a_uniform_gain_is_named_too(self) -> None:
+        gained = [SlicedScore("p", "e", f"ex{i}", 0.0, 0.5, 0.5) for i in range(10)]
+        c = analyze(sliced_by_slice={"all": gained})[0]
+        assert any(note.startswith(UNIFORM_GAIN_NOTE_PREFIX) for note in c.notes)
+        assert uniform_change(c.notes) == "gain"
+
+    def test_pairs_all_forgiven_are_not_a_uniform_change(self) -> None:
+        """Every drop inside the evaluator's threshold tests as zero: no change."""
+        forgiven = [
+            SlicedScore("p", "e", f"ex{i}", 1.0, 0.95, -0.05, within_tolerance=True)
+            for i in range(10)
+        ]
+        c = analyze(sliced_by_slice={"all": forgiven})[0]
+        assert c.delta_avg_score < 0
+        assert uniform_change(c.notes) is None
+
+    def test_a_shift_below_display_precision_is_not_a_uniform_change(self) -> None:
+        """A note reading "moved by -0.000" beside a warning glyph says nothing."""
+        nudged = [SlicedScore("p", "e", f"ex{i}", 1.0, 0.9999, -0.0001) for i in range(10)]
+        assert uniform_change(analyze(sliced_by_slice={"all": nudged})[0].notes) is None
+
+    def test_a_non_negligible_none_is_unconfirmed(self) -> None:
+        assert unconfirmed_change("none", -0.51)
+        assert unconfirmed_change("none", 0.2)
+        assert not unconfirmed_change("none", -0.19)
+        assert not unconfirmed_change("high", -1.4)
 
     def test_results_sorted_by_severity(self) -> None:
         results = analyze(

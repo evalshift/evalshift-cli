@@ -16,7 +16,14 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from evalshift_cli.analysis.policy import BUDGET_LABELS, BUDGET_MEANINGS
-from evalshift_cli.analysis.statistics import AXIS_NOTE_PREFIX, UNMEASURED_NOTE_PREFIX
+from evalshift_cli.analysis.statistics import (
+    AXIS_NOTE_PREFIX,
+    NEGLIGIBLE_EFFECT,
+    UNMEASURED_NOTE_PREFIX,
+    ZERO_VARIANCE_NOTE,
+    unconfirmed_change,
+    uniform_change,
+)
 from evalshift_cli.evaluators.failures import category_label
 from evalshift_cli.evaluators.tool_selection import KIND_CONFORMANCE, KIND_DIVERGENCE
 from evalshift_cli.evaluators.trace_invariants import KIND as KIND_INVARIANTS
@@ -82,41 +89,127 @@ _SHARED_MISS_VERDICT: tuple[str, str] = (
 # Small paired samples make effect sizes and p-values unstable; flag them.
 _SMALL_SAMPLE_THRESHOLD: int = 10
 
+_UNCONFIRMED_GLYPH: str = "~"
+_UNIFORM_GLYPH: str = "⚠"
 
-def _verdict(severity: str, notes: Sequence[str] | None = None) -> tuple[str, str]:
-    """Return the (headline, explanation) pair for a severity bucket.
 
-    Two notes override the bucket, because in both cases the number is right
-    and the plain-language reading of it is not: an evaluator that compared
-    nothing is unknown rather than equal, and an axis both models failed
-    identically is a broken suite rather than a safe migration.
+def _shared_miss(notes: Sequence[str] | None) -> bool:
+    return any(note.startswith(SHARED_GROUND_TRUTH_NOTE_PREFIX) for note in notes or ())
+
+
+def _reading(
+    severity: str,
+    notes: Sequence[str] | None,
+    effect_size: float | None,
+) -> str:
+    """Which plain-language override of the severity bucket applies, or ``""``.
+
+    In each the number is right and the bucket's reading of it is not:
+
+    - ``"shared"``: both models failed the same ground truth, so the row
+      measures the suite, not the migration.
+    - ``"unmeasured"``: nothing was compared, so the result is unknown, not equal.
+    - ``"uniform drop"`` / ``"uniform gain"``: every pair moved by the same
+      amount, so ``analyze`` could not test it and its d is a placeholder 0.
+    - ``"unconfirmed"``: a non-negligible effect that missed significance. A
+      real run headlined a −17% change (d −0.51, corrected p 0.15) as
+      "Equivalent — No meaningful difference between models" under a FAIL.
     """
-    if any(note.startswith(SHARED_GROUND_TRUTH_NOTE_PREFIX) for note in notes or ()):
-        return _SHARED_MISS_VERDICT
+    if _shared_miss(notes):
+        return "shared"
     if severity == "insufficient" and any(
         note.startswith(UNMEASURED_NOTE_PREFIX) for note in notes or ()
     ):
+        return "unmeasured"
+    if severity != "none":
+        return ""
+    direction = uniform_change(notes or ())
+    if direction is not None:
+        return f"uniform {direction}"
+    if effect_size is not None and unconfirmed_change(severity, effect_size):
+        return "unconfirmed"
+    return ""
+
+
+def _verdict(
+    severity: str,
+    notes: Sequence[str] | None = None,
+    effect_size: float | None = None,
+) -> tuple[str, str]:
+    """Return the (headline, explanation) pair for a severity bucket.
+
+    See :func:`_reading` for the cases that override the bucket.
+    """
+    reading = _reading(severity, notes, effect_size)
+    if reading == "shared":
+        return _SHARED_MISS_VERDICT
+    if reading == "unmeasured":
         return _UNMEASURED_VERDICT
+    if reading in ("uniform drop", "uniform gain"):
+        lower = reading == "uniform drop"
+        return (
+            "Uniform drop" if lower else "Uniform gain",
+            f"Every pair scored the same amount {'lower' if lower else 'higher'}: "
+            "no spread to test, but no pair disagrees.",
+        )
+    if reading == "unconfirmed" and effect_size is not None:
+        direction = "drop" if effect_size < 0 else "gain"
+        return (
+            f"Unconfirmed {direction}",
+            f"A {_effect_magnitude(effect_size)} {direction} that this sample can't tell "
+            "from noise; more examples would settle it.",
+        )
+    if severity == "none" and ZERO_VARIANCE_NOTE in (notes or ()):
+        # Not uniform (that returned above), so every tested delta is 0.
+        return ("Equivalent", "Both models scored the same on every pair.")
     return _SEVERITY_VERDICTS.get(severity, ("Unknown", ""))
 
 
-def _verdict_glyph(severity: str, notes: Sequence[str] | None = None) -> str:
-    """The glyph beside a verdict headline.
+def _verdict_glyph(
+    severity: str,
+    notes: Sequence[str] | None = None,
+    effect_size: float | None = None,
+) -> str:
+    """The glyph beside a verdict headline, matching :func:`_verdict`'s reading.
 
-    A shared ground-truth miss scores ``none``, whose glyph is ✓. Leaving it
-    there would put a tick on the row that says the suite is broken.
+    Every override in :func:`_reading` but ``unmeasured`` scores ``none``,
+    whose glyph is ✓. Left there, a tick would sit on the row that says the
+    suite is broken, on a change nobody has ruled out, or beside "−100%".
     """
-    if any(note.startswith(SHARED_GROUND_TRUTH_NOTE_PREFIX) for note in notes or ()):
+    reading = _reading(severity, notes, effect_size)
+    if reading == "shared":
         return "!"
+    if reading in ("uniform drop", "uniform gain"):
+        return _UNIFORM_GLYPH
+    if reading == "unconfirmed":
+        return _UNCONFIRMED_GLYPH
     return _SEVERITY_GLYPHS.get(severity, "?")
 
 
-def _confidence_label(severity: str, p_corrected: float) -> str:
+def _verdict_tone(
+    severity: str,
+    notes: Sequence[str] | None = None,
+    effect_size: float | None = None,
+) -> str:
+    """``ok``, ``warn`` or ``bad``: the colour of :func:`_verdict`'s reading."""
+    if _reading(severity, notes, effect_size):
+        return "warn"
+    if severity in ("none", "improved"):
+        return "ok"
+    if severity in ("critical", "high"):
+        return "bad"
+    return "warn"
+
+
+def _confidence_label(severity: str, p_corrected: float, test: str | None = None) -> str:
     """Map a corrected p-value to a plain-language confidence word.
 
-    Returns an em dash when the comparison had too little data to judge.
+    Returns an em dash when no test ran: too little data, or every tested
+    delta the same value. A skipped test's p-value is a placeholder 1.0, and
+    reading it as "Unclear" put that word on four rows where both models made
+    the same tool calls on every one of 17 pairs.
     """
-    if severity == "insufficient":
+    if severity == "insufficient" or test == "skipped":
         return "—"
     if p_corrected < 0.01:
         return "Certain"
@@ -322,7 +415,7 @@ def _latency(ms: float, live_calls: int) -> str:
 def _effect_magnitude(effect_size: float) -> str:
     """Describe a Cohen's d magnitude in words (Cohen's conventions)."""
     d = abs(effect_size)
-    if d < 0.2:
+    if d < NEGLIGIBLE_EFFECT:
         return "negligible"
     if d < 0.5:
         return "small"
@@ -483,9 +576,9 @@ def render_html(report: ReportData, *, insight: Insight | None = None) -> str:
         autoescape=select_autoescape(enabled_extensions=("html", "j2")),
         keep_trailing_newline=True,
     )
-    env.globals["severity_glyph"] = lambda sev: _SEVERITY_GLYPHS.get(sev, "?")
     env.globals["verdict"] = _verdict
     env.globals["verdict_glyph"] = _verdict_glyph
+    env.globals["verdict_tone"] = _verdict_tone
     env.globals["confidence_label"] = _confidence_label
     env.globals["effect_magnitude"] = _effect_magnitude
     env.globals["small_sample_threshold"] = _SMALL_SAMPLE_THRESHOLD

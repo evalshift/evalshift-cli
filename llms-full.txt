@@ -1432,10 +1432,13 @@ Model: defaults.insights_model, falling back to defaults.judge_model.
   Heuristic safety net by design: it catches the shipped phrasing and close variants, the
   prompt rule is the primary fix; a false match costs the retry (shared with invented-number
   rejections) and a repeated one ships the templated prose, which has no findings. Cached
-  narratives regenerate only when a figure moves (key = config_hash + model + FACTS digest,
-  not the CLI version): delete insights.json to rewrite an existing run's prose.
+  narratives regenerate only when the FACTS move (key = config_hash + model + FACTS digest,
+  not the CLI version): delete insights.json to rewrite an existing run's prose. Until the
+  next report, push uploads the narrative already written.
 - Prompt input: the pre-rendered FACTS block plus the worst 8 regressions by worst_delta_score
   (input + both outputs, each truncated to 2000 chars). Same data exposure as llm_judge.
+  A reply that called tools is sent as `[tool calls] name({args}); ...` (then `[text] ...`),
+  never as its blank text; cost figures are named as each model's run total.
 - Cost: 1 model call per run (2 on a rejected generation). Cached in insights.json keyed on
   state.config_hash + model id + a digest of the FACTS block, so re-running report/push is
   free; any moving = cache miss. state.config_hash is fixed at run creation, so the FACTS
@@ -1857,6 +1860,13 @@ Run seems expensive -> estimate is worst-case at max_tokens; actual usually far 
 makes repeats of unchanged examples free, tool-calling ones included; iterate with a small suite.
 All severities "none" -> usually genuinely no significant difference; check n (<5 insufficient,
 <20 uncertain) and remember BH correction raises the bar; zero-variance comparisons skip.
+  The report calls a "none" row "Equivalent" only at |d| < 0.2; a larger effect that missed
+  significance reads "~ Unconfirmed drop/gain" (unconfirmed, not absent; grow the suite),
+  and a zero-variance row whose pairs all moved by the same non-zero amount (note prefix
+  "uniform drop:"/"uniform gain:", d is a placeholder 0) reads "⚠ Uniform drop/gain".
+  Display only: severity, and so the verdict, is unchanged.
+  Report "Confidence" = corrected p: Certain (<0.01), Likely (<0.05), Unclear; "—" when no
+  test ran (n<5, or zero variance: p is a placeholder 1.0, not evidence).
 Verdict "inconclusive" -> (1) all evaluators advisory (fresh init: flip blocking: true as the
 suite grows; recommendations name each advisory judge and whether its smallest per-prompt n has
 reached 20, or which prompt is short), (2) rate-budget breach unconfirmed by Wilson CI (grow the suite), (3) all n<5,

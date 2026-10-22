@@ -112,6 +112,18 @@ After BH correction, each comparison gets a severity tag based on the
 | `none`          | adjusted p ≥ 0.05                                     |
 | `insufficient`  | n < 5                                                 |
 
+`none` says the change was not confirmed, not that there was none, so the
+report reads it by effect size. It shows **✓ Equivalent** only at |d| < 0.2.
+At |d| ≥ 0.2 it shows **~ Unconfirmed drop/gain**. A zero-variance row whose
+pairs all moved by the same non-zero amount (d is then a placeholder 0, with
+a `uniform drop:` / `uniform gain:` note) shows **⚠ Uniform drop/gain**. The
+severity, and so the verdict, is unchanged.
+
+The report's Confidence column reads the adjusted p-value: **Certain** below
+0.01, **Likely** below 0.05, otherwise **Unclear**. A row where no test ran
+(n < 5, or zero variance) shows **—** instead, because its p-value is a
+placeholder 1.0.
+
 ### Drift inside `min_similarity` is tested as no change
 
 `semantic` pins the source at 1.0, so every target that words anything

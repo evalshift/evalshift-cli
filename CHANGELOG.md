@@ -132,6 +132,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installs. So every tool-calling call failed with `ModelError` (`No module
   named 'mcp'`) before any request was sent, and every retry failed the same
   way. The dependency is now `litellm>=1.77,<1.106`.
+- The report's narrative no longer calls a reply that called tools an "empty
+  output". A first-round tool replay ends at the tool call, so its text is
+  empty, and the narrative model was shown that blank. A real run's findings
+  read "the target model returned empty outputs where the source model
+  provided specific information" for replies that each called a tool. The
+  regression samples now show a reply as its tool calls with their arguments,
+  then any text, and the instruction says a tool call is not an empty answer.
+  Each call's arguments are capped at 200 characters and a sample lists at
+  most 6 calls ("+N more call(s)"), so the text always survives the
+  2000-character sample cap. Malformed arguments read `<malformed arguments>`,
+  and a multi-round reply marks each call's round.
+- The narrative no longer presents a run's total cost as a cost per call. The
+  figures it is given were each model's whole-run total, under keys that did
+  not say so, and the instruction's own example phrase was "cost per call".
+  The same run read "the cost per call increased from $0.1045 to $0.1056", for
+  21 calls each at about $0.005. The keys now name the totals, and the
+  Economics panel and the templated fallback say "Total".
+- A change that missed significance is no longer headlined as equivalent.
+  Severity `none` means the corrected p-value missed 0.05, whatever the effect
+  size, and the report read every such row as "✓ Equivalent — No meaningful
+  difference between models": a −17% tool-selection change (Cohen's d −0.51,
+  n = 21) got a green tick directly under a FAIL verdict. A `none` row now
+  reads Equivalent only when |d| < 0.2. A larger effect renders as "~
+  Unconfirmed drop" or "~ Unconfirmed gain", with its magnitude, in a warning
+  colour. A zero-variance row whose pairs all moved by the same non-zero
+  amount, where d is a placeholder 0 and a uniform −1.0 drop read "✓
+  Equivalent" beside "−100%", now carries a `uniform drop:` / `uniform gain:`
+  note from `analyze` and renders as "⚠ Uniform drop/gain". It also outranks
+  other non-significant rows for a prompt's executive-summary row, where its
+  placeholder d had lost to a tested d of −0.1. The `analyze` terminal table
+  uses the same reading for its glyph, and `compare` adds a callout under "~
+  no significant change" naming each sub-metric that dropped on every pair.
+  These are display only: severities and verdicts are unchanged. The note is
+  written by `analyze`, so re-run `analyze` (or `compare`) on an existing run
+  to get it; `report` alone reads the old `analysis.json`.
+- A row where no test ran no longer reads "Unclear" in the Confidence
+  column. When every tested delta is the same value, `analyze` skips the test
+  and stores a placeholder p-value of 1.0, which the column read as "Unclear".
+  A real converter run showed "Unclear" on four rows where both models made
+  the same tool calls on all 17 pairs. Such a row now shows "—", its tooltip
+  says no test ran, and an all-zero row reads "Equivalent — Both models
+  scored the same on every pair."
+- The executive summary no longer puts a ✓ on a "Ground truth missed by
+  both" row. Its rows never got the shared-miss annotation the evaluator
+  table's rows did, so a prompt whose summary row was that axis read "✓
+  Equivalent" one table above "! Ground truth missed by both".
+- An existing run's narrative regenerates on its next `report`, because the
+  facts it is built from changed. Re-run `report` before `push` to replace an
+  already-written narrative.
 - The PyPI project page's links work. 35 of the README's 51 links were
   relative, so on pypi.org they resolved under `pypi.org/project/evalshift/`
   and 404ed; they now point at the files on GitHub. The project's Homepage

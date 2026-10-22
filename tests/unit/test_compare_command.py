@@ -13,13 +13,14 @@ Two flavours:
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
-from evalshift_cli.analysis.statistics import ComparisonResult
+from evalshift_cli.analysis.statistics import UNIFORM_DROP_NOTE_PREFIX, ComparisonResult
 from evalshift_cli.captures.models import PromotedCase
 from evalshift_cli.captures.promote import rebuild_golden_jsonl, write_promoted_case
 from evalshift_cli.cli.commands.analyze import AnalyzeResult
@@ -194,6 +195,20 @@ class TestVerdict:
         assert "no significant change" in verdict.headline.plain
         assert verdict.detail is None
         assert verdict.regression_callout is None
+
+    def test_a_uniform_drop_gets_a_callout(self) -> None:
+        """No test can run on it, so "no significant change" is true and incomplete."""
+        uniform = replace(
+            _comp(severity="none", effect_size=0.0, delta=-1.0, evaluator="routing"),
+            test="skipped",
+            notes=["zero variance — no test", f"{UNIFORM_DROP_NOTE_PREFIX} every pair"],
+        )
+        verdict = _compose_verdict([uniform])
+        assert "no significant change" in verdict.headline.plain
+        assert verdict.regression_callout is not None
+        callout = verdict.regression_callout.plain
+        assert "1 sub-metric dropped by the same amount on every pair" in callout
+        assert "routing" in callout
 
     def test_minor_regressions_show_callout(self) -> None:
         comparisons = [
