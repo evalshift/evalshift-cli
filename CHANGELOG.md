@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`max_cost_increase` and `max_latency_increase` now measure something
+  different. Same config keys, new meaning: the same run can get a different
+  verdict.** Both used to divide the target's mean over all its error-free
+  calls by the source's. That was unpaired and fragile. Two runs of one
+  21-example suite read +27.2% (pass) and +35.6% (fail) against a 30% latency
+  budget, and 86–95% of the excess came from two or three 3–5 s target
+  responses that landed on different examples each run. Both budgets now
+  compare each example with itself, and an example counts only when both
+  models answered it without error:
+  - `max_latency_increase` caps the **typical example's** slowdown: the
+    20%-trimmed geometric mean of per-example target/source latency ratios.
+    The two runs above now read +13.2% and +21.6%, and both pass. A slowdown
+    across more than a fifth of the examples still moves the value. One
+    confined to fewer is treated as noise. The median was rejected because it
+    ignores any slowdown on fewer than half the examples.
+  - `max_cost_increase` caps the change in **paired total cost**, untrimmed,
+    because an expensive answer is a real bill. With no failed calls this is
+    the same number as before.
+  - With `samples_per_example > 1` each example counts once: its median
+    latency and mean cost per side.
+  - Cache hits still count, with the latency recorded when they ran live.
+  - A latency of 0 is a missing timing, and that example is left out of the
+    latency ratio. A free source against a timed target is no longer read as
+    a measured latency.
+- **The cost/latency budget rows report a signed value.** `observed` (and
+  `PolicyMetricSummary.cost_increase_rate` / `latency_increase_rate`) used to
+  be clipped at 0, so a target 29% cheaper read `+0%`. It now reads `-0.289`.
+  Only the pass/fail is one-sided (`observed <= allowed`), so any saving still
+  passes. Code that read these fields as never-negative must handle negatives.
+- **The cost/latency `denominator` counts example pairs, not calls.** A
+  21-example suite reports 21, where it used to report 42 (calls on both
+  sides).
+- The report's economics card and the insights narrative now show the
+  figures the two budgets were judged on ("judged per example: cost −28.9%,
+  latency +21.6% for the typical example") beside the run-wide cost and
+  latency changes, which can differ. Before, a card could read "Latency
+  +35.6%. Both inside +30% latency".
+
 ## [1.6.1] - 2026-10-23
 
 ### Changed

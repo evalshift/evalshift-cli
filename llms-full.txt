@@ -964,8 +964,8 @@ migration_policy:                   # optional; fractions not percents
   max_invariant_violations: int = 0 (>=0)    # COUNT of examples where the target broke a
                                               # blocking trace_invariants rule; always conclusive
   tool_argument_drift_floor: float = 0.9 (0..1)  # target arg score below which a call counts as drifted
-  max_cost_increase: float = 0.30 (0..10)
-  max_latency_increase: float = 0.30 (0..10)
+  max_cost_increase: float = 0.30 (0..10)    # paired total cost change, see "Cost/latency" below
+  max_latency_increase: float = 0.30 (0..10) # typical example's slowdown (20%-trimmed geo-mean)
   fail_on_dropped_params: bool = false  # fail when state.json dropped_params is non-empty,
   #   i.e. an arm could not honour a generation constraint the capture recorded. Top level only
   #   (a model either accepts a param or does not; not a per-slice property).
@@ -1228,8 +1228,8 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
   ASYMMETRIC: a breach fails ONLY when the CI confirms it (favourable bound clears the
   budget); a breach with the CI still spanning the budget -> inconclusive (suite too small);
   a budget the observation HELD is conclusive however wide its CI (a wide CI must never
-  downgrade a clean run). max_critical_regressions is a raw count and cost/latency are ratios
-  of two averages - no proportion, so ci_low/ci_high are null and no CI softens them (a
+  downgrade a clean run). max_critical_regressions is a raw count and cost/latency are paired
+  ratios - no proportion, so ci_low/ci_high are null and no CI softens them (a
   measured breach is never softened), though they are NOT always conclusive - see the
   zero-valued rule below. Drift got its CI last, once bundles began reporting its denominator:
   the hosted gate had always scored drift as a proportion, so the same thin sample read fail
@@ -1270,16 +1270,36 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
   stays empty however many are added. The DIAGNOSIS is wider than the exclusion: `evaluate`
   separately grades the SOURCE side alone and prints a red "broken eval harness" row when the
   source failed >= 50% of >= 4 conformance rows (see evaluators.tool_selection above).
-- Cost/latency ratios default to 0.00 twice over, and BOTH are conclusive: false. (1) Either
-  arm has no error-free call (all target calls errored, or no calls at all). (2) Both arms
-  average zero - unpriced models (LiteLLM returns cost_usd 0.0 for an unpriced id, and
-  latency_ms 0 alongside it). Case 2 has non-empty call lists, so pairing alone called
+- Cost/latency are compared PER EXAMPLE (analysis/policy.py::_relative_change). Calls grouped
+  by (prompt_id, example_id); an example counts only when EACH side has >=1 error-free call,
+  so an example one side failed leaves BOTH sides. samples_per_example > 1: each side
+  collapses to one value per example (latency: median of samples; cost: mean); an errored
+  repeat drops only that sample. Cache hits COUNT, with the cost/latency recorded when they
+  ran live (excluding them would make a cache re-run "measured nothing" = pass, clearing a
+  breach); the report's run-wide latency figures still exclude replayed latency.
+    latency: observed = exp(trimmed_mean(sorted log(target/source), drop floor(0.2*n) each
+      end; 4 of 21, none below 5)) - 1. Pairs with latency_ms 0 on either side are left out.
+      Why: provider tail spikes (2-3 target calls at 3-5 s, different examples each run)
+      flipped a real 21-example suite between +27% pass and +36% fail on the old mean ratio;
+      trimmed reads +13%/+22%. Median rejected: blind to a slowdown on < half the examples.
+      Limit: a slowdown confined to < 1 example in 5 is treated as noise.
+    cost: observed = sum(target)/sum(source) - 1 over the pairs, UNTRIMMED (cost follows
+      tokens, an expensive answer is a real bill). sum(source) <= 0 < sum(target) -> 1.0.
+  observed is SIGNED (-0.289 = 28.9% cheaper; used to be clipped at 0); passed = observed <=
+  allowed, so only the gate is one-sided. PolicyMetricSummary cost_increase_rate /
+  latency_increase_rate carry the same signed values. No interval: a bootstrap lower-bound
+  rule would almost never fire at n~21.
+- Cost/latency ratios default to 0.00 twice over, and BOTH are conclusive: false. (1) No
+  example has an error-free call on both sides (all target calls errored, or no calls at
+  all). (2) Both sides recorded zero on every pair - unpriced models (LiteLLM returns cost_usd
+  0.0 for an unpriced id, and latency_ms 0 alongside it). Case 2 has paired examples, so pairing alone called
   it measured and rendered "observed 0.00, passed, conclusive" for a cost never priced.
   Call.cost_usd is 0.0 both for unpriced and for genuinely free, and nothing separates them,
   so a genuinely free pair reads unmeasured too - deliberate: honest-uncertain over confident
   pass. Case 2 also adds a recommendations line: "The cost increase budget could not be
-  measured: all 4 error-free calls across both models recorded a cost of 0, so its observed
-  0.00 is a default, not a measurement." Case 1 stays silent (empty raw.jsonl already says it).
+  measured: both models recorded a cost of 0 on all 4 example pairs, so its observed 0.00 is
+  a default, not a measurement." (latency: "none of the N example pairs recorded a latency
+  above 0 on both models") Case 1 stays silent (empty raw.jsonl already says it).
   Emitted once per run, not per scope (all scopes read the same run-level calls). Only
   conclusive changes; observed 0.00 still clears the budget, so no verdict moves.
 - Sub-granular rate CEILINGS are warned about, not silently enforced. A rate over n rows can
@@ -1301,14 +1321,15 @@ Verdicts: pass | conditional_pass | fail | inconclusive. Written to migration_de
   tool_arguments rows for max_tool_argument_drift; tool_selection.divergence rows for
   max_tool_divergence; distinct examples with a blocking trace_invariants row for
   max_invariant_violations; the
-  error-free calls behind both averages (both roles summed,
-  0 when either role has none) for max_cost_increase / max_latency_increase. Slices report
+  example pairs compared (NOT calls on both sides; 21 for a 21-example suite whatever
+  samples_per_example is; latency counts only pairs timed > 0 on both; 0 when no example is
+  paired) for max_cost_increase / max_latency_increase. Slices report
   their own counts. Three readings, all distinct: 0 = counted and the sample was empty
   (observed is a default, passed is vacuous); positive int = that many units counted;
   MISSING = no sample size reported, NOT zero - only bundles predating the field say that,
   and the hosted gate falls back to conclusive for them. This CLI always emits an integer.
   Same number the 1/n granularity warning is judged on (one map, two readers). Orthogonal
-  to conclusive: an all-zero cost ratio counted every call it averaged and still measured
+  to conclusive: an all-zero cost ratio counted every pair it compared and still measured
   nothing -> positive denominator, conclusive: false. The hosted gate computes its OWN
   Wilson interval from these denominators, over the same three proportion budgets and with
   the same z, so a local and a hosted verdict agree on whether a breach was confirmed.
@@ -1376,6 +1397,13 @@ Model: defaults.insights_model, falling back to defaults.judge_model.
   evalshift.yaml budget fields (max_tool_divergence, ...), machine category labels
   (TOOL_SELECTION_DRIFT, ...). An echoed identifier rejects the generation like an invented
   number. User-chosen evaluator names are exempt (they are the reader's own vocabulary).
+- Cost/latency CEILINGS are judged on their own figures, not on cost_delta_pct (run totals) /
+  latency_delta_pct (mean live latency): FACTS also carries cost_budget_change_pct and
+  latency_budget_change_pct (the budget rows' signed observed, "not measured" when the row
+  measured nothing), and the instruction says to set a ceiling only beside its budget figure
+  and call latency's "the typical example's change", never the average. The fallback and the
+  report's economics card ("judged per example: cost X, latency Y for the typical example")
+  show the same pair.
 - An ABSENT rate is not a figure. equivalence/regression/improved share one denominator and
   default to 0% over an empty one, which reads as "nothing regressed" when the truth is
   "nothing was compared". decision.overall.n_records == 0 (no blocking row, or every row

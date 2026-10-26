@@ -130,8 +130,8 @@ migration_policy:
   max_tool_divergence: 0.20  # share of pairs where the target routed elsewhere
   max_invariant_violations: 0  # examples where the target broke a blocking trace rule
   tool_argument_drift_floor: 0.9   # below this a call counts as drifted
-  max_cost_increase: 0.30    # target may cost up to 30% more
-  max_latency_increase: 0.30 # …and be up to 30% slower
+  max_cost_increase: 0.30    # target may cost up to 30% more, paired per example
+  max_latency_increase: 0.30 # …and the typical example be up to 30% slower
 ```
 
 Those values are the ones `evalshift init` writes, and they are also the
@@ -158,6 +158,18 @@ fails), since migrating a small model to a much larger one is legitimately far
 costlier and slower. They are capped at `10.0` (1000%) only to reject obvious
 typos (e.g. writing `200` instead of `2.0`).
 
+Both compare each example with itself: an example counts only when both models
+answered it without error. `max_cost_increase` caps the change in the paired
+total cost. `max_latency_increase` caps the **typical example's** slowdown,
+the 20%-trimmed geometric mean of per-example latency ratios. A few slow
+provider responses therefore cannot flip the verdict, while a slowdown across
+more than a fifth of the examples still shows. The reported value is signed
+(`-0.29` = 29% cheaper); only the pass/fail is one-sided. With
+`samples_per_example > 1` each example still counts once (its median latency
+and mean cost per side). See
+[methodology](methodology.md#cost-and-latency-are-compared-per-example) for
+why this statistic and what it cannot see.
+
 Rates are counted over whole rows, so pick values your suite can actually
 express. With 10 tool-argument rows the achievable drift rates are
 `{0.0, 0.1, 0.2, …}` and `max_tool_argument_drift: 0.01` means "any drift at
@@ -174,20 +186,20 @@ The same check covers `max_overall_regression_rate` and
 `max_tool_divergence`, and each slice is judged on its own row count. Capture more examples, or write a budget the suite can
 represent; `0.0` is silent, since an explicit zero-tolerance budget is a choice.
 
-The two *increase* budgets have no row denominator, but they can go unmeasured
+The two *increase* budgets are not rates, but they can go unmeasured
 in their own way: if neither model is priced (LiteLLM has no cost table entry
 for the id), every `cost_usd` is `0.0` and the ratio has nothing to divide.
 `analyze` reports that budget as `conclusive: false` rather than as a clean
 pass, and says why:
 
 ```
-The cost increase budget could not be measured: all 4 error-free calls
-across both models recorded a cost of 0, so its observed 0.00 is a default,
-not a measurement.
+The cost increase budget could not be measured: both models recorded a cost
+of 0 on all 4 example pairs, so its observed 0.00 is a default, not a
+measurement.
 ```
 
-`max_latency_increase` behaves the same when every call reports `latency_ms: 0`
-— typically an unpriced or unmetered model. Price the models, or re-run
+`max_latency_increase` behaves the same when no example pair has a
+`latency_ms` above 0 on both sides — typically an unmetered model. Price the models, or re-run
 live, if you need those budgets to bind.
 
 `max_tool_divergence` is the divergence axis's own budget: the share of
@@ -283,9 +295,10 @@ Two behaviours to know:
   confirms it; if the suite is too small to be sure, the verdict is
   `inconclusive`, not `fail`. A budget the observation *held* stays
   conclusive however wide its interval.
-  Cost and latency budgets are exact, but report
-  `conclusive: false` when neither model priced its calls (both averages
-  zero is a default, not a measurement). Record-derived budgets report
+  Cost and latency budgets have no interval: they are robust paired
+  estimates (latency trims spikes; see above), and a measured breach
+  fails outright. They report `conclusive: false` when neither model
+  priced its calls (both sides zero is a default, not a measurement). Record-derived budgets report
   `conclusive: false` on a scope that scored zero records — their
   `0/0` default looks clean but measures nothing.
 

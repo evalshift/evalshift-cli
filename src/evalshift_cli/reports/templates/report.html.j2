@@ -11,6 +11,12 @@
   {%- if value is none -%}—{%- else -%}{{ ("%+." ~ digits ~ "f")|format(value) }}%{%- endif -%}
 {%- endmacro -%}
 
+{#- A cost/latency budget's own signed figure, or a dash when it measured
+    nothing: a passing row that is not conclusive is the 0/0 default. -#}
+{%- macro budget_change(budget) -%}
+  {{ pct(budget.observed * 100 if budget.get("conclusive", true) or not budget.passed else none) }}
+{%- endmacro -%}
+
 {#- A tool change renders as one arrow, or as one arrow per round when the
     replay was teacher-forced: "a, b -> a, c" cannot say which round went
     wrong, and the round is the whole finding. -#}
@@ -390,8 +396,11 @@
           {%- set cost_cap = budget_limit(budgets, "max_cost_increase") -%}
           {%- set lat_cap = budget_limit(budgets, "max_latency_increase") -%}
           {% if cost_cap and lat_cap %}
+            {# The ceilings are judged per example, latency on the typical
+               one, so the run-wide figures above are not what they held to. #}
             {{ "Both inside" if cost_cap.passed and lat_cap.passed else "Ceilings" }}
-            +{{ "%.0f"|format(cost_cap.allowed * 100) }}% cost / +{{ "%.0f"|format(lat_cap.allowed * 100) }}% latency.
+            +{{ "%.0f"|format(cost_cap.allowed * 100) }}% cost / +{{ "%.0f"|format(lat_cap.allowed * 100) }}% latency,
+            judged per example: cost {{ budget_change(cost_cap) }}, latency {{ budget_change(lat_cap) }} for the typical example.
           {% endif %}
         </p>
       </div>
@@ -469,7 +478,7 @@
   {%- if name in count_budgets -%}
     {{ "%.0f"|format(value) }}
   {%- else -%}
-    {{ "+" if name in increase_budgets else "" }}{{ "%.1f"|format(value * 100) }}%
+    {{ ("%+.1f" if name in increase_budgets else "%.1f")|format(value * 100) }}%
   {%- endif -%}
 {%- endmacro -%}
     <div class="block">

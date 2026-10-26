@@ -96,16 +96,22 @@ def _call(
     cost_usd: float,
     latency_ms: int,
     error: str | None = None,
+    prompt_id: str = "p",
+    sample_index: int = 0,
+    cached: bool = False,
 ) -> Call:
     return Call(
         run_id="r1",
-        prompt_id="p",
+        prompt_id=prompt_id,
         example_id=example_id,
         model_id=role,
         role=role,  # type: ignore[arg-type]
+        sample_index=sample_index,
         text="" if error else "ok",
         cost_usd=cost_usd,
         latency_ms=latency_ms,
+        cached=cached,
+        cached_rounds=1 if cached else 0,
         error=error,
     )
 
@@ -1135,8 +1141,8 @@ class TestWilsonConstant:
 class TestCallBudgetConclusiveness:
     """The cost/latency budgets are call-derived, so calls can be missing too.
 
-    ``_relative_increase`` returns 0.0 whenever either side has no error-free
-    call, and 0.0 clears every ``ge=0.0`` budget. That renders as
+    ``_relative_change`` returns 0.0 whenever no example has an error-free
+    call on both sides, and 0.0 clears every ``ge=0.0`` budget. That renders as
     ``observed 0.00, passed`` — "the target did not cost more" — derived from
     zero samples. Only ``conclusive`` can tell that apart from a genuine
     measurement of no increase.
@@ -1232,11 +1238,205 @@ class TestCallBudgetConclusiveness:
         assert decision.verdict == "fail"
 
 
+class TestPairedCallBudgets:
+    """The cost/latency budgets compare each example against itself.
+
+    They used to divide one role's mean by the other's. On real data that
+    flipped a migration verdict between two runs of the same 21-example suite
+    (+27% passed, +36% failed against a 30% latency budget): 86-95% of the
+    excess came from two or three 3-5 s target responses that landed on
+    different examples each run. These tests pin the replacement: latency is
+    the 20%-trimmed geometric mean of per-example target/source ratios, cost is
+    the ratio of paired totals, and both count example pairs.
+    """
+
+    def _budgets(
+        self,
+        calls: list[Call],
+        policy: MigrationPolicy | None = None,
+    ) -> dict[str, BudgetResult]:
+        decision = evaluate_migration_policy(
+            run_id="r1",
+            source_model="src",
+            target_model="tgt",
+            policy=policy
+            or MigrationPolicy(max_overall_regression_rate=1.0, min_equivalence_rate=0.0),
+            comparisons=[_comparison(severity="none", delta_avg_score=0.0)],
+            records=[_record(example_id="e1", delta=0.0)],
+            calls=calls,
+        )
+        return {b.name: b for b in decision.budget_results}
+
+    @staticmethod
+    def _latency_pairs(source_ms: list[int], target_ms: list[int]) -> list[Call]:
+        calls: list[Call] = []
+        for i, (src, tgt) in enumerate(zip(source_ms, target_ms, strict=True)):
+            calls.append(_call(example_id=f"e{i}", role="source", cost_usd=0.01, latency_ms=src))
+            calls.append(_call(example_id=f"e{i}", role="target", cost_usd=0.01, latency_ms=tgt))
+        return calls
+
+    def test_a_few_slow_target_responses_do_not_flip_the_latency_verdict(self) -> None:
+        # 18 examples 10% slower, three provider spikes at 5x. The old mean
+        # ratio read +65.7% and failed a 30% budget on three calls.
+        target = [1100] * 18 + [5000] * 3
+        latency = self._budgets(self._latency_pairs([1000] * 21, target))["max_latency_increase"]
+        assert latency.observed == pytest.approx(0.10)
+        assert latency.passed is True
+        assert latency.conclusive is True
+
+    def test_a_uniform_slowdown_still_fails(self) -> None:
+        latency = self._budgets(self._latency_pairs([1000] * 21, [1400] * 21))[
+            "max_latency_increase"
+        ]
+        assert latency.observed == pytest.approx(0.40)
+        assert latency.passed is False
+        assert latency.conclusive is True
+
+    def test_a_slowdown_on_more_than_a_fifth_of_examples_survives_the_trim(self) -> None:
+        # 8 of 21 examples 3x slower. Trimming drops 4 per side, so 4 of the
+        # slow examples stay in: exp((9*ln 1 + 4*ln 3) / 13) - 1 = +40.2%.
+        # The median of the same ratios is +0% — the reason it was not chosen.
+        target = [1000] * 13 + [3000] * 8
+        latency = self._budgets(self._latency_pairs([1000] * 21, target))["max_latency_increase"]
+        assert latency.observed == pytest.approx(3 ** (4 / 13) - 1)
+        assert latency.passed is False
+
+    def test_a_faster_target_reports_a_signed_saving(self) -> None:
+        """The pass/fail is one-sided; the number is not clipped to hide savings."""
+        calls = [
+            _call(example_id="e0", role="source", cost_usd=0.02, latency_ms=1000),
+            _call(example_id="e0", role="target", cost_usd=0.01, latency_ms=500),
+        ]
+        budgets = self._budgets(calls)
+        assert budgets["max_cost_increase"].observed == pytest.approx(-0.5)
+        assert budgets["max_latency_increase"].observed == pytest.approx(-0.5)
+        for name in ("max_cost_increase", "max_latency_increase"):
+            assert budgets[name].passed is True, name
+            assert budgets[name].conclusive is True, name
+
+    def test_an_example_one_side_failed_leaves_both_sides(self) -> None:
+        # The target errored on the slowest, priciest example. Averaging each
+        # role on its own compared e0+e1 against e0 alone: -82% latency and
+        # -82% cost from a difference in *which* examples were averaged.
+        calls = [
+            _call(example_id="e0", role="source", cost_usd=0.01, latency_ms=100),
+            _call(example_id="e1", role="source", cost_usd=0.10, latency_ms=1000),
+            _call(example_id="e0", role="target", cost_usd=0.01, latency_ms=100),
+            _call(example_id="e1", role="target", cost_usd=0.0, latency_ms=0, error="timeout"),
+        ]
+        budgets = self._budgets(calls)
+        for name in ("max_cost_increase", "max_latency_increase"):
+            assert budgets[name].observed == pytest.approx(0.0), name
+            assert budgets[name].denominator == 1, name
+
+    def test_cost_is_the_paired_total_so_concentrated_spend_is_not_trimmed(self) -> None:
+        """Cost has no provider noise to trim: an expensive answer is a real bill."""
+        calls: list[Call] = []
+        for i in range(10):
+            calls.append(_call(example_id=f"e{i}", role="source", cost_usd=1.0, latency_ms=100))
+            target_cost = 10.0 if i < 2 else 1.0
+            calls.append(
+                _call(example_id=f"e{i}", role="target", cost_usd=target_cost, latency_ms=100)
+            )
+        cost = self._budgets(calls)["max_cost_increase"]
+        assert cost.observed == pytest.approx(1.8)
+        assert cost.passed is False
+        assert cost.denominator == 10
+
+    def test_repeated_samples_collapse_to_one_pair_per_example(self) -> None:
+        """``samples_per_example`` adds evidence per example, not examples.
+
+        Latency takes each side's median sample, so one spiked repeat cannot
+        move an example's ratio; cost takes each side's mean, so the pair is
+        the example's expected spend.
+        """
+        calls = [
+            _call(example_id="e0", role="source", cost_usd=0.01, latency_ms=100, sample_index=0),
+            _call(example_id="e0", role="source", cost_usd=0.01, latency_ms=100, sample_index=1),
+            _call(example_id="e0", role="source", cost_usd=0.01, latency_ms=100, sample_index=2),
+            _call(example_id="e0", role="target", cost_usd=0.01, latency_ms=110, sample_index=0),
+            _call(example_id="e0", role="target", cost_usd=0.02, latency_ms=110, sample_index=1),
+            _call(example_id="e0", role="target", cost_usd=0.03, latency_ms=9000, sample_index=2),
+        ]
+        budgets = self._budgets(calls)
+        assert budgets["max_latency_increase"].observed == pytest.approx(0.10)
+        assert budgets["max_cost_increase"].observed == pytest.approx(1.0)
+        for name in ("max_cost_increase", "max_latency_increase"):
+            assert budgets[name].denominator == 1, name
+
+    def test_an_errored_repeat_drops_only_that_sample(self) -> None:
+        calls = [
+            _call(example_id="e0", role="source", cost_usd=0.01, latency_ms=100, sample_index=0),
+            _call(
+                example_id="e0",
+                role="source",
+                cost_usd=0.0,
+                latency_ms=0,
+                sample_index=1,
+                error="boom",
+            ),
+            _call(example_id="e0", role="target", cost_usd=0.01, latency_ms=120, sample_index=0),
+            _call(example_id="e0", role="target", cost_usd=0.01, latency_ms=120, sample_index=1),
+        ]
+        latency = self._budgets(calls)["max_latency_increase"]
+        assert latency.observed == pytest.approx(0.20)
+        assert latency.denominator == 1
+
+    def test_the_same_example_id_under_two_prompts_is_two_pairs(self) -> None:
+        calls = [
+            _call(example_id="e0", role="source", cost_usd=0.01, latency_ms=100, prompt_id="a"),
+            _call(example_id="e0", role="target", cost_usd=0.01, latency_ms=100, prompt_id="a"),
+            _call(example_id="e0", role="source", cost_usd=0.01, latency_ms=100, prompt_id="b"),
+            _call(example_id="e0", role="target", cost_usd=0.01, latency_ms=100, prompt_id="b"),
+        ]
+        budgets = self._budgets(calls)
+        for name in ("max_cost_increase", "max_latency_increase"):
+            assert budgets[name].denominator == 2, name
+
+    def test_cached_rows_count_with_their_recorded_latency(self) -> None:
+        """A cache hit replays the latency recorded when it ran live.
+
+        Excluding it would turn a re-run from cache into "measured nothing",
+        which passes — so re-running a failed suite would clear its gate.
+        """
+        calls = [
+            _call(example_id="e0", role="source", cost_usd=0.01, latency_ms=100, cached=True),
+            _call(example_id="e0", role="target", cost_usd=0.01, latency_ms=200, cached=True),
+        ]
+        latency = self._budgets(calls)["max_latency_increase"]
+        assert latency.observed == pytest.approx(1.0)
+        assert latency.conclusive is True
+        assert latency.denominator == 1
+
+    def test_an_untimed_example_is_left_out_of_the_latency_ratio(self) -> None:
+        """A ``latency_ms`` of 0 is a missing timing; it has no ratio to give."""
+        calls = [
+            _call(example_id="e0", role="source", cost_usd=0.01, latency_ms=0),
+            _call(example_id="e0", role="target", cost_usd=0.01, latency_ms=100),
+            _call(example_id="e1", role="source", cost_usd=0.01, latency_ms=100),
+            _call(example_id="e1", role="target", cost_usd=0.01, latency_ms=110),
+        ]
+        budgets = self._budgets(calls)
+        assert budgets["max_latency_increase"].observed == pytest.approx(0.10)
+        assert budgets["max_latency_increase"].denominator == 1
+        assert budgets["max_cost_increase"].denominator == 2
+
+    def test_the_summary_carries_the_same_signed_values(self) -> None:
+        """``PolicyMetricSummary`` is what the hosted gate re-derives from."""
+        calls = [
+            _call(example_id="e0", role="source", cost_usd=0.02, latency_ms=1000),
+            _call(example_id="e0", role="target", cost_usd=0.01, latency_ms=1200),
+        ]
+        summary = _metrics(records=[], calls=calls)
+        assert summary.cost_increase_rate == pytest.approx(-0.5)
+        assert summary.latency_increase_rate == pytest.approx(0.2)
+
+
 class TestZeroValuedCallBudgets:
     """Paired calls are necessary for a cost/latency ratio, not sufficient.
 
-    ``_relative_increase`` also returns its ``0.0`` default when *both* roles
-    average zero — an unpriced model pair, or calls whose ``latency_ms`` is 0.
+    ``_relative_change`` also returns its ``0.0`` default when *both* roles
+    recorded zero — an unpriced model pair, or calls whose ``latency_ms`` is 0.
     The call lists are non-empty there, so the older pairing check said
     "measured" and the row rendered "observed 0.00, passed, conclusive" for a
     cost nobody ever priced.
@@ -1287,7 +1487,12 @@ class TestZeroValuedCallBudgets:
         assert by_name["max_latency_increase"].conclusive is True
 
     def test_a_free_source_against_a_priced_target_stays_conclusive(self) -> None:
-        """Only one side has to have measured something for the ratio to mean one."""
+        """Only one side has to have priced something for the cost ratio to mean one.
+
+        Latency is stricter: every real call takes time, so a ``latency_ms`` of
+        0 is a missing timing, and an example timed on one side only has no
+        ratio to contribute.
+        """
         decision = self._decision(
             calls=[
                 _call(example_id="e1", role="source", cost_usd=0.0, latency_ms=0),
@@ -1303,10 +1508,10 @@ class TestZeroValuedCallBudgets:
         by_name = {b.name: b for b in decision.budget_results}
         assert by_name["max_cost_increase"].observed == pytest.approx(1.0)
         assert by_name["max_cost_increase"].conclusive is True
-        assert by_name["max_latency_increase"].conclusive is True
+        assert by_name["max_latency_increase"].conclusive is False
 
     def test_a_priced_source_against_a_free_target_stays_conclusive(self) -> None:
-        """A target that costs nothing is a real, clean measurement."""
+        """A target that costs nothing is a real, clean measurement — a 100% saving."""
         decision = self._decision(
             calls=[
                 _call(example_id="e1", role="source", cost_usd=0.02, latency_ms=100),
@@ -1314,9 +1519,10 @@ class TestZeroValuedCallBudgets:
             ],
         )
         by_name = {b.name: b for b in decision.budget_results}
-        assert by_name["max_cost_increase"].observed == 0.0
+        assert by_name["max_cost_increase"].observed == pytest.approx(-1.0)
+        assert by_name["max_cost_increase"].passed is True
         assert by_name["max_cost_increase"].conclusive is True
-        assert by_name["max_latency_increase"].conclusive is True
+        assert by_name["max_latency_increase"].conclusive is False
 
     def test_slice_budgets_are_unmeasured_too(self) -> None:
         """Slices read the same run-level calls, so they inherit the verdict."""
@@ -1376,9 +1582,9 @@ class TestZeroValuedCallBudgetWarning:
             ],
         )
         assert (
-            "The cost increase budget could not be measured: all 4 error-free "
-            "calls across both models recorded a cost of 0, so its observed "
-            "0.00 is a default, not a measurement."
+            "The cost increase budget could not be measured: both models "
+            "recorded a cost of 0 on all 2 example pairs, so its observed 0.00 "
+            "is a default, not a measurement."
         ) in decision.recommendations
         assert not any("latency" in r for r in decision.recommendations)
 
@@ -1390,16 +1596,16 @@ class TestZeroValuedCallBudgetWarning:
             ],
         )
         assert (
-            "The latency increase budget could not be measured: all 2 error-free "
-            "calls across both models recorded a latency of 0, so its observed "
-            "0.00 is a default, not a measurement."
+            "The latency increase budget could not be measured: none of the 1 "
+            "example pair recorded a latency above 0 on both models, so its "
+            "observed 0.00 is a default, not a measurement."
         ) in decision.recommendations
         assert not any("cost" in r for r in decision.recommendations)
 
     def test_missing_calls_are_not_double_reported(self) -> None:
         """No calls at all is already visible; a second note is noise."""
         decision = self._decision(calls=[])
-        assert not any("error-free calls" in r for r in decision.recommendations)
+        assert not any("could not be measured" in r for r in decision.recommendations)
 
     def test_a_measured_ratio_is_not_warned(self) -> None:
         decision = self._decision(
@@ -1408,7 +1614,7 @@ class TestZeroValuedCallBudgetWarning:
                 _call(example_id="e1", role="target", cost_usd=0.01, latency_ms=100),
             ],
         )
-        assert not any("error-free calls" in r for r in decision.recommendations)
+        assert not any("could not be measured" in r for r in decision.recommendations)
 
     def test_the_note_is_emitted_once_per_run_not_once_per_scope(self) -> None:
         """Every scope reads the same run-level calls — repeating it is noise."""
@@ -1762,7 +1968,7 @@ class TestBudgetDenominators:
         assert drift.denominator == 0
         assert drift.conclusive is False
 
-    def test_call_ratio_budgets_count_the_error_free_calls(self) -> None:
+    def test_call_ratio_budgets_count_example_pairs(self) -> None:
         decision = evaluate_migration_policy(
             run_id="r1",
             source_model="src",
@@ -1778,15 +1984,15 @@ class TestBudgetDenominators:
             ],
         )
         by_name = {b.name: b for b in decision.budget_results}
-        # Three error-free calls: two source, one target. The errored target
-        # call is excluded from the averages, so it is excluded from the count.
-        assert by_name["max_cost_increase"].denominator == 3
-        assert by_name["max_latency_increase"].denominator == 3
+        # One pair: e1's target call errored, so e1 leaves the comparison on
+        # both sides. Pairs, not calls — the old count here was 3.
+        assert by_name["max_cost_increase"].denominator == 1
+        assert by_name["max_latency_increase"].denominator == 1
 
     def test_one_sided_calls_leave_the_ratio_denominator_at_zero(self) -> None:
-        """The ratio divides one role's average by the other's.
+        """The ratio compares each example's target against its own source.
 
-        With no target call there is nothing to divide, so nothing was counted
+        With no target call there is no pair, so nothing was counted
         — ``0``, matching the ``conclusive: false`` the same absence produces.
         """
         decision = evaluate_migration_policy(
@@ -1807,8 +2013,8 @@ class TestBudgetDenominators:
         """Both-sides-zero is unmeasured (phase P5) but not uncounted.
 
         ``conclusive`` carries the doubt; the denominator stays honest about
-        how many calls were averaged, so the two fields say different things
-        rather than one of them lying.
+        how many example pairs were compared, so the two fields say different
+        things rather than one of them lying.
         """
         decision = evaluate_migration_policy(
             run_id="r1",
@@ -1823,7 +2029,7 @@ class TestBudgetDenominators:
             ],
         )
         cost = next(b for b in decision.budget_results if b.name == "max_cost_increase")
-        assert cost.denominator == 2
+        assert cost.denominator == 1
         assert cost.conclusive is False
 
     def test_slice_budgets_report_the_slice_denominator(self) -> None:
@@ -2279,8 +2485,9 @@ class TestDenominatorsAfterTheAxisSplit:
             ],
         )
         budgets = _budgets(decision)
-        assert budgets["max_cost_increase"].denominator == 2
-        assert budgets["max_latency_increase"].denominator == 2
+        # One example pair, however many record rows score it.
+        assert budgets["max_cost_increase"].denominator == 1
+        assert budgets["max_latency_increase"].denominator == 1
 
 
 # ---------------------------------------------------------------------------

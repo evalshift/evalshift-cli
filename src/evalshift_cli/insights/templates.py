@@ -154,7 +154,9 @@ def _economics_summary(rendered: dict[str, str]) -> str:
         f"{rendered['cost_target_total_usd']} ({rendered['n_calls']} calls, both "
         f"models). Cost {rendered['cost_delta_pct']}, "
         f"latency {rendered['latency_delta_pct']}. Ceilings: cost "
-        f"{rendered['cost_ceiling_pct']}, latency {rendered['latency_ceiling_pct']}."
+        f"{rendered['cost_ceiling_pct']}, latency {rendered['latency_ceiling_pct']}, "
+        f"judged per example: cost {rendered['cost_budget_change_pct']}, latency "
+        f"{rendered['latency_budget_change_pct']} for the typical example."
     )
 
 
