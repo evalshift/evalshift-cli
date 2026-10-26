@@ -809,8 +809,12 @@ evaluators:                         # every evaluator config also takes blocking
     #   no provider call. ONE empty side still scores: 0.0 similarity by definition,
     #   no embedding call (provider 400s on empty input); min_similarity gate applies;
     #   metadata.empty_side = "source"|"target"; either direction scored the same.
+    # either side's turn ENDED IN A TOOL CALL (last round has calls) -> NO record, no
+    #   provider call (semantic AND llm_judge): text beside a call is narration, not an
+    #   answer; the replay stops at the call. Tool evaluators measure those turns.
   llm_judge:                        # list; pairwise A/B, order-randomized; win->(0,1), tie->(.5,.5)
     # both outputs empty (tool-only turn) -> NO record at all, no judge call
+    # either side's turn ended in a tool call -> NO record, no judge call (see semantic)
     - criterion_name: str
       criterion_prompt: str         # keep symmetric + explicit tie instruction
       judge_model: str = "gemini-3.1-flash-lite-preview"  # per-criterion; defaults.judge_model is NOT consulted
@@ -1884,7 +1888,8 @@ All severities "none" -> usually genuinely no significant difference; check n (<
   "uniform drop:"/"uniform gain:", d is a placeholder 0) reads "⚠ Uniform drop/gain".
   Display only: severity, and so the verdict, is unchanged.
   Report "Confidence" = corrected p: Certain (<0.01), Likely (<0.05), Unclear; "—" when no
-  test ran (n<5, or zero variance: p is a placeholder 1.0, not evidence).
+  test ran (n<5, or zero variance: p is a placeholder 1.0, not evidence). Effect and 95% range
+  also read "—" on such a row (d and CI are placeholder 0s); Effect is shown SIGNED, like its range.
 Verdict "inconclusive" -> (1) all evaluators advisory (fresh init: flip blocking: true as the
 suite grows; recommendations name each advisory judge and whether its smallest per-prompt n has
 reached 20, or which prompt is short), (2) rate-budget breach unconfirmed by Wilson CI (grow the suite), (3) all n<5,

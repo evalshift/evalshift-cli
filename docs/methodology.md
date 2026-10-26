@@ -122,7 +122,9 @@ severity, and so the verdict, is unchanged.
 The report's Confidence column reads the adjusted p-value: **Certain** below
 0.01, **Likely** below 0.05, otherwise **Unclear**. A row where no test ran
 (n < 5, or zero variance) shows **—** instead, because its p-value is a
-placeholder 1.0.
+placeholder 1.0. Its Effect and 95% range columns show **—** for the same
+reason: d and its interval are placeholder zeros. Effect is printed signed,
+like its range.
 
 ### Drift inside `min_similarity` is tested as no change
 

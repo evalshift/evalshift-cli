@@ -206,6 +206,16 @@ class ToolTrace(_StrictModel):
         return len(self.calls)
 
     @property
+    def ends_in_tool_calls(self) -> bool:
+        """True iff the last response called a tool, so it awaits results.
+
+        Text beside such a call is narration ("Let me check!"), never the
+        answer a user would read: that answer comes after the results.
+        """
+        last = self.round_count - 1
+        return any(c.round_index == last for c in self.calls)
+
+    @property
     def tool_names(self) -> list[str]:
         """Tool names in the order they were called."""
         return [c.tool_name for c in self.calls]
