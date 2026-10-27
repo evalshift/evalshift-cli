@@ -623,6 +623,13 @@ class MigrationPolicy(_StrictModel):
     ``max_cost_increase=0.30`` means the target may cost up to 30% more
     than the source before the policy fails.
 
+    The two *increase* budgets compare each example's target call with its own
+    source call. ``max_cost_increase`` caps the change in paired total cost;
+    ``max_latency_increase`` caps the typical example's slowdown — the
+    20%-trimmed geometric mean of per-example latency ratios, so a few slow
+    provider responses cannot flip the verdict. See
+    ``analysis.policy._relative_change``.
+
     The regression/equivalence rates (``max_overall_regression_rate``,
     ``min_equivalence_rate``, ``max_tool_argument_drift``,
     ``max_tool_divergence``) are true rates

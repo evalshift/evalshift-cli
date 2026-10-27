@@ -287,23 +287,108 @@ is excluded because it is a *floor*: below one row's granularity it collapses to
 maximally lax — only a 0% rate could fail it — so "effective tolerance is zero"
 would be the opposite of the truth. The count budgets
 (`max_critical_regressions`, `max_invariant_violations`) are not rates, and the
-cost/latency ratios have no row denominator, so `1/n` describes none of them.
+cost/latency ratios land on no grid, so `1/n` describes none of them.
 
 Widening the budget is not the fix, and neither is a confidence interval: at 1
 material drift in 10 the 95% Wilson lower bound is `0.0179`, still above `0.01`,
 so the breach is statistically confirmed. The fix is more rows — or a budget
 written at a size the suite can express.
 
+### Cost and latency are compared per example
+
+`max_cost_increase` and `max_latency_increase` compare each example's target
+call with that example's own source call. Until this change they divided the
+target's mean over all its error-free calls by the source's, which was
+unpaired and fragile. Two runs of the same 21-example suite (Sonnet 4.6 → 5.5,
+latency budget `0.30`) read **+27.2%** (passed) and **+35.6%** (failed). In
+both runs, 86–95% of the excess came from two or three target responses of
+3–5 s. They landed on *different* examples each run, and the same examples
+took 1.1–1.9 s in the other run. That is provider tail noise, not a property of
+the model, and it decided the verdict.
+
+**The unit is the example pair.** Calls are grouped by `(prompt_id,
+example_id)`. An example counts only when each side has at least one
+error-free call. An example the target failed on drops out on *both* sides,
+so the source's slowest example is no longer weighed against a target that
+never answered it. With `samples_per_example > 1` each side's samples collapse
+to one value per example: the **median** for latency, so one slow repeat
+cannot move its example, and the **mean** for cost, the example's expected
+spend. An errored repeat drops only that sample. `denominator` is the number of
+example pairs (21 for a 21-example suite, whatever the sample count), not the
+calls on both sides it used to report (42).
+
+**Latency is the typical example's change.** The gated value is the
+**20%-trimmed geometric mean of per-example target/source latency ratios**:
+take `log(target / source)` for every pair, drop the lowest and highest
+`floor(0.2 · n)` (4 of 21, none below 5 pairs), average the rest and
+exponentiate. Logs, so a 2× slower and a 2× faster example cancel instead of
+averaging to +25%. A pair with a latency of 0 on either side is a missing
+timing, not an instant answer, and is left out of the latency ratio.
+
+Two alternatives were measured on the runs above before choosing:
+
+| Statistic | run 1 | run 2 | catches a real 2× slowdown on 30% of examples |
+| --- | --- | --- | --- |
+| mean of each side (old) | +27.2% ✓ | +35.6% ✗ | yes, and also flips on three spikes |
+| median of per-example ratios | +11.4% | +23.7% | 0–8% of the time |
+| **20%-trimmed geometric mean** | **+13.2%** | **+21.6%** | **88–100% of the time** |
+
+The median is the most robust, but it ignores any slowdown confined to fewer
+than half the examples, so a target three times slower on a third of the suite
+passes. The trimmed mean absorbs spikes on up to a fifth of the examples at
+either end and still moves when a slowdown reaches more of them. It is also
+the steadier of the two between the runs above: 8 points apart, against 12 for
+the median. The limit is deliberate and worth knowing: **a slowdown confined
+to fewer than one example in five is treated as noise.** The gate cannot tell a
+reproducible slowdown on three examples from three unlucky responses in a
+single sample. Raise `samples_per_example` to separate them (each example then
+keeps its median), or look at the report's p95 latency, which is reported but
+not gated.
+
+**Cost is the paired total.** The gated value is `Σ target / Σ source − 1` over
+the same example pairs: the change in the bill for the examples both models
+answered. Cost follows token counts, not network weather, so there is no
+provider noise to trim. An example that costs ten times as much is a real
+expense, and trimming it would hide exactly the verbose-reasoning blow-up a
+cost budget exists to catch. On the runs above it reads −28.5% and −28.9%,
+as stable as before. A paired source total of zero against a positive target
+total is reported as `1.0`, a full 100% increase.
+
+**The value is signed; the gate is one-sided.** `observed` used to be clipped
+at `0`, so a target 29% cheaper rendered as `+0%`. It is now the signed change
+(`-0.289`) in `migration_decision.json`, the bundle and the report. The budget
+still only caps the increase: `passed` is `observed <= allowed`, and any
+saving passes. `PolicyMetricSummary.cost_increase_rate` /
+`latency_increase_rate` carry the same signed values under their old names.
+
+**Cached rows count.** A cache hit carries the cost and latency recorded when
+the response was produced live, so it is a real measurement of that
+response, just not one taken on this run. Leaving cache hits out would turn
+a re-run from cache into "measured nothing", which passes, so re-running a
+suite would clear a latency breach. The report's run-wide latency figures and
+per-example "Time Δ" still exclude replayed latency, because they describe
+this run's own timing. That is why the report shows the budget's figures
+beside them.
+
+**No interval, on purpose.** A paired bootstrap interval was tried and
+rejected as a gate. Copying the Wilson rule (a breach fails only when the
+interval's lower bound clears the budget) would almost never fire at these
+suite sizes. On run 2 above the 95% bootstrap interval of the mean ratio is
++2.4%..+76.4%, so a breach would have to be enormous before its lower bound
+cleared 30%. The stability comes from the estimator instead. Like the
+critical-regression count, these rows carry `ci_low`/`ci_high` of `null`, and
+a measured breach fails conclusively.
+
 ### A cost ratio computed from zeroes is not a measurement
 
-`max_cost_increase` and `max_latency_increase` are ratios of two averages, so
-unlike the rate budgets they have no row denominator — their denominator is the
-*source average*, and that can itself be zero. The ratio falls back to `0.00`
-in two different situations, and `0.00` clears every budget:
+`max_cost_increase` and `max_latency_increase` are ratios, so unlike the rate
+budgets their divisor is the *source* value, and that can itself be zero. The
+ratio falls back to `0.00` in two different situations, and `0.00` clears
+every budget:
 
-- **No error-free call on one side.** Every target call errored, or the run has
-  no calls at all. Reported as `conclusive: false`.
-- **Both sides average zero.** The models are not priced (LiteLLM returns
+- **No example answered on both sides.** Every target call errored, or the run
+  has no calls at all. Reported as `conclusive: false`.
+- **Both sides recorded zero.** The models are not priced (LiteLLM returns
   `cost_usd: 0.0` for an id it has no pricing for), or every call reported
   `latency_ms: 0` for the same reason.
 
@@ -324,9 +409,9 @@ Because the flag alone cannot distinguish the two situations for a reader,
 `analyze` adds a line to the recommendations for the second one:
 
 ```
-The cost increase budget could not be measured: all 4 error-free calls
-across both models recorded a cost of 0, so its observed 0.00 is a default,
-not a measurement.
+The cost increase budget could not be measured: both models recorded a cost
+of 0 on all 4 example pairs, so its observed 0.00 is a default, not a
+measurement.
 ```
 
 The first situation stays silent: an empty `raw.jsonl` beside a
@@ -353,7 +438,7 @@ last from the first two, but it does not say *how much* was counted. Each
 | `max_tool_argument_drift` | the scope's `tool_arguments` rows only |
 | `max_tool_divergence` | the scope's `tool_selection.divergence` rows only |
 | `max_invariant_violations` | the distinct examples (`prompt_id`, `example_id`) with a blocking `trace_invariants` row in the scope — one per example however many entries scored it; the row is emitted only when there is at least one |
-| `max_cost_increase` / `max_latency_increase` | the error-free calls both averages were taken over, across both roles |
+| `max_cost_increase` / `max_latency_increase` | the example pairs compared — examples with an error-free call on both sides (for latency, timed above 0 on both) |
 
 The first three are counted over *measurements*, not over examples. An
 evaluator that scores several axes contributes a row per axis per example —
@@ -371,7 +456,7 @@ can never be reported against a sample it was not judged on.
 
 `denominator` and `conclusive` answer different questions, and the cost budgets
 are where they visibly disagree: a run whose calls all report `cost_usd: 0`
-counted every one of them and still measured nothing, so it reports a positive
+counted every pair and still measured nothing, so it reports a positive
 denominator beside `conclusive: false`. Reading either field as a stand-in for
 the other loses that.
 
@@ -397,7 +482,7 @@ binomial proportion, and only those get a confidence interval. There are four:
 | `max_tool_divergence` | diverged rows over the scope's `tool_selection.divergence` rows |
 
 `max_critical_regressions` and `max_invariant_violations` are raw counts and
-the cost/latency budgets are ratios of two averages; none describes a
+the cost/latency budgets are paired ratios; none describes a
 proportion, so none is given an interval and all report `ci_low`/`ci_high` as
 `null`.
 

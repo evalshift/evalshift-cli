@@ -193,6 +193,12 @@ Rules:
   the tool names shown in SAMPLED REGRESSIONS.
 - The two cost figures are each model's total for the whole run. Never present
   either one as a per-call or per-example price.
+- The cost and latency ceilings are judged on cost_budget_change_pct and
+  latency_budget_change_pct, not on the run-wide changes: each example is
+  compared with itself, and latency is the typical example's change with the
+  slowest and fastest fifth set aside. Set a ceiling only beside its budget
+  figure, and call the latency one the typical example's change, never the
+  average.
 - In SAMPLED REGRESSIONS, an output beginning "{tool_calls}" is a reply that
   called those tools, listed with their arguments, before any "{text}" it
   wrote. Describe it as calling them, never as an empty or missing answer.

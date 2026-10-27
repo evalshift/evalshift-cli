@@ -83,6 +83,64 @@ def test_verdict_and_budget_counts_are_rendered(sample_run: dict[str, Any]) -> N
     assert facts.rendered["latency_ceiling_pct"] == "+30%"
 
 
+def test_the_budgets_own_cost_and_latency_figures_are_rendered(
+    sample_run: dict[str, Any],
+) -> None:
+    """The ceilings are judged on paired per-example figures, not the run totals.
+
+    Rendered beside ``cost_delta_pct`` / ``latency_delta_pct`` so the prose
+    never sets a run-wide +36% latency against a 30% ceiling the gate held on
+    the typical example's +22%.
+    """
+    sample_run["decision"] = replace(
+        sample_run["decision"],
+        budget_results=[
+            *[b for b in budgets() if b.name not in {"max_cost_increase", "max_latency_increase"}],
+            BudgetResult(
+                name="max_cost_increase", observed=-0.289, allowed=0.5, passed=True, denominator=21
+            ),
+            BudgetResult(
+                name="max_latency_increase",
+                observed=0.216,
+                allowed=0.3,
+                passed=True,
+                denominator=21,
+            ),
+        ],
+    )
+    facts = build_facts(**sample_run)
+    assert facts.rendered["cost_budget_change_pct"] == "\u221228.9%"
+    assert facts.rendered["latency_budget_change_pct"] == "+21.6%"
+
+
+def test_an_unmeasured_budget_figure_is_not_rendered_as_a_change(
+    sample_run: dict[str, Any],
+) -> None:
+    sample_run["decision"] = replace(
+        sample_run["decision"],
+        budget_results=[
+            *[b for b in budgets() if b.name != "max_latency_increase"],
+            BudgetResult(
+                name="max_latency_increase",
+                observed=0.0,
+                allowed=0.3,
+                passed=True,
+                conclusive=False,
+                denominator=0,
+            ),
+        ],
+    )
+    assert build_facts(**sample_run).rendered["latency_budget_change_pct"] == "not measured"
+
+
+def test_the_fallback_names_what_the_budgets_were_judged_on(
+    sample_run: dict[str, Any],
+) -> None:
+    summary = fallback_insight(build_facts(**sample_run)).economics_summary
+    assert "judged per example" in summary
+    assert "typical example" in summary
+
+
 def test_delta_spread_is_rendered_from_the_examples(sample_run: dict[str, Any]) -> None:
     facts = build_facts(**sample_run)
     assert facts.rendered["worst_delta"] == "−0.0800"

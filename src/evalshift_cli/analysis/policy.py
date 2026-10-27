@@ -8,6 +8,7 @@ safe to migrate to under the configured regression budget.
 from __future__ import annotations
 
 import math
+import statistics
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -69,8 +70,8 @@ _LEGACY_KIND_PREFIXES = {
 # denominator but is a *floor*, and a sub-granular floor collapses to
 # maximally lax — only a 0% rate could fail it — which is the opposite of zero
 # tolerance, so the warning's wording would be false. ``max_critical_regressions``
-# is a count on a granularity of 1, and the cost/latency budgets are ratios of
-# two averages with no row denominator at all.
+# is a count on a granularity of 1, and the cost/latency budgets are ratios
+# across example pairs, which land on no grid.
 _RATE_CEILING_DENOMINATORS: dict[str, str] = {
     "max_overall_regression_rate": "scored comparisons",
     "max_tool_argument_drift": "tool-argument comparisons",
@@ -122,19 +123,35 @@ _COUNT_BUDGETS = frozenset({"max_critical_regressions", "max_invariant_violation
 # policy edit change what ``conclusive`` means.
 _WILSON_Z = 1.959963984540054
 
-# The call-derived budgets, and the ``Call`` field each one averages over both
-# roles. Unlike the rate ceilings above these have no row denominator — their
-# denominator is the *source average*, which can itself be zero. See
-# :func:`_has_measured_ratio` and :func:`_zero_valued_call_warnings`.
+# The call-derived budgets, and the ``Call`` field each one compares across
+# example pairs. Unlike the rate ceilings above these are ratios, not
+# proportions — their divisor is the *source* value, which can itself be zero.
+# See :func:`_relative_change`, :func:`_has_measured_ratio` and
+# :func:`_zero_valued_call_warnings`.
 _CALL_RATIO_FIELDS: dict[str, str] = {
     "max_cost_increase": "cost_usd",
     "max_latency_increase": "latency_ms",
 }
 
+# Share of example pairs trimmed from *each* end before the latency
+# log-ratios are averaged — 4 of 21, 0 below 5 pairs. 20% is the conventional
+# robust default: it absorbs the handful of 3-5 s provider spikes that flipped
+# a real suite's verdict between two runs, while a slowdown on more than a
+# fifth of the examples survives into the value. Not configurable, for the
+# same reason the Wilson z is not: a per-project trim would let a policy edit
+# change what the latency budget measures.
+_LATENCY_TRIM = 0.2
+
 
 @dataclass(frozen=True, slots=True)
 class PolicyMetricSummary:
-    """Aggregate migration outcome rates for a scope."""
+    """Aggregate migration outcome rates for a scope.
+
+    ``cost_increase_rate`` / ``latency_increase_rate`` keep their names — the
+    bundle schema is the server's — but are *signed* relative changes over
+    example pairs (see :func:`_relative_change`): ``-0.25`` is 25% cheaper or
+    faster.
+    """
 
     n_records: int
     improved_rate: float
@@ -165,13 +182,17 @@ class BudgetResult:
     but measures nothing. ``max_tool_argument_drift`` is counted over
     ``tool_arguments`` rows only, so it needs one of *those* — a scope that
     scored records but ran no tool-argument evaluator is unmeasured too.
-    Exact budgets (the critical-regression count, the cost/latency ratios of
-    two averages) describe no proportion and have
-    ``ci_low``/``ci_high`` of ``None``. The call-derived cost/latency budgets
-    follow the same rule from the other side: the ratio reads 0.0 — "no
-    increase" — both when a role has no error-free call to average and when
-    both roles average zero, so they are conclusive only when at least one
-    role contributed a positive average for that field
+    The critical-regression count and the cost/latency ratios describe no
+    proportion and have ``ci_low``/``ci_high`` of ``None``. The cost/latency
+    ratios are not exact either — they are robust paired estimates (see
+    :func:`_relative_change`) whose stability comes from comparing each example
+    with itself and trimming latency spikes, not from an interval: at the
+    suite sizes this runs at, an interval-confirmed breach would almost never
+    fire. Their ``observed`` is *signed* — a saving is negative — and only
+    ``passed`` is one-sided. They follow the empty-sample rule from the other
+    side: the ratio reads 0.0 both when no example has an error-free call on
+    each side and when both sides recorded zero on every pair, so they are
+    conclusive only when some pair recorded a positive value for that field
     (:func:`_has_measured_ratio`).
 
     ``denominator`` is how many units ``observed`` was computed over — the
@@ -827,8 +848,8 @@ def _metrics(
         regression_rate=_rate(len(regressions), n),
         critical_regressions=len(critical),
         tool_argument_drift_rate=_rate(len(tool_argument_drift), len(tool_argument_records)),
-        cost_increase_rate=_relative_increase(calls, field="cost_usd"),
-        latency_increase_rate=_relative_increase(calls, field="latency_ms"),
+        cost_increase_rate=_relative_change(calls, field="cost_usd"),
+        latency_increase_rate=_relative_change(calls, field="latency_ms"),
     )
 
 
@@ -875,8 +896,8 @@ def _budget_results(
     when the denominator is positive. ``cost_measured`` /
     ``latency_measured`` are the call-derived budgets' conclusiveness flags and
     stay separate from their denominators: those ratios also default to 0.0
-    with a perfectly good call count behind them, when both roles average zero
-    (see :func:`_has_measured_ratio`).
+    with a perfectly good pair count behind them, when both sides recorded
+    zero (see :func:`_has_measured_ratio`).
 
     All of it is passed in rather than read off ``metrics`` because
     ``PolicyMetricSummary`` is serialised into the bundle manifest, whose
@@ -1136,13 +1157,16 @@ def _zero_valued_call_warnings(calls: list[Call]) -> list[str]:
             continue
         if _has_measured_ratio(calls, field=call_field):
             continue
-        source, target = _paired_call_values(calls, field=call_field)
-        noun = "a cost" if call_field == "cost_usd" else "a latency"
+        n = len(_example_pairs(calls, field=call_field))
+        pairs = f"{n} example pair{'' if n == 1 else 's'}"
+        what = (
+            f"both models recorded a cost of 0 on all {pairs}"
+            if call_field == "cost_usd"
+            else f"none of the {pairs} recorded a latency above 0 on both models"
+        )
         out.append(
-            f"The {_label_lower(name)} budget could not be measured: all "
-            f"{len(source) + len(target)} error-free calls across both models "
-            f"recorded {noun} of 0, so its observed 0.00 is a default, not a "
-            f"measurement.",
+            f"The {_label_lower(name)} budget could not be measured: {what}, so "
+            f"its observed 0.00 is a default, not a measurement.",
         )
     return out
 
@@ -1299,7 +1323,7 @@ def _distinct_slice_budgets(
 ) -> list[BudgetResult]:
     """Slice budgets that measure something an overall row does not.
 
-    ``max_cost_increase`` / ``max_latency_increase`` are averaged over the
+    ``max_cost_increase`` / ``max_latency_increase`` are measured over the
     run's calls, so an inheriting slice restates the overall row number for
     number — and a run with three slices would report the same breach four
     times. A slice that *overrode* the budget, or one whose record-derived
@@ -1769,65 +1793,96 @@ def _rate(count: int, total: int) -> float:
     return 0.0 if total <= 0 else count / total
 
 
-def _paired_call_values(calls: list[Call], *, field: str) -> tuple[list[float], list[float]]:
-    """Error-free ``field`` values for the source and target roles.
+def _example_pairs(calls: list[Call], *, field: str) -> list[tuple[float, float]]:
+    """One ``(source, target)`` value of ``field`` per example both roles answered.
 
-    Both the cost/latency ratio and its ``conclusive`` flag read this one
-    function, so "we had samples to compare" can never disagree with the
-    early return in :func:`_relative_increase`.
+    The unit is the example — ``(prompt_id, example_id)`` — not the call, so
+    each target is compared against its own source and an example one side
+    failed leaves the comparison on *both* sides. Comparing whatever each role
+    happened to complete compares two different sets of examples, which is a
+    difference in workload, not in models.
+
+    Errored calls are dropped one sample at a time; an example stays paired
+    while each role kept at least one error-free sample. Cached rows count:
+    a cache hit carries the cost and latency recorded when the response was
+    produced live (``Call.latency_replayed``), and dropping them would turn a
+    re-run from cache into "measured nothing" — a pass, for a run whose gate
+    had failed.
+
+    With ``samples_per_example > 1`` a role's samples collapse to one value:
+    the median for latency, so one spiked repeat cannot move its example, and
+    the mean for cost, the example's expected spend.
     """
-    source = [float(getattr(c, field)) for c in calls if c.role == "source" and c.error is None]
-    target = [float(getattr(c, field)) for c in calls if c.role == "target" and c.error is None]
-    return source, target
+    samples: dict[tuple[str, str], dict[str, list[float]]] = {}
+    for call in calls:
+        if call.error is not None:
+            continue
+        roles = samples.setdefault((call.prompt_id, call.example_id), {})
+        roles.setdefault(call.role, []).append(float(getattr(call, field)))
+    collapse = statistics.median if field == "latency_ms" else statistics.fmean
+    return [
+        (collapse(roles["source"]), collapse(roles["target"]))
+        for _, roles in sorted(samples.items())
+        if "source" in roles and "target" in roles
+    ]
+
+
+def _ratio_pairs(calls: list[Call], *, field: str) -> list[tuple[float, float]]:
+    """The example pairs :func:`_relative_change` actually compares for ``field``.
+
+    Every pair for cost. For latency only pairs timed on both sides: every
+    real call takes time, so a ``latency_ms`` of 0 is a missing timing, and a
+    log-ratio needs two positive values.
+
+    Its length is the budget's ``denominator``; every reader of the ratio goes
+    through here, so the number a budget reports and the sample it was judged
+    on cannot drift apart.
+    """
+    pairs = _example_pairs(calls, field=field)
+    if field == "latency_ms":
+        return [(source, target) for source, target in pairs if source > 0 and target > 0]
+    return pairs
 
 
 def _has_paired_calls(calls: list[Call], *, field: str) -> bool:
-    """Whether :func:`_relative_increase` had anything to compare for ``field``.
+    """Whether any example has an error-free call on both sides.
 
-    False means its 0.0 is the "nothing to divide" default rather than a
-    measured ratio — the budget row is unmeasured, not clean.
+    False means :func:`_relative_change`'s 0.0 is the "nothing to compare"
+    default rather than a measured ratio — the budget row is unmeasured, not
+    clean.
 
     Necessary but not sufficient for the budget to be conclusive; see
     :func:`_has_measured_ratio`, which is what ``_budget_results`` is given.
     """
-    source, target = _paired_call_values(calls, field=field)
-    return bool(source) and bool(target)
+    return bool(_example_pairs(calls, field=field))
 
 
 def _call_ratio_denominator(calls: list[Call], *, field: str) -> int:
-    """How many error-free calls the ``field`` ratio was averaged over.
+    """How many example pairs the ``field`` ratio was computed over.
 
-    Zero when either role contributed none: :func:`_relative_increase` divides
-    one role's average by the other's, so one-sided data compares nothing and
-    its 0.0 is the "nothing to divide" default (:func:`_has_paired_calls`) —
-    which is exactly the "counted, and there was nothing to count" that
+    Pairs, not calls: the ratio compares each example's target against its own
+    source, so a 21-example suite reports 21 whatever ``samples_per_example``
+    is, and an example one side failed is not counted at all. Zero when no
+    example is paired — the "counted, and there was nothing to count" that
     ``BUNDLE_SPEC.md`` reserves ``0`` for.
 
-    Counts *calls on both sides*, not pairs. ``BUNDLE_SPEC.md`` calls this
-    "paired calls", but the CLI never pairs individual calls: it averages each
-    role independently over whatever error-free calls that role produced, and
-    the two counts need not match. There is therefore no pair count to report,
-    and the number of calls behind the two averages is the honest sample size.
     It is deliberately *not* the same question as :func:`_has_measured_ratio`:
-    a run whose calls all carry ``cost_usd = 0`` counted every one of them and
-    still measured nothing, so it reports a positive denominator beside
+    a run whose calls all carry ``cost_usd = 0`` counted every pair and still
+    measured nothing, so it reports a positive denominator beside
     ``conclusive: false``.
     """
-    source, target = _paired_call_values(calls, field=field)
-    if not source or not target:
-        return 0
-    return len(source) + len(target)
+    return len(_ratio_pairs(calls, field=field))
 
 
 def _has_measured_ratio(calls: list[Call], *, field: str) -> bool:
-    """Whether :func:`_relative_increase` measured ``field``, rather than defaulting.
+    """Whether :func:`_relative_change` measured ``field``, rather than defaulting.
 
-    It defaults to 0.0 twice over: when a role has no error-free call at all
-    (:func:`_has_paired_calls`), and when both roles average zero — an
-    unpriced model pair, whose calls carry ``cost_usd = 0.0`` (or
-    ``latency_ms = 0``) on every row. The second case has non-empty call
-    lists, so pairing alone reports it as a confident "the target did not
-    cost more" for a quantity nobody ever priced.
+    It defaults to 0.0 twice over: when no example is paired
+    (:func:`_has_paired_calls`), and when both roles recorded zero on every
+    pair — an unpriced model pair, whose calls carry ``cost_usd = 0.0`` (or
+    ``latency_ms = 0``) on every row. The second case has paired examples, so
+    pairing alone reports it as a confident "the target did not cost more" for
+    a quantity nobody ever priced.
 
     Both-sides-zero is therefore treated as **unmeasured**. ``Call.cost_usd``
     is ``0.0`` both when a model is unpriced and when it is genuinely free, and
@@ -1836,25 +1891,52 @@ def _has_measured_ratio(calls: list[Call], *, field: str) -> bool:
     pass on an unpriced migration is the worse failure, and "could not tell" is
     recoverable by pricing the models.
 
-    Kept in lockstep with :func:`_relative_increase` — both read
-    :func:`_paired_call_values`, and the branch below mirrors its early
-    returns, so the flag can never disagree with the number it describes.
+    Kept in lockstep with :func:`_relative_change` — both read
+    :func:`_ratio_pairs`, so the flag can never disagree with the number it
+    describes.
     """
-    source, target = _paired_call_values(calls, field=field)
-    if not source or not target:
-        return False
-    return (sum(source) / len(source)) > 0 or (sum(target) / len(target)) > 0
+    pairs = _ratio_pairs(calls, field=field)
+    return any(source > 0 or target > 0 for source, target in pairs)
 
 
-def _relative_increase(calls: list[Call], *, field: str) -> float:
-    source, target = _paired_call_values(calls, field=field)
-    if not source or not target:
+def _relative_change(calls: list[Call], *, field: str) -> float:
+    """Signed relative change of ``field`` from source to target, over example pairs.
+
+    ``-0.25`` is 25% cheaper or faster. Only the budget's pass/fail is
+    one-sided (``observed <= allowed``); the value itself is never clipped, so
+    a saving reads as one in the report instead of as ``+0%``.
+
+    The two fields are measured differently because their noise is:
+
+    * **Latency** — the 20%-trimmed geometric mean of per-example
+      target/source ratios (:data:`_LATENCY_TRIM`). Provider latency has a
+      heavy tail that lands on different examples each run, and a plain mean
+      let two or three slow responses flip a verdict. The trim absorbs up to
+      a fifth of the examples spiking on either side; a slowdown spread over
+      more of them than that still moves the value. Not the median: it cannot
+      see a slowdown confined to fewer than half the examples. Logs, so a 2x
+      slower and a 2x faster example cancel instead of averaging to +25%.
+    * **Cost** — the ratio of paired totals. Cost follows token counts, not
+      network weather, so it has no provider noise to trim, and an example
+      that costs ten times as much is a real bill the budget must see.
+
+    A cost whose paired source total is zero against a positive target total
+    is reported as ``1.0`` — a full 100% increase rather than infinity or a
+    clean zero.
+    """
+    pairs = _ratio_pairs(calls, field=field)
+    if not pairs:
         return 0.0
-    source_avg = sum(source) / len(source)
-    target_avg = sum(target) / len(target)
-    if source_avg <= 0:
-        return 0.0 if target_avg <= 0 else 1.0
-    return max(0.0, (target_avg - source_avg) / source_avg)
+    if field == "latency_ms":
+        logs = sorted(math.log(target / source) for source, target in pairs)
+        trim = int(_LATENCY_TRIM * len(logs))
+        kept = logs[trim : len(logs) - trim]
+        return math.exp(statistics.fmean(kept)) - 1.0
+    source_total = sum(source for source, _ in pairs)
+    target_total = sum(target for _, target in pairs)
+    if source_total <= 0:
+        return 0.0 if target_total <= 0 else 1.0
+    return (target_total - source_total) / source_total
 
 
 __all__ = [

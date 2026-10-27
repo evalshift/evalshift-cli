@@ -809,6 +809,67 @@ class TestHtmlRender:
         assert "≤ 0" in html  # count budget stays an integer, no percent
         assert "0.030" not in html  # no bare fractions anymore
 
+    def test_the_economics_card_shows_what_the_budgets_were_judged_on(self, tmp_path: Path) -> None:
+        """The run-wide latency mean is not the gated figure, so the card says both.
+
+        Otherwise "Latency +35.6%. Both inside +30% latency" reads as a
+        contradiction — the gate held on the typical example's +21.6%.
+        """
+        cwd, run_id = _scaffold_full_run(tmp_path)
+        run_dir = cwd / ".evalshift" / "runs" / run_id
+        _write_migration_decision(run_dir, run_id)
+        path = run_dir / "migration_decision.json"
+        decision = json.loads(path.read_text(encoding="utf-8"))
+        decision["budget_results"] = [
+            {
+                "name": "max_cost_increase",
+                "observed": -0.289,
+                "allowed": 0.5,
+                "passed": True,
+                "scope": "overall",
+                "conclusive": True,
+                "denominator": 21,
+            },
+            {
+                "name": "max_latency_increase",
+                "observed": 0.216,
+                "allowed": 0.3,
+                "passed": True,
+                "scope": "overall",
+                "conclusive": True,
+                "denominator": 21,
+            },
+        ]
+        path.write_text(json.dumps(decision), encoding="utf-8")
+
+        html = render_html(build_report_payload(run_dir))
+
+        assert "judged per example: cost -28.9%, latency +21.6% for the typical example" in html
+
+    def test_a_failed_increase_budget_renders_signed(self, tmp_path: Path) -> None:
+        cwd, run_id = _scaffold_full_run(tmp_path)
+        run_dir = cwd / ".evalshift" / "runs" / run_id
+        _write_migration_decision(run_dir, run_id)
+        path = run_dir / "migration_decision.json"
+        decision = json.loads(path.read_text(encoding="utf-8"))
+        decision["budget_results"] = [
+            {
+                "name": "max_latency_increase",
+                "observed": 0.402,
+                "allowed": 0.3,
+                "passed": False,
+                "scope": "overall",
+                "conclusive": True,
+                "denominator": 21,
+            },
+        ]
+        path.write_text(json.dumps(decision), encoding="utf-8")
+
+        html = render_html(build_report_payload(run_dir))
+
+        assert '<td class="num bad">+40.2%</td>' in html
+        assert "≤ +30.0%" in html
+
     def test_a_failed_trace_rule_budget_renders_as_a_count(self, tmp_path: Path) -> None:
         """``max_invariant_violations`` is a count of examples, never a percentage."""
         cwd, run_id = _scaffold_full_run(tmp_path)

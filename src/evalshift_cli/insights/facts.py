@@ -234,6 +234,14 @@ def build_facts(
     deltas = [e.worst_delta_score for e in examples if e.worst_delta_score is not None]
     worst_comparison = _worst_comparison(comparisons)
     budget_limits = {b.name: _budget_limit(b.name, b.allowed) for b in decision.budget_results}
+    # What each increase budget was judged on: paired per example, latency as
+    # the typical example with its spikes trimmed. Not the run-wide deltas
+    # below, which the prose once set against a ceiling the gate held.
+    budget_changes = {
+        b.name: _signed_pct(b.observed) if b.measured else NOT_MEASURED
+        for b in decision.budget_results
+        if b.name in _INCREASE_BUDGETS
+    }
     # The three outcome rates share one denominator, so they are measured or
     # missing together. ``_rate`` returns 0.0 over an empty one, which reads
     # as "nothing regressed" rather than "nothing was compared" — and that is
@@ -304,6 +312,8 @@ def build_facts(
         ),
         "cost_ceiling_pct": budget_limits.get("max_cost_increase", NOT_AVAILABLE),
         "latency_ceiling_pct": budget_limits.get("max_latency_increase", NOT_AVAILABLE),
+        "cost_budget_change_pct": budget_changes.get("max_cost_increase", NOT_AVAILABLE),
+        "latency_budget_change_pct": budget_changes.get("max_latency_increase", NOT_AVAILABLE),
         "regression_rate_pct": (
             _rate_pct(decision.overall.regression_rate) if measured else NOT_MEASURED
         ),
@@ -396,9 +406,9 @@ def _signed_pct(value: float) -> str:
 def _relative_pct(source: float, target: float) -> str:
     """Render ``(target - source) / source``, or say it isn't measurable.
 
-    Not ``policy._relative_increase``: that clamps at zero because a budget
-    only cares about increases, which would render a genuinely cheaper target
-    as ``+0%``.
+    A run-wide ratio of totals or means. Not the budgets' own figure
+    (``policy._relative_change``), which compares each example with itself
+    and, for latency, trims the slowest and fastest fifth.
     """
     if source <= 0:
         return NOT_COMPARABLE
