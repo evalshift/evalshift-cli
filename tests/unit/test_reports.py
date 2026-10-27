@@ -584,9 +584,10 @@ class TestHtmlRender:
         # mistaken for conclusive evidence.
         assert "small-sample" in html
         # Raw statistics survive as hover tooltips for power users. This
-        # prompt's row ran no test, so its confidence tooltip says that rather
-        # than quoting the placeholder p of 1.000 as a corrected p-value.
-        assert "Cohen's |d|" in html
+        # prompt's row ran no test, so its tooltips say that rather than
+        # quoting the placeholder p of 1.000 or d of 0.00 as measurements.
+        assert "Δ avg score" in html
+        assert "Cohen's |d|" not in html
         assert "No test ran: too few pairs, or every pair scored the same" in html
 
     def test_per_example_breakdown_is_plain_language(self, tmp_path: Path) -> None:
@@ -1910,6 +1911,61 @@ class TestANonSignificantChangeIsNotCalledEquivalent:
         }
         rows = _build_executive_summary({"comparisons": [dip, uniform]}, set())
         assert [row["evaluator_name"] for row in rows] == ["routing"]
+
+    def test_an_untested_row_shows_no_effect_or_range(self, tmp_path: Path) -> None:
+        """A skipped test's d and interval are placeholder zeros, not measurements.
+
+        A real run printed "0.00 negligible [0.00, 0.00]" beside a uniform
+        -1.000 drop: the largest possible drop, labelled negligible.
+        """
+        run_dir, _ = _scaffold_two_axis_run(tmp_path)
+        analysis_path = run_dir / ANALYSIS_FILENAME
+        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+        for comparison in analysis["comparisons"]:
+            comparison.update(
+                severity="none",
+                test="skipped",
+                effect_size=0.0,
+                effect_size_ci_low=0.0,
+                effect_size_ci_high=0.0,
+                delta_avg_score=-1.0,
+                p_value_corrected=1.0,
+                notes=[
+                    *comparison["notes"],
+                    ZERO_VARIANCE_NOTE,
+                    f"{UNIFORM_DROP_NOTE_PREFIX} every pair moved by -1.000",
+                ],
+            )
+        analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+        html = render_html(
+            build_report_payload(run_dir, tool_evaluator_names=frozenset({"routing"}))
+        )
+
+        evaluators = _section(html, "Overall, by evaluator")
+        assert "Uniform drop" in evaluators
+        assert "negligible" not in evaluators
+        assert "[0.00, 0.00]" not in evaluators
+        summary = _section(html, "<h2>Executive summary</h2>")
+        assert "-100%" in summary
+        assert "negligible" not in summary
+
+    def test_the_effect_keeps_the_sign_its_range_has(self, tmp_path: Path) -> None:
+        """An unsigned 0.44 beside [-0.70, -0.22] read as outside its own interval."""
+        run_dir = self._rewrite_analysis(
+            tmp_path,
+            divergence={
+                "effect_size": -0.44,
+                "effect_size_ci_low": -0.70,
+                "effect_size_ci_high": -0.22,
+            },
+        )
+        html = render_html(
+            build_report_payload(run_dir, tool_evaluator_names=frozenset({"routing"}))
+        )
+
+        evaluators = _section(html, "Overall, by evaluator")
+        assert '-0.44 <span class="magnitude">small</span>' in evaluators
+        assert "[-0.70, -0.22]" in evaluators
 
     def _rewrite_analysis(self, tmp_path: Path, *, divergence: dict[str, object]) -> Path:
         """The two-axis run with both rows non-significant and the divergence row edited."""

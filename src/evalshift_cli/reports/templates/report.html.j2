@@ -540,9 +540,9 @@
                 <span class="verdict-blurb">{{ blurb }}</span>
               </span>
             </td>
-            <td class="num" title="Δ avg score {{ "%+.3f"|format(row.delta_avg_score) }} · Cohen's |d| {{ "%.2f"|format(row.effect_size|abs) }}">
+            <td class="num" title="Δ avg score {{ "%+.3f"|format(row.delta_avg_score) }}{% if row.test != "skipped" %} · Cohen's d {{ "%+.2f"|format(row.effect_size) }}{% endif %}">
               {{ "%+.0f"|format(row.delta_avg_score * 100) }}%
-              <span class="magnitude" style="display:block">{{ effect_magnitude(row.effect_size) }}</span>
+              {% if row.test != "skipped" %}<span class="magnitude" style="display:block">{{ effect_magnitude(row.effect_size) }}</span>{% endif %}
             </td>
             {% set conf = confidence_label(row.severity, row.p_value_corrected, row.test) %}
             <td class="num" title="{% if row.test == "skipped" %}No test ran: too few pairs, or every pair scored the same{% else %}p_corrected = {{ "%.3f"|format(row.p_value_corrected) }} (Benjamini–Hochberg){% endif %}">
@@ -782,8 +782,14 @@
               <td class="num faint">—</td>
               {% else %}
               <td class="num {{ "bad" if row.delta_avg_score < 0 else "ok" if row.delta_avg_score > 0 else "" }}">{{ "%+.3f"|format(row.delta_avg_score) }}</td>
-              <td class="num">{{ "%.2f"|format(row.effect_size|abs) }} <span class="magnitude">{{ effect_magnitude(row.effect_size) }}</span></td>
+              {% if row.test == "skipped" %}
+              {# No test ran: d and its interval are placeholder zeros, not measurements. #}
+              <td class="num faint">—</td>
+              <td class="num faint">—</td>
+              {% else %}
+              <td class="num">{{ "%.2f"|format(row.effect_size) }} <span class="magnitude">{{ effect_magnitude(row.effect_size) }}</span></td>
               <td class="num muted ci">[{{ "%.2f"|format(row.effect_size_ci_low) }}, {{ "%.2f"|format(row.effect_size_ci_high) }}]</td>
+              {% endif %}
               <td class="num">{% if conf == "—" %}<span class="faint">—</span>{% else %}<span class="badge conf conf-{{ conf|lower }}">{{ conf }}</span>{% endif %}</td>
               {% endif %}
               <td>
@@ -832,7 +838,7 @@
               </td>
               <td class="num">{{ row.n }}</td>
               <td class="num {{ "bad" if row.delta_avg_score < 0 else "ok" if row.delta_avg_score > 0 else "" }}">{{ "%+.3f"|format(row.delta_avg_score) }}</td>
-              <td class="num">{{ "%.2f"|format(row.effect_size|abs) }} <span class="magnitude">{{ effect_magnitude(row.effect_size) }}</span></td>
+              <td class="num">{{ "%.2f"|format(row.effect_size) }} <span class="magnitude">{{ effect_magnitude(row.effect_size) }}</span></td>
               <td class="num">{% if conf == "—" %}<span class="faint">—</span>{% else %}<span class="badge conf conf-{{ conf|lower }}">{{ conf }}</span>{% endif %}</td>
               <td><span class="verdict-head">{{ verdict_glyph(row.severity, row.notes, row.effect_size) }} {{ verdict(row.severity, row.notes, row.effect_size)[0] }}</span></td>
             </tr>

@@ -640,6 +640,70 @@ def _pair_for(example_id: str) -> _PairedCalls:
     )
 
 
+class _AnswerSpyEvaluator(_SpyEvaluator):
+    kind = "semantic"
+
+
+class TestTextEvaluatorsSkipUnfinishedTurns:
+    """A turn that ended in a tool call has no answer yet.
+
+    Without tool-result fixtures the replay stops at the first call, so any
+    text beside it is narration ("Let me check!"), not an answer. Comparing
+    it scored a target that called tools without narrating as a total loss.
+    """
+
+    def _pair(self, *, source_calls: bool, target_calls: bool) -> _PairedCalls:
+        pair = _pair_for("ex1")
+
+        def trace(calls: bool, text: str) -> ToolTrace:
+            return ToolTrace(
+                calls=[ToolCall(tool_name="search_notes", sequence_index=0)] if calls else [],
+                final_text=text,
+            )
+
+        return replace(
+            pair,
+            source=pair.source.model_copy(
+                update={"text": "Let me check!", "trace": trace(source_calls, "Let me check!")},
+            ),
+            target=pair.target.model_copy(
+                update={"text": "Your gift is due Sept 11.", "trace": trace(target_calls, "x")},
+            ),
+        )
+
+    @pytest.mark.parametrize(
+        ("source_calls", "target_calls"),
+        [(True, True), (True, False), (False, True)],
+    )
+    async def test_records_nothing_when_either_side_is_awaiting_tool_results(
+        self, source_calls: bool, target_calls: bool
+    ) -> None:
+        spy = _AnswerSpyEvaluator()
+        pair = self._pair(source_calls=source_calls, target_calls=target_calls)
+
+        records = await _score_one(spy, pair, "r1", {})  # type: ignore[arg-type]
+
+        assert records == []
+        assert spy.received_input_vars is None  # never asked to score
+
+    async def test_still_scores_when_both_sides_answered(self) -> None:
+        spy = _AnswerSpyEvaluator()
+        pair = self._pair(source_calls=False, target_calls=False)
+
+        records = await _score_one(spy, pair, "r1", {})  # type: ignore[arg-type]
+
+        assert len(records) == 1
+
+    async def test_structural_checks_still_score_unfinished_turns(self) -> None:
+        spy = _SpyEvaluator()
+        spy.kind = "structural"  # type: ignore[attr-defined]
+        pair = self._pair(source_calls=True, target_calls=True)
+
+        records = await _score_one(spy, pair, "r1", {})  # type: ignore[arg-type]
+
+        assert len(records) == 1
+
+
 class TestScoreAllConcurrency:
     async def test_scores_pairs_concurrently(self) -> None:
         tracker = _Inflight()

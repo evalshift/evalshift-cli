@@ -121,6 +121,10 @@ from evalshift_cli.traces.loader import (
 
 SCORES_FILENAME: str = "scores.jsonl"
 
+#: Text evaluators that compare the two models' *answers*. A turn that ended
+#: in a tool call has none yet, so these skip it; structural checks still run.
+_ANSWER_KINDS: frozenset[str] = frozenset({"semantic", "llm_judge"})
+
 
 @dataclass(frozen=True, slots=True)
 class _PairedCalls:
@@ -1345,6 +1349,15 @@ async def _score_one(
     # A pair offered no tools never reaches here (see _attempts).
     if _is_tool_evaluator(evaluator):
         return await _score_one_tool(evaluator, pair, run_id, examples_by_id)
+
+    # A turn that ended in a tool call has no answer yet: the replay stops
+    # at the call, and any text beside it is narration. Comparing narration
+    # (or its absence) scored a target that called tools without chatting
+    # as a total loss. The tool evaluators above measure these turns.
+    if _evaluator_kind(evaluator) in _ANSWER_KINDS and any(
+        c.trace is not None and c.trace.ends_in_tool_calls for c in (pair.source, pair.target)
+    ):
+        return []
 
     example = examples_by_id.get(pair.example_id)
     input_vars = example.inputs if example is not None else {}

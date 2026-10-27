@@ -47,6 +47,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   latency changes, which can differ. Before, a card could read "Latency
   +35.6%. Both inside +30% latency".
 
+### Fixed
+
+- **`semantic` and `llm_judge` no longer score a turn that ended in a tool
+  call.** Without tool-result fixtures the replay stops at the call, so the
+  text beside it is narration ("Let me check!"), not an answer. On a real
+  planner run the source narrated beside four of its calls and the target did
+  not, and both evaluators scored each of those as a −1.0 loss: 8 of the 20
+  regressions behind an `inconclusive` verdict. Such pairs now write no record
+  and count as not applicable; the tool evaluators measure them.
+- **The report's evaluator table no longer prints a skipped test's
+  placeholders as measurements.** A uniform −1.000 drop read
+  "0.00 negligible [0.00, 0.00]"; Effect and 95% range now read "—" when no
+  test ran, and the executive summary drops the "negligible" label there.
+  Effect is shown signed, so −0.44 no longer sits beside a range of
+  [−0.70, −0.22] as an unsigned 0.44.
+
 ## [1.6.1] - 2026-10-23
 
 ### Changed
