@@ -108,6 +108,14 @@ sentence ("which output preserves more factual detail?"). Multiple
 Tool-only turns (both outputs empty) are skipped without spending a
 judge call.
 
+Both text evaluators (`semantic.cosine` and `llm_judge`) also skip a
+pair where **either side's turn ended in a tool call**. Without
+tool-result fixtures the replay stops at the call, so text beside it is
+narration ("Let me check!"), not the answer a user would read. Scoring
+it marked a target that called tools without narrating as a total loss.
+The tool evaluators measure those turns; coverage counts the pair as
+not applicable.
+
 Pick the judge from a **third model family**. A judge prefers output
 that reads like its own (self-preference bias), and A/B randomisation
 does nothing against that. `doctor` and `validate` warn when a

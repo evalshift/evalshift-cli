@@ -402,3 +402,14 @@ class TestToolTraceRounds:
         assert not any(r.has_parallel_calls() for r in trace.rounds())
         fanout = ToolTrace(round_count=2, calls=[_tc("a", 0, 0), _tc("b", 1, 0)])
         assert fanout.has_parallel_calls()
+
+    def test_ends_in_tool_calls_when_the_last_round_called(self) -> None:
+        """A response that called a tool is still waiting on its results."""
+        assert ToolTrace(calls=[_tc("a", 0)], final_text="Let me check!").ends_in_tool_calls
+        assert ToolTrace(round_count=2, calls=[_tc("a", 0, 0), _tc("b", 1, 1)]).ends_in_tool_calls
+
+    def test_does_not_end_in_tool_calls_when_the_last_round_answered(self) -> None:
+        assert not ToolTrace(final_text="hi").ends_in_tool_calls
+        assert not ToolTrace(
+            round_count=2, calls=[_tc("a", 0, 0)], final_text="done"
+        ).ends_in_tool_calls
