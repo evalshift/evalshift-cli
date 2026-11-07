@@ -853,11 +853,11 @@ The full field-by-field data contract lives in [docs/hosted.md — Privacy model
 
 ### Plan limits
 
-Local runs are always unlimited — plan limits apply only to what you push. Every new hosted account gets a 30-day Pro trial (no card) that covers every org it creates; after that each org needs its own Pro subscription. When a push exceeds your org's plan (monthly runs, seats, concurrent runs), the org's trial ended without a subscription, or the subscription has stopped paying, the server answers `402` and the CLI prints exactly what it said:
+Local runs are always unlimited — plan limits apply only to what you push. Every new hosted account gets a 30-day Pro trial (no card) that covers every org it creates; after that each org needs its own Starter or Pro subscription. When a push exceeds your org's plan (monthly runs, seats, concurrent runs), the org's trial ended without a subscription, or the subscription has stopped paying, the server answers `402` and the CLI prints exactly what it said:
 
 ```
 ✗ EvalShift: this run needs a paid plan.
-  The free trial for this organization ended on 2026-11-02. Subscribe to Pro to push runs and keep the CI gate — existing runs stay readable.
+  The free trial for this organization ended on 2026-11-02. Subscribe to Starter or Pro to push runs and keep the CI gate — existing runs stay readable.
   Upgrade: https://app.evalshift.dev/app/acme/settings/billing
 ```
 
@@ -870,7 +870,7 @@ Exit code is 1 and nothing is uploaded. The CLI never decides entitlements itsel
 `evalshift init --ci` scaffolds `.github/workflows/evalshift.yml` — a production-shaped, self-documenting workflow (the setup checklist lives in its header comment) with three jobs:
 
 - `discover` lists committed suites under `.evalshift/suites/*/golden.jsonl` — a suite added by `capture sync` is evaluated on the next run with no workflow edit, and a project with no suites yet skips green. Suites must be committed for CI to see them: keep `.evalshift/*` ignored but un-ignore `.evalshift/suites/` and `.evalshift/toolsets/`.
-- `eval <suite>` is a matrix job per suite (the action evaluates one suite per invocation) with `fail-on: policy` and `evalshift-version` pinned to the CLI that scaffolded the project. Each suite is selected with `suite-name:` — see [Selecting a suite: name, not path](#selecting-a-suite-name-not-path). `max-parallel` defaults to 1; raise it toward the hosted plan's concurrent-run limit (Pro: 5; Enterprise: by contract). Only the first matrix job posts the PR comment — the comment marker is a constant, so multiple suites would overwrite one another.
+- `eval <suite>` is a matrix job per suite (the action evaluates one suite per invocation) with `fail-on: policy` and `evalshift-version` pinned to the CLI that scaffolded the project. Each suite is selected with `suite-name:` — see [Selecting a suite: name, not path](#selecting-a-suite-name-not-path). `max-parallel` defaults to 1; raise it toward the hosted plan's concurrent-run limit (Starter: 2; Pro: 5; Enterprise: by contract). Only the first matrix job posts the PR comment — the comment marker is a constant, so multiple suites would overwrite one another.
 - `evalshift gate` is the single check to require in branch protection: it fails if any suite failed and passes when evaluation was skipped (fork PR, no suites, or `EVALSHIFT_TOKEN` not yet set). Don't require the per-suite jobs (dynamic names) or the `evalshift/regression` commit status (last writer wins across suites).
 
 Runs on pushes to main create the base-branch baselines PRs diff against, so the workflow cancels superseded runs on PRs only, never on main.

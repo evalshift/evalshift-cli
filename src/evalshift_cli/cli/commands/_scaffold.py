@@ -242,8 +242,8 @@ jobs:
       # One suite regressing must not cancel the others' results.
       fail-fast: false
       # Hosted EvalShift refuses uploads past your org's concurrent-run
-      # limit (Pro: 5; Enterprise: by contract). Raise this toward it
-      # to evaluate suites in parallel.
+      # limit (Starter: 2; Pro: 5; Enterprise: by contract). Raise this
+      # toward it to evaluate suites in parallel.
       max-parallel: 1
       matrix:
         suite: ${{ fromJSON(needs.discover.outputs.suites) }}

@@ -205,7 +205,12 @@ def test_no_doc_shows_a_removed_top_level_key(name: str) -> None:
 
 #: Exact substrings that described the v5 hosted plans. v6 (2026-10) has no hosted Free or
 #: Team plan; the CLI itself is still free. Retiring another plan claim? Append it here.
-RETIRED_PLAN_TERMS: tuple[str, ...] = ("Free 1, Pro 5, Team 10", "on the Free plan")
+RETIRED_PLAN_TERMS: tuple[str, ...] = (
+    "Free 1, Pro 5, Team 10",
+    "on the Free plan",
+    "each org needs its own Pro subscription",
+    "(Pro: 5; Enterprise: by contract)",
+)
 
 _PLAN_COPY_FILES: tuple[str, ...] = tuple(
     dict.fromkeys(

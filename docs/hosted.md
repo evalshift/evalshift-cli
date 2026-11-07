@@ -247,7 +247,7 @@ the wrong one fails exactly like a permissions problem.
 Running locally is always unlimited. Plan limits apply only to what you push.
 
 Every new hosted account gets a 30-day Pro trial (no card) that covers every
-org it creates; after that each org needs its own Pro subscription.
+org it creates; after that each org needs its own Starter or Pro subscription.
 
 When a push exceeds your organization's plan — monthly runs, seats, concurrent
 runs — the org's trial ended without a subscription, or the subscription has
@@ -256,7 +256,7 @@ exactly what the server said:
 
 ```
 ✗ EvalShift: this run needs a paid plan.
-  The free trial for this organization ended on 2026-11-02. Subscribe to Pro to push runs and keep the CI gate — existing runs stay readable.
+  The free trial for this organization ended on 2026-11-02. Subscribe to Starter or Pro to push runs and keep the CI gate — existing runs stay readable.
   Upgrade: https://app.evalshift.dev/app/acme/settings/billing
 ```
 

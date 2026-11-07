@@ -1249,7 +1249,7 @@ def test_push_command_exits_non_zero_and_prints_the_upgrade_prompt_on_402(
 
 
 _TRIAL_ENDED = (
-    "The free trial for this organization ended on 2026-11-02. Subscribe to Pro to push "
+    "The free trial for this organization ended on 2026-11-02. Subscribe to Starter or Pro to push "
     "runs and keep the CI gate — existing runs stay readable."
 )
 _RUN_LIMIT = "Monthly run limit reached on the Pro plan (4,000 of 4,000 runs used)."
