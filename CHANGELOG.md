@@ -66,6 +66,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exists (it never deletes it). The default `.gitignore` advice
   (`.evalshift/*`) already covers the new file.
 
+### Fixed
+
+- **A malformed `captures.store` bucket or account is no longer quoted.** A
+  URI whose bucket (or Azure account) Python's `urlsplit` rejects itself, such
+  as a bracketed host that is not an IP address or a character that
+  normalises to `/`, raised `urlsplit`'s own error, and two of those quote
+  that part of the URI, which may hold a pasted secret. Loading
+  `evalshift.yaml` now fails with `store URI names an invalid bucket or
+  account; accepted forms: ...`, with no chained exception. Same fix as
+  evalshift-sdk.
+- **An `az://` store can no longer read outside its prefix.** The Azure client
+  resolves `.` and `..` segments in the request URL, so
+  `az://acct/evals/../other` read from container `other`. An `az://` container
+  or prefix with an empty, `.` or `..` segment now fails to load (`Azure store
+  URI has an empty, '.' or '..' segment in its container or prefix, ...`), and
+  the Azure reader refuses such a container, prefix or blob key. Keys
+  `capture sync` downloads were already filtered to the SDK's layout. S3 and
+  GCS keep such keys literal and are unchanged. Same rule as evalshift-sdk.
+
 ## [1.6.2] - 2026-10-27
 
 ### Changed

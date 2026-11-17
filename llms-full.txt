@@ -1007,8 +1007,12 @@ retention:
   run_ttl_days: int>=1|null = null
 captures:
   store: s3://<bucket>/<prefix> | gs://<bucket>/<prefix> | az://<account>/<container>/<prefix>
-  -- optional block; store validated at load (bad scheme, missing bucket/container, '@' or '?'
-  -> load error naming the forms; no error echoes the value, at most its scheme); prefix optional,
+  -- optional block; store validated at load (bad scheme, missing or malformed bucket/account,
+  missing container, an az:// container or prefix with an empty, '.' or '..' segment, '@' or
+  '?' -> load error naming the forms; no error echoes the value, at most its scheme, nor chains
+  one that does; a malformed netloc -> "store URI names an invalid bucket or account"); the
+  Azure reader also refuses a blob key with such a segment (the Azure client resolves dot
+  segments in the URL, even across containers); prefix optional,
   trailing slash stripped; default none = local disk only. Client libraries are plain packages:
   pip install boto3 (s3://; AWS_ENDPOINT_URL covers MinIO/R2/B2), google-cloud-storage (gs://),
   azure-storage-blob azure-identity (az://). Credentials: each provider's default chain only.

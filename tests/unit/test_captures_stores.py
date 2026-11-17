@@ -194,6 +194,65 @@ def test_azure_list_and_get() -> None:
     assert store.account_url == "https://acmeprod.blob.core.windows.net"
 
 
+# The Azure SDK sends the blob name inside the request URL, and the HTTP stack resolves dot
+# segments there: blob "p/../../other/x.json" in container "evals" is read as blob "x.json" in
+# container "other". So no key, prefix or container may carry an empty, "." or ".." segment.
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "captures/../../other/x.json",
+        "../x.json",
+        "captures/./s/x.json",
+        "captures//x.json",
+        "/captures/x.json",
+        "captures/s/",
+        "..",
+        "",
+    ],
+)
+def test_azure_get_rejects_a_key_that_could_leave_the_prefix(key: str) -> None:
+    client = FakeBlobServiceClient(props=[], blobs={})
+    store = AzureBlobStore("acmeprod", "evals", "p", client=client)
+    with pytest.raises(ValueError, match=r"empty, '\.' or '\.\.' segment"):
+        store.get(key)
+    assert client.blob_requests == []
+
+
+def test_azure_get_keeps_ordinary_dots_in_a_segment() -> None:
+    client = FakeBlobServiceClient(props=[], blobs={"captures/s.v2/cap_1..json": b"{}"})
+    store = AzureBlobStore("acmeprod", "evals", "", client=client)
+    assert store.get("captures/s.v2/cap_1..json") == b"{}"
+    assert client.blob_requests == [("evals", "captures/s.v2/cap_1..json")]
+
+
+@pytest.mark.parametrize(
+    ("container", "prefix"),
+    [
+        ("evals", "../other"),
+        ("evals", "team/../../other"),
+        ("evals", "./team"),
+        ("evals", "team//a"),
+        ("..", "team"),
+        (".", ""),
+        ("", "team"),
+    ],
+)
+def test_azure_store_rejects_a_container_or_prefix_that_could_leave_it(
+    container: str, prefix: str
+) -> None:
+    with pytest.raises(ValueError, match=r"empty, '\.' or '\.\.' segment"):
+        AzureBlobStore("acmeprod", container, prefix, client=FakeBlobServiceClient([], {}))
+
+
+def test_azure_store_still_strips_prefix_slashes() -> None:
+    client = FakeBlobServiceClient(props=[], blobs={"p/captures/s/cap_1.json": b"{}"})
+    store = AzureBlobStore("acmeprod", "evals", "/p/", client=client)
+    assert store.get("captures/s/cap_1.json") == b"{}"
+    assert client.blob_requests == [("evals", "p/captures/s/cap_1.json")]
+
+
 # --- open_store ----------------------------------------------------------------------------
 
 

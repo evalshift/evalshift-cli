@@ -75,6 +75,9 @@ def test_loader_reports_store_error_at_its_location(tmp_path: Path) -> None:
             ["SUPERSECRET", "AccountKey"],
         ),
         ("s3:///AKIASUPERSECRET/key", ["SUPERSECRET"]),
+        # urlsplit's own netloc errors quote it; the parser must replace them.
+        ("s3://[SUPERSECRET]/key", ["SUPERSECRET"]),
+        ("az://acct/evals/../SUPERSECRET", ["SUPERSECRET"]),
     ],
 )
 def test_loader_error_never_echoes_a_secret_store(
