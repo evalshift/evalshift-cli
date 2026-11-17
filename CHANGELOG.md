@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-17
+
 ### Added
 
 - **Promotion refuses a turn that claims a tool call it never made.** A turn
