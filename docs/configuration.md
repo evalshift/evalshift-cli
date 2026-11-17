@@ -1150,9 +1150,12 @@ Accepted URI forms — the same grammar the SDK uses:
 | `gs://<bucket>/<prefix>` | Google Cloud Storage | `pip install google-cloud-storage` | Workload Identity in CI, `gcloud auth application-default login` locally |
 | `az://<account>/<container>/<prefix>` | Azure Blob Storage | `pip install azure-storage-blob azure-identity` | Managed Identity / federated credential in CI, `az login` locally |
 
-`<prefix>` is optional. Credentials never go in the URI: a value containing `@` or `?` fails
-to load, naming the accepted forms. A rejected value is never echoed back (it may be a pasted
-key or connection string); the error names at most its scheme. Under the prefix the layout is exactly the local one —
+`<prefix>` is optional. An `az://` container or prefix may not have an empty, `.` or `..`
+segment (`az://acmeprod/evals/../other` fails to load): the Azure client resolves such segments
+in the request URL, even into another container. Credentials never go in the URI: a value
+containing `@` or `?` fails to load, naming the accepted forms. A rejected value is never echoed
+back (it may be a pasted key or connection string), a malformed bucket or account name included
+(`store URI names an invalid bucket or account`); the error names at most its scheme. Under the prefix the layout is exactly the local one —
 `captures/<suite>/cap_<hex>.json`, `captures/<suite>/conv_<16 hex>/cap_<hex>.json` for a
 `capture.agent_session` conversation's turns (evalshift-sdk 0.7.0 and later), and `toolsets/<hex>.json` — so the bucket
 is a mirror of `.evalshift/`, not a different format.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from evalshift_cli.captures.store_uri import StoreURI, parse_store_uri
+from evalshift_cli.captures.store_uri import StoreURI, has_unsafe_segment, parse_store_uri
 
 
 @pytest.mark.parametrize(
@@ -110,3 +110,86 @@ def test_packages_names_every_library_the_scheme_needs() -> None:
     assert parse_store_uri("s3://b/p").packages == "boto3"
     assert parse_store_uri("gs://b/p").packages == "google-cloud-storage"
     assert parse_store_uri("az://a/c/p").packages == "azure-storage-blob azure-identity"
+
+
+@pytest.mark.parametrize(
+    ("uri", "netloc"),
+    [
+        # urlsplit hands a bracketed host to ipaddress, whose error quotes it.
+        ("s3://[SECRETV6]/prefix", "SECRETV6"),
+        # A fullwidth solidus NFKC-normalises to "/"; urlsplit's error quotes the whole netloc.
+        ("az://SECRETNET\uff0fWORK/c/p", "SECRETNET"),
+        # The other urlsplit netloc errors quote nothing, but must read the same.
+        ("s3://[vSECRETFUTURE]/prefix", "SECRETFUTURE"),
+        ("s3://[::1/prefix", "::1"),
+        ("gs://[127.0.0.1]/prefix", "127.0.0.1"),
+    ],
+)
+def test_bad_netloc_is_rejected_without_echoing_it(uri: str, netloc: str) -> None:
+    with pytest.raises(ValueError, match="names an invalid bucket or account") as excinfo:
+        parse_store_uri(uri)
+    assert netloc not in str(excinfo.value)
+    # No chained exception either: urlsplit's own error, which quotes the netloc, would ride along
+    # in a traceback or on ``__context__``.
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+
+
+def test_bad_netloc_message_matches_the_sdk() -> None:
+    with pytest.raises(ValueError) as excinfo:
+        parse_store_uri("s3://[SECRETV6]/prefix")
+    assert str(excinfo.value) == (
+        "store URI names an invalid bucket or account; accepted forms: "
+        "s3://<bucket>/<prefix>, gs://<bucket>/<prefix>, az://<account>/<container>/<prefix>"
+    )
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "az://acmeprod/evals/../SECRETOTHER",
+        "az://acmeprod/evals/team/../../SECRETOTHER",
+        "az://acmeprod/../SECRETOTHER/team",
+        "az://acmeprod/./SECRETOTHER",
+        "az://acmeprod/evals/./SECRETOTHER",
+        "az://acmeprod/evals//SECRETOTHER",
+        "az://acmeprod/evals/team//SECRETOTHER",
+    ],
+)
+def test_azure_path_with_dot_or_empty_segment_is_rejected(uri: str) -> None:
+    # The Azure SDK resolves dot segments in the request URL, across containers.
+    with pytest.raises(ValueError, match=r"empty, '\.' or '\.\.' segment") as exc:
+        parse_store_uri(uri)
+    assert "SECRETOTHER" not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("uri", "expected"),
+    [
+        # S3 sends the key as given and GCS percent-encodes "/": both keep such prefixes literal.
+        ("s3://acme-evals/team/../other", StoreURI("s3", "acme-evals", None, "team/../other")),
+        ("gs://acme-evals/./team", StoreURI("gs", "acme-evals", None, "./team")),
+        # Ordinary dots inside a segment are fine on Azure too.
+        ("az://acmeprod/evals/team.v2/a..b", StoreURI("az", "acmeprod", "evals", "team.v2/a..b")),
+    ],
+)
+def test_dot_segments_stay_literal_outside_azure(uri: str, expected: StoreURI) -> None:
+    assert parse_store_uri(uri) == expected
+
+
+@pytest.mark.parametrize(
+    ("path", "unsafe"),
+    [
+        ("team/captures/s/cap_1.json", False),
+        ("team.v2/cap_1..json", False),
+        ("team/../other", True),
+        ("..", True),
+        ("./team", True),
+        ("team//a", True),
+        ("/team", True),
+        ("team/", True),
+        ("", True),
+    ],
+)
+def test_has_unsafe_segment(path: str, unsafe: bool) -> None:
+    assert has_unsafe_segment(path) is unsafe
