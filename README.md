@@ -6,6 +6,7 @@ Open-source LLM migration and regression testing for AI agents.
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/evalshift/evalshift-cli/blob/main/LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![PyPI](https://img.shields.io/pypi/v/evalshift.svg)](https://pypi.org/project/evalshift/)
+[![Emerging in Awesome AI Agents](https://img.shields.io/badge/Emerging_in-Awesome_AI_Agents-0969da)](https://github.com/NipunaRanasinghe/awesome-ai-agents/blob/main/EMERGING.md)
 
 [![EvalShift getting started: catch model migration regressions in 4 minutes](https://img.youtube.com/vi/kD7XTYSqBX4/maxresdefault.jpg)](https://www.youtube.com/watch?v=kD7XTYSqBX4)
 
